@@ -64,6 +64,18 @@ node index.js
 - `/enemy [powerlevel] [type]` - Generate enemies to fight
   - Types: `casual`, `hard`, `very hard`, `mentor`, `boss`
 
+### Battle System Commands
+
+- `/battle-start` - Start a turn-based battle with 2+ participants
+- `/battle-attack` - Attack an opponent (physical or ki-based)
+- `/battle-status` - View current battle status (HP, turn order, etc.)
+- `/battle-next` - End your turn and advance to next combatant
+- `/battle-retreat` - Attempt to escape from battle
+- `/battle-save` - Save an incapacitated ally
+- `/battle-end` - End the current battle
+
+**See [BATTLE_GUIDE.md](BATTLE_GUIDE.md) for complete battle system documentation.**
+
 ## Features
 
 - **Fishing System**: Catch fish of varying sizes with different stat bonuses
@@ -71,6 +83,16 @@ node index.js
 - **Search System**: Find items, merchants, missions, mentors, and legendary loot
 - **Power Level Calculator**: Calculate character power from 8 different stats
 - **Enemy Generator**: Create scaled enemies based on power level and difficulty
+- **Battle System**: Full turn-based combat with:
+  - Initiative rolls (d50)
+  - Action + Bonus Action economy
+  - Attack/Defense rolls with critical hits
+  - Block/Dodge mechanics
+  - HP tracking and damage calculation
+  - Limb breaking system
+  - Death saves for incapacitated characters
+  - Retreat mechanics
+  - Multi-combatant support
 
 ## Notes
 
