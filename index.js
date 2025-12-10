@@ -1,40 +1,16 @@
 const {Client, Events, GatewayIntentBits, SlashCommandBuilder} = require("discord.js");
 const {token} = require("./.gitignore/config.json");
 const {BattleManager} = require("./battleManager");
+const {CharacterManager} = require("./characterManager");
+const {races} = require("./raceData");
 
 const client = new Client({intents: [GatewayIntentBits.Guilds]});
 const battleManager = new BattleManager();
+const characterManager = new CharacterManager();
 
 function getRandomInt(max){
     return Math.floor((Math.random() * max)+1);
 }
-
-// TODO: add battle system
-// Combat is on a turn-based basis. Who goes first is decided on initiative. (roll a raw d50 and whoever gets the highest goes first, in descending order.)
-// ALL PLAYER WILL HAVE ONE ACTION AND ONE BONUS ACTION
-
-// Player one will describe an Action and state specifically what they are using. If any, (PHYSICAL ATTACK OR KI-BASED ATTACK) clarify weather the attack is an action or bonus action.
-
-// If attacking with either action or bonus actions during their turn, Player one (ATTACKER) and player (DEFENDER) two will both roll 1d20+DEX mod. If the attacker rolls higher than defender or if the defender critically fails (NAT 1), the hit lands. If the attacker rolls lower than the defender or if the attacker critically fails (NAT 1), that hit is either blocked or dodged: Both roll 1d20+DEX again. If the attacker critically failed, they roll 1d20-5. If the defender critically succeeded, they roll 1d20+5. If the attacker rolled higher than the defender, the attack is blocked negating 80% of the damage (Round down if decimal). However, if the attacker rolled lower than or the same as the defender, the defender dodges, receiving no damage. **If both the attacker and the defender roll the same, clash.
-
-// Landing a CRITICAL ATTACK ROLL with at +5 to your attack damage.
-
-// If the hit lands, the attacker will roll 1d5+STR/WILL mod. If the attacker critically succeeds (NAT 5 OR MAX ROLL), the attacker has a chance to break armor and break/remove a limb. The attacker rolls a d20+STR/WILL  mod. If the target is the defender’s head, roll a d18+STR/WILL  mod. The defender rolls a constitution saving throw. (if blocking, roll d35+CON mod. If not, roll d25+CON mod). If their throw is lower than the attacker’s roll, break/slice off the opponent’s limb. (If it is a blunt attack, then the specified limb is broken/concussed. If it is a slash attack, then the specified limb is sliced off.)
-
-// After the an a player fully end’s their turn, it will now be the person’s turn who was next in order of initiative.
-
-// This pattern continues to go on until one side has no more opposing players/player HP is 0.
-
-// If the battle is not going in a player’s favor, they can attempt to retreat.
-// Both players roll a d20. The roll needed to retreat is equal to the opponent’s roll + their DEX modifier. On a successful roll, the player will escape to a random area on the planet equal. (i.e roll = 356 so area-356) On a failed roll, They’ll lose their full turn and will gain disadvantage on all actions and actions bonus until the end of their next turn.
-
-// If player is knocked out or incapacitated during combat.
-// They must succeed a death d20 save every time it is their turn.
-// Succeeding a death save 2 times (rolling over 8) times with leave you incapacitated. Failing a death save 3 times (Rolling under 8) will kill you. A player or npc can use an action on their turn to SAVE You and cause you to automatically succeed your death save, yet at the same can also target you and  still Attack You, which is a guaranteed attack, in doing so you will have to roll a con save( d20+Con ) if failed (Under 15) gain 1 failed death save.
-
-//     rolls 1d20 = 9 = failed once , on their next turn rolled again 1d20= 3 failed again, on their next turn rolls 1d20=2 dead.
-
-// Battles can be fought with more than 2 players. You’ll have to specify who’s on which team and who’s attacking who.
 
 client.once(Events.ClientReady, c => {
     console.log(`Logged in as ${c.user.tag}`);
@@ -272,6 +248,151 @@ client.once(Events.ClientReady, c => {
     const battleNext = new SlashCommandBuilder()
         .setName('battle-next')
         .setDescription('End your turn and advance to the next combatant')
+
+    const createCharacter = new SlashCommandBuilder()
+        .setName('character-create')
+        .setDescription('Create a new character')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('Character name')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('race')
+                .setDescription('Character race')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'Saiyan', value: 'Saiyan' },
+                    { name: 'Half-Saiyan', value: 'Half-Saiyan' },
+                    { name: 'Earthling', value: 'Earthling' },
+                    { name: 'Frost Demon', value: 'Frost Demon' },
+                    { name: 'Namekian', value: 'Namekian' },
+                    { name: 'Cerealian', value: 'Cerealian' },
+                    { name: 'Konatsian', value: 'Konatsian' },
+                    { name: 'Tuffle', value: 'Tuffle' },
+                    { name: 'Oni', value: 'Oni' },
+                    { name: 'Hera', value: 'Hera' },
+                    { name: 'Tortle', value: 'Tortle' },
+                    { name: 'Alien', value: 'Alien' },
+                    { name: 'Android', value: 'Android' },
+                    { name: 'Bio-Android', value: 'Bio-Android' },
+                    { name: 'Majin', value: 'Majin' }
+                )
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('age')
+                .setDescription('Character age')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('str')
+                .setDescription('Strength stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('dex')
+                .setDescription('Dexterity stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('con')
+                .setDescription('Constitution stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('wil')
+                .setDescription('Willpower stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('spi')
+                .setDescription('Spirit stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('int')
+                .setDescription('Intelligence stat')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('maxhp')
+                .setDescription('Maximum HP')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('maxki')
+                .setDescription('Maximum Ki')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('background')
+                .setDescription('Character background/goal (optional)')
+                .setRequired(false)
+        )
+
+    const viewCharacter = new SlashCommandBuilder()
+        .setName('character-view')
+        .setDescription('View your character profile')
+
+    const listCharacters = new SlashCommandBuilder()
+        .setName('character-list')
+        .setDescription('List all your characters')
+
+    const updateCharacterHP = new SlashCommandBuilder()
+        .setName('character-hp')
+        .setDescription('Modify character HP')
+        .addIntegerOption(option =>
+            option
+                .setName('amount')
+                .setDescription('Amount to add/subtract (use negative for damage)')
+                .setRequired(true)
+        )
+
+    const updateCharacterKi = new SlashCommandBuilder()
+        .setName('character-ki')
+        .setDescription('Modify character Ki')
+        .addIntegerOption(option =>
+            option
+                .setName('amount')
+                .setDescription('Amount to add/subtract')
+                .setRequired(true)
+        )
+
+    const characterInventory = new SlashCommandBuilder()
+        .setName('character-inventory')
+        .setDescription('View character inventory')
+
+    const characterAddItem = new SlashCommandBuilder()
+        .setName('character-additem')
+        .setDescription('Add item to inventory')
+        .addStringOption(option =>
+            option
+                .setName('item')
+                .setDescription('Item name')
+                .setRequired(true)
+        )
+
+    const characterRaces = new SlashCommandBuilder()
+        .setName('races')
+        .setDescription('View available races and their abilities')
+        .addStringOption(option =>
+            option
+                .setName('race')
+                .setDescription('Specific race to view')
+                .setRequired(false)
+        )
         
     client.application.commands.create(calculatePowerLevel);
     client.application.commands.create(fish);
@@ -287,6 +408,14 @@ client.once(Events.ClientReady, c => {
     client.application.commands.create(battleEnd);
     client.application.commands.create(battleSave);
     client.application.commands.create(battleNext);
+    client.application.commands.create(createCharacter);
+    client.application.commands.create(viewCharacter);
+    client.application.commands.create(listCharacters);
+    client.application.commands.create(updateCharacterHP);
+    client.application.commands.create(updateCharacterKi);
+    client.application.commands.create(characterInventory);
+    client.application.commands.create(characterAddItem);
+    client.application.commands.create(characterRaces);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -887,6 +1016,226 @@ client.on(Events.InteractionCreate, async interaction => {
         if (nextTurn.turnDisadvantage) {
             message += `\n⚠️ **DISADVANTAGE** on all rolls this turn!`;
         }
+
+        interaction.reply(message);
+    }
+
+    // Character Management Commands
+    if (interaction.commandName === 'character-create') {
+        const characterData = {
+            name: interaction.options.getString('name'),
+            race: interaction.options.getString('race'),
+            age: interaction.options.getInteger('age'),
+            stats: {
+                str: interaction.options.getInteger('str'),
+                dex: interaction.options.getInteger('dex'),
+                con: interaction.options.getInteger('con'),
+                wil: interaction.options.getInteger('wil'),
+                spi: interaction.options.getInteger('spi'),
+                int: interaction.options.getInteger('int')
+            },
+            maxHP: interaction.options.getInteger('maxhp'),
+            maxKi: interaction.options.getInteger('maxki'),
+            background: interaction.options.getString('background') || 'None provided',
+            mutation: 'None'
+        };
+
+        // Calculate power level
+        characterData.powerLevel = characterManager.calculatePowerLevel({
+            ...characterData.stats,
+            maxHP: characterData.maxHP,
+            maxKi: characterData.maxKi
+        });
+
+        const character = characterManager.createCharacter(interaction.user.id, characterData);
+        const raceInfo = races[character.race];
+
+        let message = `✨ **Character Created!** ✨\n\n`;
+        message += `**${character.name}** - ${character.race} (Age ${character.age})\n`;
+        message += `**Power Level:** ${character.powerLevel}\n\n`;
+        message += `**Stats:**\n`;
+        message += `STR: ${character.stats.str} | DEX: ${character.stats.dex} | CON: ${character.stats.con}\n`;
+        message += `WIL: ${character.stats.wil} | SPI: ${character.stats.spi} | INT: ${character.stats.int}\n`;
+        message += `HP: ${character.currentHP}/${character.maxHP} | Ki: ${character.currentKi}/${character.maxKi}\n\n`;
+        
+        if (raceInfo) {
+            message += `**Racial Abilities:**\n`;
+            raceInfo.abilities.forEach(ability => {
+                message += `• ${ability}\n`;
+            });
+        }
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-view') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have any characters! Use `/character-create` to make one.');
+        }
+
+        let message = `## ${character.name}\n`;
+        message += `**Race:** ${character.race} | **Age:** ${character.age} | **Level:** ${character.level}\n`;
+        message += `**Power Level:** ${character.powerLevel}\n\n`;
+        
+        message += `**Stats:**\n`;
+        message += `STR: ${character.stats.str} | DEX: ${character.stats.dex} | CON: ${character.stats.con}\n`;
+        message += `WIL: ${character.stats.wil} | SPI: ${character.stats.spi} | INT: ${character.stats.int}\n\n`;
+        
+        message += `**Vitals:**\n`;
+        message += `HP: ${character.currentHP}/${character.maxHP}\n`;
+        message += `Ki: ${character.currentKi}/${character.maxKi}\n`;
+        message += `Fatigue: ${character.fatigue}%\n\n`;
+
+        if (character.statusEffects && character.statusEffects.length > 0) {
+            message += `**Status Effects:**\n`;
+            character.statusEffects.forEach(effect => {
+                message += `• ${effect.name}\n`;
+            });
+            message += `\n`;
+        }
+
+        if (character.mutations && character.mutations !== 'None') {
+            message += `**Mutation:** ${character.mutations}\n\n`;
+        }
+
+        message += `**Background:** ${character.background}\n`;
+        message += `**Experience:** ${character.experience} XP`;
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-list') {
+        const characters = characterManager.getAllCharacters(interaction.user.id);
+
+        if (!characters || characters.length === 0) {
+            return interaction.reply('You don\'t have any characters! Use `/character-create` to make one.');
+        }
+
+        let message = `**Your Characters:**\n\n`;
+        characters.forEach((char, index) => {
+            message += `${index + 1}. **${char.name}** - ${char.race} (PL: ${char.powerLevel})\n`;
+            message += `   HP: ${char.currentHP}/${char.maxHP} | Ki: ${char.currentKi}/${char.maxKi}\n`;
+        });
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-hp') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        const amount = interaction.options.getInteger('amount');
+        const updated = characterManager.modifyHP(interaction.user.id, character.id, amount);
+
+        const action = amount > 0 ? 'gained' : 'lost';
+        const change = Math.abs(amount);
+        
+        let message = `${interaction.user.displayName}'s **${character.name}** ${action} **${change} HP**!\n`;
+        message += `Current HP: ${updated.currentHP}/${updated.maxHP}`;
+
+        if (updated.currentHP === 0) {
+            message += `\n💀 **${character.name} is knocked out!**`;
+        }
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-ki') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        const amount = interaction.options.getInteger('amount');
+        const updated = characterManager.modifyKi(interaction.user.id, character.id, amount);
+
+        const action = amount > 0 ? 'gained' : 'used';
+        const change = Math.abs(amount);
+        
+        let message = `${interaction.user.displayName}'s **${character.name}** ${action} **${change} Ki**!\n`;
+        message += `Current Ki: ${updated.currentKi}/${updated.maxKi}`;
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-inventory') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        let message = `**${character.name}'s Inventory:**\n\n`;
+
+        if (!character.inventory || character.inventory.length === 0) {
+            message += `Empty! Find items using \`/search\` or \`/fish\`.`;
+        } else {
+            character.inventory.forEach((item, index) => {
+                const itemName = typeof item === 'string' ? item : item.name;
+                message += `${index + 1}. ${itemName}\n`;
+            });
+        }
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-additem') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        const itemName = interaction.options.getString('item');
+        characterManager.addItem(interaction.user.id, character.id, itemName);
+
+        interaction.reply(`Added **${itemName}** to ${character.name}'s inventory!`);
+    }
+
+    if (interaction.commandName === 'races') {
+        const specificRace = interaction.options.getString('race');
+
+        if (specificRace) {
+            const raceInfo = races[specificRace];
+            if (!raceInfo) {
+                return interaction.reply('Race not found!');
+            }
+
+            let message = `## ${raceInfo.name}\n\n`;
+            message += `**Description:** ${raceInfo.description}\n\n`;
+            message += `**Type:** ${raceInfo.type === 'birth' ? 'Obtainable Through Birth' : 'Obtainable Through Methods'}\n\n`;
+            message += `**Racial Abilities:**\n`;
+            raceInfo.abilities.forEach(ability => {
+                message += `• ${ability}\n`;
+            });
+
+            if (raceInfo.bonuses) {
+                message += `\n**Bonuses:**\n`;
+                Object.entries(raceInfo.bonuses).forEach(([key, value]) => {
+                    message += `• +${value} to ${key}\n`;
+                });
+            }
+
+            return interaction.reply(message);
+        }
+
+        // List all races
+        let message = `**Available Races:**\n\n`;
+        message += `**Birth Races:**\n`;
+        Object.values(races).filter(r => r.type === 'birth').forEach(race => {
+            message += `• **${race.name}**\n`;
+        });
+        message += `\n**Method Races:**\n`;
+        Object.values(races).filter(r => r.type === 'method').forEach(race => {
+            message += `• **${race.name}**\n`;
+        });
+        message += `\nUse \`/races race:<name>\` to view details about a specific race.`;
 
         interaction.reply(message);
     }
