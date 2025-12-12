@@ -1,15 +1,146 @@
-const {Client, Events, GatewayIntentBits, SlashCommandBuilder} = require("discord.js");
+const {Client, Events, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder} = require("discord.js");
 const {token} = require("./.gitignore/config.json");
 const {BattleManager} = require("./battleManager");
 const {CharacterManager} = require("./characterManager");
 const {races} = require("./raceData");
+const {getAvailableMutations, formatMutation} = require("./mutations");
 
 const client = new Client({intents: [GatewayIntentBits.Guilds]});
 const battleManager = new BattleManager();
 const characterManager = new CharacterManager();
 
+// Store pending character creation data for rerolls
+const pendingCharacters = new Map();
+
+// Track users currently in character creation to prevent bypass
+const activeCreations = new Map();
+
+// Calculate stat modifier: +1 per 20 up to 200, +1 per 200 up to 2000, +1 per 2000 up to 20000, etc.
+function calculateModifier(stat) {
+    let modifier = 0;
+    let remaining = stat;
+    
+    // Tier system: each tier multiplies the threshold by 10
+    // Tier 1: 0-200 (+1 per 20) = max +10
+    // Tier 2: 201-2000 (+1 per 200) = max +9
+    // Tier 3: 2001-20000 (+1 per 2000) = max +9
+    // Tier 4: 20001-200000 (+1 per 20000) = max +9
+    // And so on...
+    
+    let threshold = 20;
+    let tierCap = 200;
+    
+    while (remaining > 0) {
+        if (remaining <= tierCap) {
+            // Within current tier
+            modifier += Math.floor(remaining / threshold);
+            remaining = 0;
+        } else {
+            // Complete current tier and move to next
+            modifier += Math.floor(tierCap / threshold);
+            remaining -= tierCap;
+            
+            // Next tier: multiply thresholds by 10
+            threshold *= 10;
+            tierCap *= 10;
+        }
+    }
+    
+    return modifier;
+}
+
+// Calculate all modifiers for a character
+function calculateAllModifiers(stats) {
+    return {
+        str: calculateModifier(stats.str),
+        dex: calculateModifier(stats.dex),
+        con: calculateModifier(stats.con),
+        wil: calculateModifier(stats.wil),
+        spi: calculateModifier(stats.spi),
+        int: calculateModifier(stats.int)
+    };
+}
+
 function getRandomInt(max){
     return Math.floor((Math.random() * max)+1);
+}
+
+// Roll 5d20 for a stat (STR, DEX, CON, WIL, SPI) - can be rerolled once
+function roll5d20() {
+    let total = 0;
+    for (let i = 0; i < 5; i++) {
+        total += getRandomInt(20);
+    }
+    return total;
+}
+
+// Roll intelligence based on race
+function rollIntelligence(race) {
+    if (race === 'Earthling') {
+        return getRandomInt(10) + 1; // 1d10+1
+    } else if (race === 'Tuffle') {
+        return getRandomInt(12) + 3; // 1d12+3
+    } else {
+        return getRandomInt(10); // 1d10 (default)
+    }
+}
+
+// Roll for mutation eligibility (1d20, need 19+ to get a mutation)
+function rollMutation() {
+    return getRandomInt(20);
+}
+
+// Roll boosted stats using mutation roll (1d100+20 per stat)
+function rollBoostedStatForRace(race) {
+    // If Frost Demon, use their special bonus
+    if (race === 'Frost Demon') {
+        return getRandomInt(100) + 30; // 1d100+30 for Frost Demons
+    }
+    
+    // For other races: 1d100+20
+    return getRandomInt(100) + 20;
+}
+
+// Get race-specific stat rolling configuration
+function getRaceStatRolls(race) {
+    const raceRolls = {
+        'Saiyan': { diceSize: 20, bonus: 0 },
+        'Half-Saiyan': { diceSize: 20, bonus: 0 },
+        'Earthling': { diceSize: 20, bonus: 0 },
+        'Frost Demon': { diceSize: 80, bonus: 10 },
+        'Namekian': { diceSize: 20, bonus: 0 },
+        'Cerealian': { diceSize: 20, bonus: 0 },
+        'Konatsian': { diceSize: 20, bonus: 0 },
+        'Tuffle': { diceSize: 20, bonus: 0 },
+        'Oni': { diceSize: 20, bonus: 0 },
+        'Hera': { diceSize: 20, bonus: 0 },
+        'Tortle': { diceSize: 20, bonus: 0 },
+        'Alien': { diceSize: 20, bonus: 0 },
+        'Android': { diceSize: 20, bonus: 0 },
+        'Bio-Android': { diceSize: 20, bonus: 0 },
+        'Majin': { diceSize: 20, bonus: 0 }
+    };
+    
+    return raceRolls[race] || { diceSize: 20, bonus: 0 };
+}
+
+// Roll one stat based on race-specific dice (1d20 for most, 1d80+10 for Frost Demon)
+function rollStatForRace(race) {
+    const config = getRaceStatRolls(race);
+    return getRandomInt(config.diceSize) + config.bonus;
+}
+
+// Calculate HP based on CON
+function calculateHP(con) {
+    const conMod = Math.floor((con - 10) / 2);
+    return 10 + (conMod * 2);
+}
+
+// Calculate Ki based on WIL and SPI
+function calculateKi(wil, spi) {
+    const wilMod = Math.floor((wil - 10) / 2);
+    const spiMod = Math.floor((spi - 10) / 2);
+    return 10 + wilMod + spiMod;
 }
 
 client.once(Events.ClientReady, c => {
@@ -31,13 +162,7 @@ client.once(Events.ClientReady, c => {
 
     const search = new SlashCommandBuilder()
         .setName('search')
-        .setDescription('Search the area')
-        .addBooleanOption(option =>
-            option
-                .setName('hera')
-                .setDescription('Is the character Hera')
-                .setRequired(true)
-        )
+        .setDescription('Search the area for items, missions, and merchants')
     
     const calculatePowerLevel = new SlashCommandBuilder()
         .setName('calculate')
@@ -251,7 +376,7 @@ client.once(Events.ClientReady, c => {
 
     const createCharacter = new SlashCommandBuilder()
         .setName('character-create')
-        .setDescription('Create a new character')
+        .setDescription('Create a new character (stats auto-rolled with 5d20 drop lowest)')
         .addStringOption(option =>
             option
                 .setName('name')
@@ -287,54 +412,6 @@ client.once(Events.ClientReady, c => {
                 .setDescription('Character age')
                 .setRequired(true)
         )
-        .addIntegerOption(option =>
-            option
-                .setName('str')
-                .setDescription('Strength stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('dex')
-                .setDescription('Dexterity stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('con')
-                .setDescription('Constitution stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('wil')
-                .setDescription('Willpower stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('spi')
-                .setDescription('Spirit stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('int')
-                .setDescription('Intelligence stat')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('maxhp')
-                .setDescription('Maximum HP')
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName('maxki')
-                .setDescription('Maximum Ki')
-                .setRequired(true)
-        )
         .addStringOption(option =>
             option
                 .setName('background')
@@ -345,10 +422,6 @@ client.once(Events.ClientReady, c => {
     const viewCharacter = new SlashCommandBuilder()
         .setName('character-view')
         .setDescription('View your character profile')
-
-    const listCharacters = new SlashCommandBuilder()
-        .setName('character-list')
-        .setDescription('List all your characters')
 
     const updateCharacterHP = new SlashCommandBuilder()
         .setName('character-hp')
@@ -393,6 +466,36 @@ client.once(Events.ClientReady, c => {
                 .setDescription('Specific race to view')
                 .setRequired(false)
         )
+
+    const characterSetImage = new SlashCommandBuilder()
+        .setName('character-setimage')
+        .setDescription('Set an image for your character')
+        .addStringOption(option =>
+            option
+                .setName('imageurl')
+                .setDescription('Direct image URL (e.g., from Imgur, Discord CDN)')
+                .setRequired(true)
+        )
+
+    const useItem = new SlashCommandBuilder()
+        .setName('use-item')
+        .setDescription('Use a consumable item from your inventory')
+        .addIntegerOption(option =>
+            option
+                .setName('slot')
+                .setDescription('Inventory slot number (use /character-inventory to see slots)')
+                .setRequired(true)
+        )
+
+    const wipeCharacter = new SlashCommandBuilder()
+        .setName('character-wipe')
+        .setDescription('⚠️ PERMANENTLY delete your character data')
+        .addStringOption(option =>
+            option
+                .setName('confirmation')
+                .setDescription('Type "DELETE" to confirm (this cannot be undone!)')
+                .setRequired(true)
+        )
         
     client.application.commands.create(calculatePowerLevel);
     client.application.commands.create(fish);
@@ -410,42 +513,436 @@ client.once(Events.ClientReady, c => {
     client.application.commands.create(battleNext);
     client.application.commands.create(createCharacter);
     client.application.commands.create(viewCharacter);
-    client.application.commands.create(listCharacters);
     client.application.commands.create(updateCharacterHP);
     client.application.commands.create(updateCharacterKi);
     client.application.commands.create(characterInventory);
     client.application.commands.create(characterAddItem);
     client.application.commands.create(characterRaces);
+    client.application.commands.create(characterSetImage);
+    client.application.commands.create(useItem);
+    client.application.commands.create(wipeCharacter);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+    // Handle button interactions first
+    if (interaction.isButton()) {
+        if (interaction.customId === 'reroll_stats') {
+            await interaction.deferUpdate();
+            
+            const pending = pendingCharacters.get(interaction.user.id);
+
+            if (!pending) {
+                return interaction.followUp({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+
+            if (pending.hasRerolled) {
+                return interaction.followUp({ content: '❌ You have already used your one reroll!', ephemeral: true });
+            }
+
+            // Reroll stats
+            const selectedRace = pending.data.race;
+            const raceRollConfig = getRaceStatRolls(selectedRace);
+            
+            const newStats = {
+                str: rollStatForRace(selectedRace),
+                dex: rollStatForRace(selectedRace),
+                con: rollStatForRace(selectedRace),
+                wil: rollStatForRace(selectedRace),
+                spi: rollStatForRace(selectedRace),
+                int: rollIntelligence(selectedRace)
+            };
+
+            // Recalculate HP and Ki
+            const maxHP = calculateHP(newStats.con);
+            const maxKi = calculateKi(newStats.wil, newStats.spi);
+
+            // Recalculate modifiers
+            const newModifiers = calculateAllModifiers(newStats);
+
+            // Update character data
+            pending.data.stats = newStats;
+            pending.data.modifiers = newModifiers;
+            pending.data.maxHP = maxHP;
+            pending.data.maxKi = maxKi;
+            pending.data.powerLevel = characterManager.calculatePowerLevel({
+                ...newStats,
+                maxHP: maxHP,
+                maxKi: maxKi
+            });
+            pending.hasRerolled = true;
+
+            const raceInfo = races[selectedRace];
+
+            // Build stat roll description
+            let statRollDesc = `1d${raceRollConfig.diceSize}`;
+            if (raceRollConfig.bonus > 0) statRollDesc += `+${raceRollConfig.bonus}`;
+            statRollDesc += ' per stat';
+            
+            let intRollDesc = '1d10';
+            if (selectedRace === 'Earthling') intRollDesc = '1d10+1';
+            else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
+
+            let message = `🎲 **Stats Rerolled!** ✨\n\n`;
+            message += `**${pending.data.name}** - ${pending.data.race} (Age ${pending.data.age})\n`;
+            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
+            message += `STR: ${newStats.str} (${newModifiers.str >= 0 ? '+' : ''}${newModifiers.str}) | DEX: ${newStats.dex} (${newModifiers.dex >= 0 ? '+' : ''}${newModifiers.dex}) | CON: ${newStats.con} (${newModifiers.con >= 0 ? '+' : ''}${newModifiers.con})\n`;
+            message += `WIL: ${newStats.wil} (${newModifiers.wil >= 0 ? '+' : ''}${newModifiers.wil}) | SPI: ${newStats.spi} (${newModifiers.spi >= 0 ? '+' : ''}${newModifiers.spi}) | INT: ${newStats.int} (${newModifiers.int >= 0 ? '+' : ''}${newModifiers.int})\n`;
+            message += `HP: ${maxHP} | Ki: ${maxKi}\n\n`;
+            
+            if (raceInfo && raceInfo.passives && raceInfo.passives.length > 0) {
+                message += `**Racial Passives:**\n`;
+                raceInfo.passives.forEach(passive => {
+                    message += `• **${passive.name}**: ${passive.description}\n`;
+                });
+                message += `\n`;
+            }
+
+            message += `⚠️ This is your final roll! Click **Confirm** to create the character.\n`;
+            message += `🧬 You can still roll for mutation OR boost stats (5d100+20)!`;
+
+            // Create confirm button and mutation button
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('roll_mutation')
+                        .setLabel('🧬 Roll Mutation (1d20)')
+                        .setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('confirm_character')
+                        .setLabel('✅ Confirm Character')
+                        .setStyle(ButtonStyle.Success)
+                );
+
+            return await interaction.editReply({ content: message, components: [row] });
+        }
+
+        if (interaction.customId === 'roll_mutation') {
+            const pending = pendingCharacters.get(interaction.user.id);
+
+            if (!pending) {
+                return interaction.reply({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+
+            if (pending.mutationRolled || pending.usedMutationForStats || pending.chosenPath) {
+                return interaction.reply({ content: '❌ You have already used your mutation roll!', ephemeral: true });
+            }
+
+            // Roll for mutation
+            const mutationRoll = rollMutation();
+            pending.mutationRolled = true;
+            pending.mutationRoll = mutationRoll;
+            pending.chosenPath = 'mutation'; // Lock in mutation path
+
+            let mutationMessage = `\n\n🧬 **Mutation Roll:** ${mutationRoll}/20\n\n`;
+
+            if (mutationRoll >= 19) {
+                mutationMessage += `✨ **MUTATION ELIGIBLE!** ✨\n`;
+                mutationMessage += `You rolled ${mutationRoll}! You can choose a mutation from the Dragon Ball universe or create your own.\n`;
+                mutationMessage += `⚠️ **IMPORTANT:** Your custom mutation must be approved by Chilly (@sauce9011).\n\n`;
+                
+                // Show race-specific mutations
+                const availableMutations = getAvailableMutations(pending.data.race);
+                if (availableMutations.length > 0) {
+                    mutationMessage += `**Available Mutations for ${pending.data.race}:**\n`;
+                    availableMutations.forEach(mut => {
+                        mutationMessage += `• **${mut.name}** - ${mut.description.substring(0, 100)}...\n`;
+                    });
+                    mutationMessage += `\n`;
+                }
+                
+                mutationMessage += `**To apply your mutation, contact Chilly with your character name and desired mutation!**`;
+            } else {
+                mutationMessage += `❌ No mutation this time. (Need 19+ to qualify)\n`;
+                mutationMessage += `But you can use this roll to **BOOST YOUR STATS** instead!\n`;
+                mutationMessage += `Click the button below to reroll all stats with **5d100+20** (giving up mutation eligibility).`;
+            }
+
+            // Get current message content and append mutation result
+            const selectedRace = pending.data.race;
+            const raceRollConfig = getRaceStatRolls(selectedRace);
+            const raceInfo = races[selectedRace];
+
+            let statRollDesc = `1d${raceRollConfig.diceSize}`;
+            if (raceRollConfig.bonus > 0) statRollDesc += `+${raceRollConfig.bonus}`;
+            statRollDesc += ' per stat';
+            
+            let intRollDesc = '1d10';
+            if (selectedRace === 'Earthling') intRollDesc = '1d10+1';
+            else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
+
+            let message = pending.hasRerolled ? `🎲 **Stats Rerolled!** ✨\n\n` : `✨ **Character Preview!** ✨\n\n`;
+            message += `**${pending.data.name}** - ${pending.data.race} (Age ${pending.data.age})\n`;
+            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
+            message += `STR: ${pending.data.stats.str} (${pending.data.modifiers.str >= 0 ? '+' : ''}${pending.data.modifiers.str}) | DEX: ${pending.data.stats.dex} (${pending.data.modifiers.dex >= 0 ? '+' : ''}${pending.data.modifiers.dex}) | CON: ${pending.data.stats.con} (${pending.data.modifiers.con >= 0 ? '+' : ''}${pending.data.modifiers.con})\n`;
+            message += `WIL: ${pending.data.stats.wil} (${pending.data.modifiers.wil >= 0 ? '+' : ''}${pending.data.modifiers.wil}) | SPI: ${pending.data.stats.spi} (${pending.data.modifiers.spi >= 0 ? '+' : ''}${pending.data.modifiers.spi}) | INT: ${pending.data.stats.int} (${pending.data.modifiers.int >= 0 ? '+' : ''}${pending.data.modifiers.int})\n`;
+            message += `HP: ${pending.data.maxHP} | Ki: ${pending.data.maxKi}\n\n`;
+            
+            if (raceInfo && raceInfo.passives && raceInfo.passives.length > 0) {
+                message += `**Racial Passives:**\n`;
+                raceInfo.passives.forEach(passive => {
+                    message += `• **${passive.name}**: ${passive.description}\n`;
+                });
+                message += `\n`;
+            }
+
+            message += mutationMessage;
+
+            // Create buttons based on mutation roll result
+            const row = new ActionRowBuilder();
+            
+            if (mutationRoll < 19) {
+                row.addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('boost_stats')
+                        .setLabel('💪 Boost Stats (1d100+20)')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('confirm_character')
+                        .setLabel('✅ Confirm Character')
+                        .setStyle(ButtonStyle.Success)
+                );
+            } else {
+                row.addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('confirm_character')
+                        .setLabel('✅ Confirm Character')
+                        .setStyle(ButtonStyle.Success)
+                );
+            }
+
+            return await interaction.update({ content: message, components: [row] });
+        }
+
+        if (interaction.customId === 'boost_stats') {
+            const pending = pendingCharacters.get(interaction.user.id);
+
+            if (!pending) {
+                return interaction.reply({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+
+            if (pending.usedMutationForStats || pending.chosenPath === 'mutation') {
+                return interaction.reply({ content: '❌ You already chose the mutation path! You cannot boost stats.', ephemeral: true });
+            }
+            
+            if (pending.chosenPath === 'boost') {
+                return interaction.reply({ content: '❌ You have already boosted your stats!', ephemeral: true });
+            }
+
+            // Reroll stats with boosted dice (1d100+20)
+            const selectedRace = pending.data.race;
+            
+            const boostedStats = {
+                str: rollBoostedStatForRace(selectedRace),
+                dex: rollBoostedStatForRace(selectedRace),
+                con: rollBoostedStatForRace(selectedRace),
+                wil: rollBoostedStatForRace(selectedRace),
+                spi: rollBoostedStatForRace(selectedRace),
+                int: rollIntelligence(selectedRace)
+            };
+
+            // Recalculate HP and Ki
+            const maxHP = calculateHP(boostedStats.con);
+            const maxKi = calculateKi(boostedStats.wil, boostedStats.spi);
+
+            // Recalculate modifiers
+            const boostedModifiers = calculateAllModifiers(boostedStats);
+
+            // Update character data
+            pending.data.stats = boostedStats;
+            pending.data.modifiers = boostedModifiers;
+            pending.data.maxHP = maxHP;
+            pending.data.maxKi = maxKi;
+            pending.data.powerLevel = characterManager.calculatePowerLevel({
+                ...boostedStats,
+                maxHP: maxHP,
+                maxKi: maxKi
+            });
+            pending.data.mutation = 'None'; // No mutation when boosting stats
+            pending.usedMutationForStats = true;
+            pending.chosenPath = 'boost'; // Lock in boost path
+
+            const raceInfo = races[selectedRace];
+
+            let intRollDesc = '1d10';
+            if (selectedRace === 'Earthling') intRollDesc = '1d10+1';
+            else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
+
+            let message = `💪 **STATS BOOSTED!** ✨\n\n`;
+            message += `You used your mutation roll to boost your stats!\n\n`;
+            message += `**${pending.data.name}** - ${pending.data.race} (Age ${pending.data.age})\n`;
+            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**Stats (1d100+20 per stat for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
+            message += `STR: ${boostedStats.str} (${boostedModifiers.str >= 0 ? '+' : ''}${boostedModifiers.str}) | DEX: ${boostedStats.dex} (${boostedModifiers.dex >= 0 ? '+' : ''}${boostedModifiers.dex}) | CON: ${boostedStats.con} (${boostedModifiers.con >= 0 ? '+' : ''}${boostedModifiers.con})\n`;
+            message += `WIL: ${boostedStats.wil} (${boostedModifiers.wil >= 0 ? '+' : ''}${boostedModifiers.wil}) | SPI: ${boostedStats.spi} (${boostedModifiers.spi >= 0 ? '+' : ''}${boostedModifiers.spi}) | INT: ${boostedStats.int} (${boostedModifiers.int >= 0 ? '+' : ''}${boostedModifiers.int})\n`;
+            message += `HP: ${maxHP} | Ki: ${maxKi}\n\n`;
+            
+            if (raceInfo && raceInfo.passives && raceInfo.passives.length > 0) {
+                message += `**Racial Passives:**\n`;
+                raceInfo.passives.forEach(passive => {
+                    message += `• **${passive.name}**: ${passive.description}\n`;
+                });
+                message += `\n`;
+            }
+
+            message += `⚠️ You gave up mutation eligibility for these boosted stats.\n`;
+            message += `\n✅ Click **Confirm** to create this character.`;
+
+            // Create confirm button only
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('confirm_character')
+                        .setLabel('✅ Confirm Character')
+                        .setStyle(ButtonStyle.Success)
+                );
+
+            return await interaction.update({ content: message, components: [row] });
+        }
+
+        if (interaction.customId === 'confirm_character') {
+            const pending = pendingCharacters.get(interaction.user.id);
+
+            if (!pending) {
+                return interaction.reply({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+
+            // Add mutation info if rolled
+            if (pending.mutationRolled && pending.mutationRoll >= 19) {
+                pending.data.mutation = 'Pending Approval - Contact @sauce9011';
+            }
+
+            // Create the character
+            const character = characterManager.createCharacter(interaction.user.id, pending.data);
+
+            // Clean up pending data and active creation status
+            pendingCharacters.delete(interaction.user.id);
+            activeCreations.delete(interaction.user.id);
+
+            let message = `✨ **Character Created!** ✨\n\n`;
+            message += `**${character.name}** has been saved to your profile!\n`;
+            message += `**Power Level:** ${character.powerLevel}\n\n`;
+            
+            if (pending.mutationRolled) {
+                message += `🧬 **Mutation Roll:** ${pending.mutationRoll}/20\n`;
+                if (pending.mutationRoll >= 19) {
+                    message += `✅ You are **eligible for a mutation**! Contact Chilly to discuss your mutation.\n\n`;
+                } else {
+                    message += `❌ Did not qualify for mutation.\n\n`;
+                }
+            }
+            
+            message += `Use \`/character-view\` to see your full character sheet.`;
+
+            return await interaction.update({ content: message, components: [] });
+        }
+
+        return;
+    }
+    
     if(!interaction.isChatInputCommand()) return;
+    
     if (interaction.commandName === "ping"){
         interaction.reply("Pong!");
     }
     if (interaction.commandName === "fish"){
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You need a character to go fishing! Use `/character-create` to make one.');
+        }
+
+        // Check if character has a fishing rod
+        const hasFishingRod = character.inventory && character.inventory.some(item => {
+            const itemName = typeof item === 'string' ? item : item.name;
+            return itemName.toLowerCase().includes('fishing rod');
+        });
+
+        if (!hasFishingRod) {
+            return interaction.reply('❌ You need a **Fishing Rod** to fish! Find one using `/search`.');
+        }
+
         const chance = getRandomInt(20);
+        let fishItem = null;
         let text = "";
 
         if (chance === 1) {
             text = `${interaction.user.displayName}'s fishing rod lost 1 durability because they suck at fishing!`;
+            // TODO: Implement durability system later
         } else if (chance >= 2 && chance < 5) {
-            text = `${interaction.user.displayName} caught a small fish!\n+2 HP and +2 KI when cooked.`;
+            fishItem = { 
+                name: 'Small Fish', 
+                type: 'consumable',
+                hp: 2, 
+                ki: 2, 
+                fatigue: 0 
+            };
+            text = `🎣 ${interaction.user.displayName} caught a **Small Fish**!\nAdded to inventory. Use it to restore **+2 HP** and **+2 Ki** when cooked.`;
         } else if (chance >= 5 && chance < 10) {
-            text = `${interaction.user.displayName} caught a medium fish!\n+4 HP and +4 KI when cooked.`;
+            fishItem = { 
+                name: 'Medium Fish', 
+                type: 'consumable',
+                hp: 4, 
+                ki: 4, 
+                fatigue: 0 
+            };
+            text = `🎣 ${interaction.user.displayName} caught a **Medium Fish**!\nAdded to inventory. Use it to restore **+4 HP** and **+4 Ki** when cooked.`;
         } else if (chance >= 10 && chance < 15) {
-            text = `${interaction.user.displayName} caught a large fish!\n+6 HP, +6 KI, and -2% Fatigue when cooked.`;
+            fishItem = { 
+                name: 'Large Fish', 
+                type: 'consumable',
+                hp: 6, 
+                ki: 6, 
+                fatigue: -2 
+            };
+            text = `🎣 ${interaction.user.displayName} caught a **Large Fish**!\nAdded to inventory. Use it to restore **+6 HP**, **+6 Ki**, and **-2% Fatigue** when cooked.`;
         } else if (chance >= 15) {
-            text = `${interaction.user.displayName} caught a huge fish!\n+9 HP, +9 KI, and -4% Fatigue when cooked.`;
-        } 
+            fishItem = { 
+                name: 'Huge Fish', 
+                type: 'consumable',
+                hp: 9, 
+                ki: 9, 
+                fatigue: -4 
+            };
+            text = `🎣 ${interaction.user.displayName} caught a **Huge Fish**!\nAdded to inventory. Use it to restore **+9 HP**, **+9 Ki**, and **-4% Fatigue** when cooked.`;
+        }
+
+        // Add fish to inventory
+        if (fishItem) {
+            characterManager.addItem(interaction.user.id, character.id, fishItem);
+        }
 
         interaction.reply(text);
     }
     if (interaction.commandName === "rest"){
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You need a character to rest! Use `/character-create` to make one.');
+        }
+
         const restHPNum = getRandomInt(25);
         const restKiNum = getRandomInt(10);
         const restFatNum = getRandomInt(15);
-        let text = `${interaction.user.displayName} regained:\n`+restHPNum+" HP\n"+restKiNum+" Ki\n"+restFatNum+"% Fatigue";
+
+        // Apply rest effects
+        const oldHP = character.currentHP;
+        const oldKi = character.currentKi;
+        const oldFatigue = character.fatigue || 0;
+
+        characterManager.modifyHP(interaction.user.id, character.id, restHPNum);
+        characterManager.modifyKi(interaction.user.id, character.id, restKiNum);
+        characterManager.modifyFatigue(interaction.user.id, character.id, -restFatNum);
+
+        const newHP = Math.min(oldHP + restHPNum, character.maxHP);
+        const newKi = Math.min(oldKi + restKiNum, character.maxKi);
+        const newFatigue = Math.max(0, oldFatigue - restFatNum);
+
+        let text = `💤 **${character.name}** took a rest and recovered:\n\n`;
+        text += `❤️ HP: ${oldHP} → ${newHP} (+${restHPNum})\n`;
+        text += `💙 Ki: ${oldKi} → ${newKi} (+${restKiNum})\n`;
+        text += `😓 Fatigue: ${oldFatigue}% → ${newFatigue}% (-${restFatNum}%)`;
 
         interaction.reply(text);
     }
@@ -470,108 +967,134 @@ client.on(Events.InteractionCreate, async interaction => {
         interaction.reply(text);
     }
     if (interaction.commandName == "search"){
-        const items = ["Small Wallet (1000 zeni)","5x Resources","Recovery Capsule","Shovel","Hetap™","Vita Drink","Sage Water","Ki Recovery Capsule","Welding Torch","[Broken] Motherboard","Component","2x Copper Wires","[Destroyed][Unrepairable]Engine Conjunction","Mixed Capsule","Hunting Traps","Fishing Rod","Fishing Tackle","Healer's Kit","Skinning Knife","Senzu Bean"];
-        const heraBuff = interaction.options.getBoolean('hera');
-        const debug = interaction.options.getBoolean('debug');
-        let rawNumber = getRandomInt(100);
-        let searchNumber = rawNumber;
+        const character = characterManager.getCharacter(interaction.user.id);
 
-        if (heraBuff) {
-            searchNumber += 10;
+        if (!character) {
+            return interaction.reply('You need a character to search! Use `/character-create` to make one.');
         }
+
+        const items = ["Small Wallet (1000 zeni)","5x Resources","Recovery Capsule","Shovel","Hetap™","Vita Drink","Sage Water","Ki Recovery Capsule","Welding Torch","[Broken] Motherboard","Component","2x Copper Wires","[Destroyed][Unrepairable]Engine Conjunction","Mixed Capsule","Hunting Traps","Fishing Rod","Fishing Tackle","Healer's Kit","Skinning Knife","Senzu Bean"];
+        
+        // Check if character has Hera race bonus
+        const raceInfo = races[character.race];
+        const hasHeraBonus = raceInfo && raceInfo.bonuses && raceInfo.bonuses.search ? raceInfo.bonuses.search : 0;
+        const heraPassive = character.race === 'Hera'; // For Treasure Hunters passive
+        
+        let rawNumber = getRandomInt(100);
+        let searchNumber = rawNumber + hasHeraBonus;
 
         let text = "";
 
         if (searchNumber < 15){
-            text = `${interaction.user.displayName} found nothing!`;
+            // Hera's Treasure Hunters passive: always find item on failed search
+            if (heraPassive) {
+                let itemNumber = getRandomInt(20)-1;
+                let item = items[itemNumber];
+                text = `🔍 **${character.name}** searched the area...\n\n`;
+                text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n`;
+                text += `❌ Failed to find anything, but **Treasure Hunters** passive activates!\n`;
+                text += `✨ Found a **${item}**!`;
+                
+                // Add item to inventory
+                characterManager.addItem(interaction.user.id, character.id, item);
+            } else {
+                text = `🔍 **${character.name}** searched the area...\n\n`;
+                text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus}` : ''} = ${searchNumber}\n`;
+                text += `❌ Found nothing!`;
+            }
         } else if (searchNumber >= 15 && searchNumber < 30) {
             let alignment = getRandomInt(2);
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
             if (alignment === 1) {
-                text = `${interaction.user.displayName} found a negatively aligned merchant!`;
+                text += `😈 Found a **negatively aligned merchant**!`;
             } else if (alignment === 2) {
-                text = `${interaction.user.displayName} found a merchant!`;
+                text += `😇 Found a **positively aligned merchant**!`;
             }
         } else if (searchNumber >= 30 && searchNumber < 50) {
             let itemNumber = getRandomInt(20)-1;
             let item = items[itemNumber];
-
-            text = `${interaction.user.displayName} found a `+item+"!";
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
+            text += `✨ Found a **${item}**!`;
+            
+            // Add item to inventory
+            characterManager.addItem(interaction.user.id, character.id, item);
         } else if (searchNumber >= 50 && searchNumber < 65) {
             let alignment = getRandomInt(2);
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
             if (alignment === 1) {
-                text = `${interaction.user.displayName} initiated a negatively aligned casual mission!`;
+                text += `⚔️ Initiated a **negatively aligned casual mission**!`;
             } else if (alignment === 2) {
-                text = `${interaction.user.displayName} initiated a positively aligned casual mission!`;
+                text += `⚔️ Initiated a **positively aligned casual mission**!`;
             }
         } else if (searchNumber >= 65 && searchNumber < 75) {
             let alignment = getRandomInt(2);
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
             if (alignment === 1) {
-                text = `${interaction.user.displayName} initiated a negatively aligned challenging mission!`;
+                text += `⚔️ Initiated a **negatively aligned challenging mission**!`;
             } else if (alignment === 2) {
-                text = `${interaction.user.displayName} initiated a positively aligned challenging mission!`;
+                text += `⚔️ Initiated a **positively aligned challenging mission**!`;
             }
         } else if (searchNumber >= 75 && searchNumber < 80) {
             let alignment = getRandomInt(2);
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
             if (alignment === 1) {
-                text = `${interaction.user.displayName} initiated a negatively aligned very challenging mission!`;
+                text += `⚔️ Initiated a **negatively aligned very challenging mission**!`;
             } else if (alignment === 2) {
-                text = `${interaction.user.displayName} initiated a positively aligned very challenging mission!`;
+                text += `⚔️ Initiated a **positively aligned very challenging mission**!`;
             }
         } else if (searchNumber >= 80 && searchNumber < 93) {
             let alignment = getRandomInt(2);
-
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
             if (alignment === 1) {
-                text = `${interaction.user.displayName} found a negatively aligned mentor!`;
+                text += `🥋 Found a **negatively aligned mentor**!`;
             } else if (alignment === 2) {
-                text = `${interaction.user.displayName} found a positively aligned mentor!`;
+                text += `🥋 Found a **positively aligned mentor**!`;
             }
         } else if (searchNumber >= 93 && searchNumber < 98) {
-            text = `${interaction.user.displayName} initiated a **saga mission**!!!`;
-        } else if (heraBuff && searchNumber >= 93 && searchNumber < 98) {
-            text = `${interaction.user.displayName} initiated a **saga mission**!!!`;
-        } else if (heraBuff && rawNumber >= 98 && rawNumber <= 100)  {
-            const legItems = ["**Dragon Ball**","**Huge Treasure (1500000 zeni)**","**Brave Sword**","**Eldritch Rune**","**Ancient Wuxia Talisman**","**One Mans Trash**","**Bansho Fan**","**Magic Carpet**","**Spear of Longinus**","**True Capsule**","**Gravitational Control Chip**","**Jeremy Wade's Fishing Rod**","**Fountain of Youth**","**Seed of Might**","**Half-Saiyan's Sword**","**Dimensional Shard**","**Masterwork Weapon**","**Masterwork Armor**","**Bag of Senzu (16x)**","**Blood Vial**","**Blood Ruby**"];
-            let itemNumber = getRandomInt(20)-1;
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n\n`;
+            text += `🌟 Initiated a **SAGA MISSION**!!!`;
+        } else if (searchNumber >= 98) {
+            const legItems = ["Dragon Ball","Huge Treasure (1500000 zeni)","Brave Sword","Eldritch Rune","Ancient Wuxia Talisman","One Mans Trash","Bansho Fan","Magic Carpet","Spear of Longinus","True Capsule","Gravitational Control Chip","Jeremy Wade's Fishing Rod","Fountain of Youth","Seed of Might","Half-Saiyan's Sword","Dimensional Shard","Masterwork Weapon","Masterwork Armor","Bag of Senzu (16x)","Blood Vial","Blood Ruby"];
+            
+            // Hera uses 1d100+10 for legendary rolls (as per Trello)
+            let legendaryRoll = heraPassive ? getRandomInt(100) + 10 : getRandomInt(20);
+            let itemNumber = heraPassive ? Math.min(legendaryRoll - 1, 20) : getRandomInt(20) - 1;
             let item = legItems[itemNumber];
+            
+            text = `🔍 **${character.name}** searched the area...\n\n`;
+            text += `Roll: ${rawNumber}${hasHeraBonus > 0 ? ` +${hasHeraBonus} (Hera bonus)` : ''} = ${searchNumber}\n`;
+            if (heraPassive) {
+                text += `Legendary Roll: 1d100+10 = ${legendaryRoll}\n\n`;
+            } else {
+                text += `\n`;
+            }
 
             if (item === "Masterwork Armor") {
-                const armor = ["**light**","**medium**","**heavy**"];
+                const armor = ["light","medium","heavy"];
                 const armNum = getRandomInt(3)-1;
-
-                text = `${interaction.user.displayName} found masterwork `+armor[armNum]+" armor!!!";
+                item = `Masterwork ${armor[armNum]} Armor`;
+                text += `💎 Found **${item}**!!!`;
             } else if (item == "Masterwork Weapon") {
-                const weps = ["**Club**", "**Spiked Club**", "**Power Pole**", "**Sword**", "**Katana**", "**Scythe**", "**Nodachi**", "**Halberd**", "**Greatsword**", "**Greathammer**"];
+                const weps = ["Club", "Spiked Club", "Power Pole", "Sword", "Katana", "Scythe", "Nodachi", "Halberd", "Greatsword", "Greathammer"];
                 let wepNum = getRandomInt(10)-1;
-
-                text = `${interaction.user.displayName} found a masterwork `+weps[wepNum]+"!!!";
+                item = `Masterwork ${weps[wepNum]}`;
+                text += `💎 Found a **${item}**!!!`;
             } else {
-                text = `${interaction.user.displayName} found a `+item+"!!!";
+                text += `💎 Found a **${item}**!!!`;
             }
-        } else if (!heraBuff && searchNumber >= 98 && searchNumber <= 100) {
-            const legItems = ["**Dragon Ball**","**Huge Treasure (1500000 zeni)**","**Brave Sword**","**Eldritch Rune**","**Ancient Wuxia Talisman**","**One Mans Trash**","**Bansho Fan**","**Magic Carpet**","**Spear of Longinus**","**True Capsule**","**Gravitational Control Chip**","**Jeremy Wade's Fishing Rod**","**Fountain of Youth**","**Seed of Might**","**Half-Saiyan's Sword**","**Dimensional Shard**","**Masterwork Weapon**","**Masterwork Armor**","**Bag of Senzu (16x)**","**Blood Vial**","**Blood Ruby**"];
-            let itemNumber = getRandomInt(20)-1;
-            let item = legItems[itemNumber];
-
-            if (item === "Masterwork Armor") {
-                const armor = ["**light**","**medium**","**heavy**"];
-                const armNum = getRandomInt(3)-1;
-
-                text = `${interaction.user.displayName} found masterwork `+armor[armNum]+" armor!!!";
-            } else if (item == "Masterwork Weapon") {
-                const weps = ["**Club**", "**Spiked Club**", "**Power Pole**", "**Sword**", "**Katana**", "**Scythe**", "**Nodachi**", "**Halberd**", "**Greatsword**", "**Greathammer**"];
-                let wepNum = getRandomInt(10)-1;
-
-                text = `${interaction.user.displayName} found a masterwork `+weps[wepNum]+"!!!";
-            } else {
-                text = `${interaction.user.displayName} found a `+item+"!!!";
-            }
+            
+            // Add legendary item to inventory
+            characterManager.addItem(interaction.user.id, character.id, item);
         }
 
-        if (heraBuff) {
-            interaction.reply(text + "\nSearch Number: "+searchNumber+"\nRaw Roll: "+rawNumber);
-        } else if (!heraBuff) {
-            interaction.reply(text);
-        }
+        interaction.reply(text);
     }
     if (interaction.commandName === "enemy"){
         const powerlevel = interaction.options.getInteger('powerlevel');
@@ -1022,20 +1545,40 @@ client.on(Events.InteractionCreate, async interaction => {
 
     // Character Management Commands
     if (interaction.commandName === 'character-create') {
+        // Check if user already has a pending character creation
+        if (activeCreations.has(interaction.user.id)) {
+            return interaction.reply('❌ You already have a character creation in progress! Please complete or cancel that one first.');
+        }
+
+        const selectedRace = interaction.options.getString('race');
+        const raceRollConfig = getRaceStatRolls(selectedRace);
+        
+        // Roll stats using race-specific dice (5d20 for most, 5d80+10 for Frost Demon)
+        // Intelligence is rolled based on race (1d10 default, 1d10+1 for Earthling, 1d12+3 for Tuffle)
+        const rolledStats = {
+            str: rollStatForRace(selectedRace),
+            dex: rollStatForRace(selectedRace),
+            con: rollStatForRace(selectedRace),
+            wil: rollStatForRace(selectedRace),
+            spi: rollStatForRace(selectedRace),
+            int: rollIntelligence(selectedRace)
+        };
+
+        // Calculate HP and Ki based on stats
+        const maxHP = calculateHP(rolledStats.con);
+        const maxKi = calculateKi(rolledStats.wil, rolledStats.spi);
+
+        // Calculate modifiers
+        const modifiers = calculateAllModifiers(rolledStats);
+
         const characterData = {
             name: interaction.options.getString('name'),
-            race: interaction.options.getString('race'),
+            race: selectedRace,
             age: interaction.options.getInteger('age'),
-            stats: {
-                str: interaction.options.getInteger('str'),
-                dex: interaction.options.getInteger('dex'),
-                con: interaction.options.getInteger('con'),
-                wil: interaction.options.getInteger('wil'),
-                spi: interaction.options.getInteger('spi'),
-                int: interaction.options.getInteger('int')
-            },
-            maxHP: interaction.options.getInteger('maxhp'),
-            maxKi: interaction.options.getInteger('maxki'),
+            stats: rolledStats,
+            modifiers: modifiers,
+            maxHP: maxHP,
+            maxKi: maxKi,
             background: interaction.options.getString('background') || 'None provided',
             mutation: 'None'
         };
@@ -1047,25 +1590,67 @@ client.on(Events.InteractionCreate, async interaction => {
             maxKi: characterData.maxKi
         });
 
-        const character = characterManager.createCharacter(interaction.user.id, characterData);
-        const raceInfo = races[character.race];
+        // Store pending character data for potential reroll
+        pendingCharacters.set(interaction.user.id, {
+            data: characterData,
+            hasRerolled: false,
+            mutationRolled: false,
+            mutationRoll: null,
+            usedMutationForStats: false,
+            chosenPath: null // Track whether user chose 'mutation' or 'boost' path
+        });
 
-        let message = `✨ **Character Created!** ✨\n\n`;
-        message += `**${character.name}** - ${character.race} (Age ${character.age})\n`;
-        message += `**Power Level:** ${character.powerLevel}\n\n`;
-        message += `**Stats:**\n`;
-        message += `STR: ${character.stats.str} | DEX: ${character.stats.dex} | CON: ${character.stats.con}\n`;
-        message += `WIL: ${character.stats.wil} | SPI: ${character.stats.spi} | INT: ${character.stats.int}\n`;
-        message += `HP: ${character.currentHP}/${character.maxHP} | Ki: ${character.currentKi}/${character.maxKi}\n\n`;
+        // Mark user as in active creation
+        activeCreations.set(interaction.user.id, Date.now());
+
+        const raceInfo = races[selectedRace];
+
+        // Build stat roll description
+        let statRollDesc = `1d${raceRollConfig.diceSize}`;
+        if (raceRollConfig.bonus > 0) statRollDesc += `+${raceRollConfig.bonus}`;
+        statRollDesc += ' per stat';
         
-        if (raceInfo) {
-            message += `**Racial Abilities:**\n`;
-            raceInfo.abilities.forEach(ability => {
-                message += `• ${ability}\n`;
+        let intRollDesc = '1d10';
+        if (selectedRace === 'Earthling') intRollDesc = '1d10+1';
+        else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
+
+        let message = `✨ **Character Preview!** ✨\n\n`;
+        message += `**${characterData.name}** - ${characterData.race} (Age ${characterData.age})\n`;
+        message += `**Power Level:** ${characterData.powerLevel}\n\n`;
+        message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
+        message += `STR: ${characterData.stats.str} (${modifiers.str >= 0 ? '+' : ''}${modifiers.str}) | DEX: ${characterData.stats.dex} (${modifiers.dex >= 0 ? '+' : ''}${modifiers.dex}) | CON: ${characterData.stats.con} (${modifiers.con >= 0 ? '+' : ''}${modifiers.con})\n`;
+        message += `WIL: ${characterData.stats.wil} (${modifiers.wil >= 0 ? '+' : ''}${modifiers.wil}) | SPI: ${characterData.stats.spi} (${modifiers.spi >= 0 ? '+' : ''}${modifiers.spi}) | INT: ${characterData.stats.int} (${modifiers.int >= 0 ? '+' : ''}${modifiers.int})\n`;
+        message += `HP: ${characterData.maxHP} | Ki: ${characterData.maxKi}\n\n`;
+        
+        if (raceInfo && raceInfo.passives && raceInfo.passives.length > 0) {
+            message += `**Racial Passives:**\n`;
+            raceInfo.passives.forEach(passive => {
+                message += `• **${passive.name}**: ${passive.description}\n`;
             });
+            message += `\n`;
         }
 
-        interaction.reply(message);
+        message += `⚠️ You can reroll stats **once** or confirm to create this character.\n`;
+        message += `🧬 Roll for mutation OR use it to boost stats (5d100+20)!`;
+
+        // Create buttons
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('reroll_stats')
+                    .setLabel('🎲 Reroll Stats')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('roll_mutation')
+                    .setLabel('🧬 Roll Mutation (1d20)')
+                    .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId('confirm_character')
+                    .setLabel('✅ Confirm Character')
+                    .setStyle(ButtonStyle.Success)
+            );
+
+        interaction.reply({ content: message, components: [row] });
     }
 
     if (interaction.commandName === 'character-view') {
@@ -1075,51 +1660,116 @@ client.on(Events.InteractionCreate, async interaction => {
             return interaction.reply('You don\'t have any characters! Use `/character-create` to make one.');
         }
 
-        let message = `## ${character.name}\n`;
-        message += `**Race:** ${character.race} | **Age:** ${character.age} | **Level:** ${character.level}\n`;
-        message += `**Power Level:** ${character.powerLevel}\n\n`;
-        
-        message += `**Stats:**\n`;
-        message += `STR: ${character.stats.str} | DEX: ${character.stats.dex} | CON: ${character.stats.con}\n`;
-        message += `WIL: ${character.stats.wil} | SPI: ${character.stats.spi} | INT: ${character.stats.int}\n\n`;
-        
-        message += `**Vitals:**\n`;
-        message += `HP: ${character.currentHP}/${character.maxHP}\n`;
-        message += `Ki: ${character.currentKi}/${character.maxKi}\n`;
-        message += `Fatigue: ${character.fatigue}%\n\n`;
+        // Calculate modifiers if not stored
+        if (!character.modifiers) {
+            character.modifiers = calculateAllModifiers(character.stats);
+        }
 
+        // Create embedded character sheet
+        const embed = new EmbedBuilder()
+            .setColor(0x0099FF)
+            .setTitle(`${character.name}`)
+            .setDescription(`**${character.race}** | Age ${character.age} | Level ${character.level}`)
+            .addFields(
+                { 
+                    name: '⚡ Power Level', 
+                    value: `**${character.powerLevel}**`, 
+                    inline: false 
+                },
+                { 
+                    name: '💪 Strength', 
+                    value: `${character.stats.str} (${character.modifiers.str >= 0 ? '+' : ''}${character.modifiers.str})`, 
+                    inline: true 
+                },
+                { 
+                    name: '🏃 Dexterity', 
+                    value: `${character.stats.dex} (${character.modifiers.dex >= 0 ? '+' : ''}${character.modifiers.dex})`, 
+                    inline: true 
+                },
+                { 
+                    name: '🛡️ Constitution', 
+                    value: `${character.stats.con} (${character.modifiers.con >= 0 ? '+' : ''}${character.modifiers.con})`, 
+                    inline: true 
+                },
+                { 
+                    name: '🧠 Willpower', 
+                    value: `${character.stats.wil} (${character.modifiers.wil >= 0 ? '+' : ''}${character.modifiers.wil})`, 
+                    inline: true 
+                },
+                { 
+                    name: '✨ Spirit', 
+                    value: `${character.stats.spi} (${character.modifiers.spi >= 0 ? '+' : ''}${character.modifiers.spi})`, 
+                    inline: true 
+                },
+                { 
+                    name: '📚 Intelligence', 
+                    value: `${character.stats.int} (${character.modifiers.int >= 0 ? '+' : ''}${character.modifiers.int})`, 
+                    inline: true 
+                },
+                { 
+                    name: '❤️ HP', 
+                    value: `${character.currentHP}/${character.maxHP}`, 
+                    inline: true 
+                },
+                { 
+                    name: '💙 Ki', 
+                    value: `${character.currentKi}/${character.maxKi}`, 
+                    inline: true 
+                },
+                { 
+                    name: '😓 Fatigue', 
+                    value: `${character.fatigue}%`, 
+                    inline: true 
+                }
+            )
+            .setTimestamp()
+            .setFooter({ text: `${character.experience} XP` });
+
+        // Add character image if set
+        if (character.imageUrl) {
+            embed.setThumbnail(character.imageUrl);
+        }
+
+        // Add status effects if any
         if (character.statusEffects && character.statusEffects.length > 0) {
-            message += `**Status Effects:**\n`;
-            character.statusEffects.forEach(effect => {
-                message += `• ${effect.name}\n`;
+            const effects = character.statusEffects.map(e => e.name).join(', ');
+            embed.addFields({ 
+                name: '🔮 Status Effects', 
+                value: effects, 
+                inline: false 
             });
-            message += `\n`;
         }
 
+        // Add mutation if present
         if (character.mutations && character.mutations !== 'None') {
-            message += `**Mutation:** ${character.mutations}\n\n`;
+            embed.addFields({ 
+                name: '🧬 Mutation', 
+                value: character.mutations, 
+                inline: false 
+            });
         }
 
-        message += `**Background:** ${character.background}\n`;
-        message += `**Experience:** ${character.experience} XP`;
-
-        interaction.reply(message);
-    }
-
-    if (interaction.commandName === 'character-list') {
-        const characters = characterManager.getAllCharacters(interaction.user.id);
-
-        if (!characters || characters.length === 0) {
-            return interaction.reply('You don\'t have any characters! Use `/character-create` to make one.');
+        // Add background if present
+        if (character.background && character.background !== 'None provided') {
+            embed.addFields({ 
+                name: '📖 Background', 
+                value: character.background, 
+                inline: false 
+            });
         }
 
-        let message = `**Your Characters:**\n\n`;
-        characters.forEach((char, index) => {
-            message += `${index + 1}. **${char.name}** - ${char.race} (PL: ${char.powerLevel})\n`;
-            message += `   HP: ${char.currentHP}/${char.maxHP} | Ki: ${char.currentKi}/${char.maxKi}\n`;
-        });
+        // Add race info
+        const raceInfo = races[character.race];
+        if (raceInfo && raceInfo.abilities) {
+            const abilities = raceInfo.abilities.slice(0, 3).join('\n• ');
+            embed.addFields({ 
+                name: '🌟 Racial Abilities', 
+                value: `• ${abilities}`, 
+                inline: false 
+            });
+        }
 
-        interaction.reply(message);
+        interaction.reply({ embeds: [embed] });
     }
 
     if (interaction.commandName === 'character-hp') {
@@ -1196,6 +1846,124 @@ client.on(Events.InteractionCreate, async interaction => {
         characterManager.addItem(interaction.user.id, character.id, itemName);
 
         interaction.reply(`Added **${itemName}** to ${character.name}'s inventory!`);
+    }
+
+    if (interaction.commandName === 'character-setimage') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        const imageUrl = interaction.options.getString('imageurl');
+        
+        // Basic URL validation
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return interaction.reply('❌ Please provide a valid image URL starting with http:// or https://');
+        }
+
+        // Update character with image URL
+        character.imageUrl = imageUrl;
+        characterManager.updateCharacter(interaction.user.id, character.id, { imageUrl: imageUrl });
+
+        // Create preview embed
+        const embed = new EmbedBuilder()
+            .setColor(0x0099FF)
+            .setTitle(`${character.name}`)
+            .setDescription(`Image updated successfully!`)
+            .setThumbnail(imageUrl);
+
+        interaction.reply({ content: '✅ Character image set!', embeds: [embed] });
+    }
+
+    if (interaction.commandName === 'use-item') {
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
+        }
+
+        const slot = interaction.options.getInteger('slot');
+        
+        if (!character.inventory || character.inventory.length === 0) {
+            return interaction.reply('❌ Your inventory is empty!');
+        }
+
+        if (slot < 1 || slot > character.inventory.length) {
+            return interaction.reply(`❌ Invalid slot number! You have ${character.inventory.length} items. Use \`/character-inventory\` to see your items.`);
+        }
+
+        const item = character.inventory[slot - 1];
+        const itemData = typeof item === 'string' ? { name: item, type: 'unknown' } : item;
+
+        // Check if item is consumable
+        if (itemData.type !== 'consumable') {
+            return interaction.reply(`❌ **${itemData.name}** is not a consumable item!`);
+        }
+
+        // Apply item effects
+        let message = `${interaction.user.displayName} consumed **${itemData.name}**!\n\n`;
+        let effectsApplied = [];
+
+        if (itemData.hp) {
+            const oldHP = character.currentHP;
+            characterManager.modifyHP(interaction.user.id, character.id, itemData.hp);
+            const newHP = Math.min(oldHP + itemData.hp, character.maxHP);
+            effectsApplied.push(`❤️ HP: ${oldHP} → ${newHP} (${itemData.hp > 0 ? '+' : ''}${itemData.hp})`);
+        }
+
+        if (itemData.ki) {
+            const oldKi = character.currentKi;
+            characterManager.modifyKi(interaction.user.id, character.id, itemData.ki);
+            const newKi = Math.min(oldKi + itemData.ki, character.maxKi);
+            effectsApplied.push(`💙 Ki: ${oldKi} → ${newKi} (${itemData.ki > 0 ? '+' : ''}${itemData.ki})`);
+        }
+
+        if (itemData.fatigue) {
+            const oldFatigue = character.fatigue || 0;
+            const newFatigue = Math.max(0, Math.min(100, oldFatigue + itemData.fatigue));
+            characterManager.modifyFatigue(interaction.user.id, character.id, itemData.fatigue);
+            effectsApplied.push(`😓 Fatigue: ${oldFatigue}% → ${newFatigue}% (${itemData.fatigue > 0 ? '+' : ''}${itemData.fatigue}%)`);
+        }
+
+        if (effectsApplied.length > 0) {
+            message += effectsApplied.join('\n');
+        } else {
+            message += '✨ Item consumed, but had no effects!';
+        }
+
+        // Remove item from inventory
+        character.inventory.splice(slot - 1, 1);
+        characterManager.updateCharacter(interaction.user.id, character.id, { inventory: character.inventory });
+
+        interaction.reply(message);
+    }
+
+    if (interaction.commandName === 'character-wipe') {
+        const confirmation = interaction.options.getString('confirmation');
+        
+        if (confirmation !== 'DELETE') {
+            return interaction.reply('❌ Wipe cancelled. You must type "DELETE" exactly to confirm character deletion.');
+        }
+
+        const character = characterManager.getCharacter(interaction.user.id);
+
+        if (!character) {
+            return interaction.reply('❌ You don\'t have any characters to wipe!');
+        }
+
+        // Delete the character
+        const deleted = characterManager.deleteCharacter(interaction.user.id, character.id);
+
+        if (deleted) {
+            // Clear any pending character creation
+            pendingCharacters.delete(interaction.user.id);
+            activeCreations.delete(interaction.user.id);
+
+            return interaction.reply(`🗑️ **Character Deleted**\n\n**${character.name}** (${character.race}, PL: ${character.powerLevel}) has been permanently wiped from the database.\n\nYou can create a new character with \`/character-create\`.`);
+        } else {
+            return interaction.reply('❌ Failed to delete character. Please try again.');
+        }
     }
 
     if (interaction.commandName === 'races') {
