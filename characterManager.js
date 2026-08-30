@@ -7,6 +7,8 @@ class CharacterManager {
         this.charactersFile = path.join(this.dataDir, 'characters.json');
         this.ensureDataDir();
         this.characters = this.loadCharacters();
+        // Fatigue soft floor: without a Rest, fatigue can't be reduced below peak * ratio.
+        this.fatigueFloorRatio = 0.3;
     }
 
     ensureDataDir() {
@@ -47,16 +49,32 @@ class CharacterManager {
             id: Date.now().toString(),
             createdAt: new Date().toISOString(),
             ...characterData,
+            age: characterData.age !== undefined ? characterData.age : 18,
             currentHP: characterData.maxHP,
             currentKi: characterData.maxKi,
             fatigue: 0,
+            peakFatigue: 0,
             inventory: [],
+            inventorySlots: 10, // Default inventory slots
+            fishTackle: [], // Fishing Tackle stores fish here (0 inventory slots)
             statusEffects: [],
-            techniques: [],
+            techniques: characterData.techniques || [],
             transformations: [],
             mutations: characterData.mutation || 'None',
-            experience: 0,
-            level: 1
+            homeLocation: null,
+            homeSpace: null,
+            homeType: null,
+            homeStorage: [],
+            homeStorageSlots: 0,
+            weapon: null,
+            armor: null,
+            weaponAttackMod: 0,
+            weaponDamageMode: null,
+            weaponBypass: false,
+            weaponDexPenalty: 0,
+            armorReduction: 0,
+            armorDexReduction: 0,
+            armorDurability: 0
         };
 
         this.characters[userId].push(character);
@@ -113,7 +131,7 @@ class CharacterManager {
         const character = this.getCharacter(userId, characterId);
         if (!character) return null;
 
-        character.currentHP = Math.max(0, Math.min(character.maxHP, character.currentHP + amount));
+        character.currentHP = Math.max(0, Math.min(character.maxHP || Infinity, (character.currentHP || 0) + amount));
         this.updateCharacter(userId, characterId, { currentHP: character.currentHP });
         return character;
     }
@@ -122,17 +140,36 @@ class CharacterManager {
         const character = this.getCharacter(userId, characterId);
         if (!character) return null;
 
-        character.currentKi = Math.max(0, Math.min(character.maxKi, character.currentKi + amount));
+        character.currentKi = Math.max(0, Math.min(character.maxKi || Infinity, (character.currentKi || 0) + amount));
         this.updateCharacter(userId, characterId, { currentKi: character.currentKi });
         return character;
     }
 
-    modifyFatigue(userId, characterId, amount) {
+    // Fatigue soft floor (Trello "Fatigue" card): the persistent stored training fatigue can't
+    // be reduced below peak * ratio without a Rest (the missing-Ki fatigue self-resolves, so the
+    // floor is applied to the stored value that items/food actually reduce).
+    modifyFatigue(userId, characterId, amount, options = {}) {
         const character = this.getCharacter(userId, characterId);
         if (!character) return null;
+        if (typeof character.peakFatigue !== 'number') character.peakFatigue = 0;
+        const ratio = options.floorRatio ?? this.fatigueFloorRatio ?? 0.3;
 
-        character.fatigue = Math.max(0, Math.min(100, character.fatigue + amount));
-        this.updateCharacter(userId, characterId, { fatigue: character.fatigue });
+        let newFatigue = Math.max(0, Math.min(100, (character.fatigue || 0) + amount));
+
+        if (options.full) {
+            // A genuine Rest: bypass the soft floor and reset the fatigue peak.
+            character.peakFatigue = 0;
+        } else {
+            if (amount < 0) {
+                // Can't reduce stored fatigue below peak * floor_ratio without Rest.
+                const floor = character.peakFatigue * ratio;
+                newFatigue = Math.max(newFatigue, floor);
+            }
+            if (newFatigue > character.peakFatigue) character.peakFatigue = newFatigue;
+        }
+
+        character.fatigue = newFatigue;
+        this.updateCharacter(userId, characterId, { fatigue: character.fatigue, peakFatigue: character.peakFatigue });
         return character;
     }
 
@@ -140,9 +177,47 @@ class CharacterManager {
         const character = this.getCharacter(userId, characterId);
         if (!character) return null;
 
+        // Durable tools are stored as objects with current/max durability (and never stack).
+        if (typeof item === 'string') {
+            const parsedName = parseItemName(item).name;
+            const durable = DURABLE_ITEMS[parsedName];
+            if (durable) {
+                const maxSlots = character.inventorySlots || 10;
+                if (character.inventory.length >= maxSlots) {
+                    return { success: false, message: `Inventory full! (${maxSlots}/${maxSlots} slots)` };
+                }
+                const obj = { name: parsedName, durability: durable.max, maxDurability: durable.max };
+                character.inventory.push(obj);
+                this.updateCharacter(userId, characterId, { inventory: character.inventory });
+                return { success: true, character };
+            }
+        }
+
+        // Stack plain-string items (components, materials, consumables) into one slot ("Nx Name").
+        if (typeof item === 'string') {
+            const parsed = parseItemName(item);
+            const baseName = parsed.name;
+            const idx = character.inventory.findIndex(existing => {
+                if (typeof existing !== 'string') return false;
+                return parseItemName(existing).name.toLowerCase() === baseName.toLowerCase();
+            });
+            if (idx !== -1) {
+                const existingQty = parseItemName(character.inventory[idx]).quantity;
+                character.inventory[idx] = formatStackedItem(baseName, existingQty + parsed.quantity);
+                this.updateCharacter(userId, characterId, { inventory: character.inventory });
+                return { success: true, character };
+            }
+        }
+
+        // Check inventory limit
+        const maxSlots = character.inventorySlots || 10;
+        if (character.inventory.length >= maxSlots) {
+            return { success: false, message: `Inventory full! (${maxSlots}/${maxSlots} slots)` };
+        }
+
         character.inventory.push(item);
         this.updateCharacter(userId, characterId, { inventory: character.inventory });
-        return character;
+        return { success: true, character: character };
     }
 
     removeItem(userId, characterId, itemName) {
@@ -179,7 +254,7 @@ class CharacterManager {
     }
 
     calculatePowerLevel(stats) {
-        const { str, dex, con, wil, spi, int, maxHP, maxKi } = stats;
+        const { str, dex, con, wil, spi, maxHP, maxKi } = stats;
         return Math.floor(
             (str * 1.5) +
             (wil * 1.5) +
@@ -187,7 +262,6 @@ class CharacterManager {
             (con * 0.75) +
             (spi * 0.75) +
             (dex * 0.7) +
-            (int * 0.5) +
             (maxHP / 10) +
             (maxKi / 10) +
             0.5
@@ -195,4 +269,24 @@ class CharacterManager {
     }
 }
 
-module.exports = { CharacterManager };
+// Durable tools granted at full durability (Trello durability limits).
+const DURABLE_ITEMS = {
+    'Fishing Rod': { max: 3 },
+    'Welding Torch': { max: 5 },
+    'Skinning Knife': { max: 20 }
+};
+
+// Parse an inventory entry into { name, quantity }. Handles the stacked "Nx Name" format.
+function parseItemName(entry) {
+    const raw = String(typeof entry === 'string' ? entry : (entry && (entry.name || entry)));
+    const m = raw.match(/^(\d+)x\s+(.+)$/i);
+    if (m) return { name: m[2].trim(), quantity: parseInt(m[1], 10) };
+    return { name: raw.trim(), quantity: 1 };
+}
+
+// Render a stacked item name: "Name" for qty 1, "Nx Name" for qty > 1.
+function formatStackedItem(name, quantity) {
+    return quantity > 1 ? `${quantity}x ${name}` : name;
+}
+
+module.exports = { CharacterManager, parseItemName, formatStackedItem, DURABLE_ITEMS };

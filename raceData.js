@@ -124,14 +124,14 @@ const races = {
     },
     'Tortle': {
         name: 'Tortle',
-        description: 'Wise humanoid turtles with deep connection to nature.',
-        abilities: ['Natural Armor', 'Shell Defense', 'Ancient Wisdom'],
+        description: 'Wise humanoid turtles of the Tortless Way, with a deep connection to nature and remarkable defensive capabilities.',
+        abilities: ['Master of Defense', 'Heavy Shed', 'Way of Oogway', 'Shell Rest', 'Ancient Martial Weapon Proficiency', 'Descendants of Way'],
         passives: [
-            { id: 'master-of-defense', name: 'Master of Defense', description: 'Giant turtle shell. +10 CON mod with downside of -5+15% DEX mod.' },
-            { id: 'heavy-shed', name: 'Heavy Shed', description: 'Every week shed shell for +10 DEX mod, lose -5+15% CON mod. Shell regenerates 4 days after shed.' },
-            { id: 'way-of-oogway', name: 'Way of Oogway', description: 'Descendants of Master Oogway. +2 SPI, +2 WIL, minimum 4 INT. Symbol of good luck, gain extra +1 Alignment from positive tasks.' },
-            { id: 'shell-rest', name: 'Shell Rest', description: 'While having shell, hide for +5 modifier to short rests. Cannot use healing pods due to shell.' },
-            { id: 'ancient-martial-weapon-proficiency', name: 'Ancient Martial Weapon Proficiency', description: 'Spiritual and physical connection with martial weapons. -1d3 DEX hindrance on martial weapons (Katana, Nodachi, Sai, Nun-Chucks, Bo-Staff, Spear, Power Pole).' },
+            { id: 'master-of-defense', name: 'Master of Defense', description: 'While your shell is on, gain +10 CON mod but suffer a DEX mod penalty.' },
+            { id: 'heavy-shed', name: 'Heavy Shed', description: 'Optional — shed your shell with /shed for +10 DEX mod but a CON mod penalty. The shell regenerates 4 days after shedding.' },
+            { id: 'way-of-oogway', name: 'Way of Oogway', description: 'Descendants of Master Oogway: +2 SPI mod and +2 WIL mod, minimum 4 INT. Symbol of good luck — gain an extra +1 Alignment from all positive tasks.' },
+            { id: 'shell-rest', name: 'Shell Rest', description: 'While your shell is on, hide in it for +5 modifier to short rests, but you cannot use healing pods due to your shell.' },
+            { id: 'ancient-martial-weapon-proficiency', name: 'Ancient Martial Weapon Proficiency', description: 'Spiritual connection with martial weapons — -1d3 DEX hindrance on martial weapons (Katana, Nodachi, Sai, Nun-Chucks, Bo-Staff, Spear, Power Pole).' },
             { id: 'descendants-of-way', name: 'Descendants of Way', description: 'All Tortles must have "Way" in their name, honoring saint Oogway.' }
         ],
         type: 'birth'
@@ -176,6 +176,39 @@ const races = {
             { id: 'regeneration', name: 'Regeneration', description: 'Exceptional regeneration speeds recovery from wounds.' },
             { id: 'absorption', name: 'Absorption', description: 'Can absorb properties of matter and energy for personal growth.' },
             { id: 'body-manipulation', name: 'Body Manipulation', description: 'Can reshape and manipulate physical form for utility and combat.' }
+        ],
+        type: 'method'
+    },
+    'Saibamen': {
+        name: 'Saibamen',
+        description: 'Plant creatures born to kill, grown from seeds and growth liquid.',
+        abilities: ['We Are Not The Same', 'Apex Predator', 'Plant Life', 'Ruler of Many', 'PTSD', 'Sharp Claws', 'Simple Minded'],
+        passives: [
+            { id: 'we-are-not-the-same', name: 'We Are Not The Same', description: 'Physical demons out the womb. Roll 5d50 for stats instead of 5d20.' },
+            { id: 'apex-predator', name: 'Apex Predator', description: 'Quick and sneaky. Can camouflage themselves (including ki signatures) in vegetation. +20% to all Dexterity saving throws.' },
+            { id: 'plant-life', name: 'Plant Life', description: 'Immune to all forms of poison, and regenerate limbs on short rests.' },
+            { id: 'ruler-of-many', name: 'Ruler of Many', description: 'Once per saga (except the first), drain ki and health to 1 to release a seed. It sprouts 24 hours later with 1/10 of your stats, and can only self destruct or spar with you.' },
+            { id: 'ptsd', name: 'PTSD', description: 'Fire every synapse at once to implode, ending your life and dealing (current HP + current Ki) damage. If a hatchling is nearby, transfer your consciousness to it instead.' },
+            { id: 'sharp-claws', name: 'Sharp Claws', description: 'No need for ki blasts or weapons. Barehanded attacks can tear off limbs, and all critically successful attacks apply bleed for 1 turn.' },
+            { id: 'simple-minded', name: 'Simple Minded', description: 'Roll 1d3 for intelligence instead of 1d10.' }
+        ],
+        type: 'birth'
+    },
+    'Vampire': {
+        name: 'Vampire',
+        description: 'An immortal being that feeds on the blood of the living. Gained by drinking a Blood Vial and surviving 24 hours in the shade.',
+        abilities: ['Suck Blood', 'Pseudo-Regeneration', 'Shapeshifting'],
+        passives: [
+            { id: 'not-your-blood', name: 'Not Your Blood', description: 'You rely on the blood of living things. You have a blood bar whose limit is 100+(CON mod*3). If you have no blood in your body for 24 hours, you die.' },
+            { id: 'mutated', name: 'Mutated', description: 'You still cherish your original form. Choose 2 abilities to keep from your original race.' },
+            { id: 'instant-twitch-muscle-fibers', name: 'Instant Twitch Muscle Fibers', description: 'Your muscles become insanely efficient. Gain +4 STR mod and +4 DEX mod and advantage to CON saving throws.' },
+            { id: 'hemophilia', name: 'Hemophilia', description: 'Blood is extremely enticing. When making an entity bleed, heal 8 HP.' },
+            { id: 'heliophobic', name: 'Heliophobic', description: 'The sun harasses you. Solar Flare blindness lasts 2 turns longer and negates all buffs gained from vampirism.' },
+            { id: 'shapeshifting', name: 'Shapeshifting', description: 'You can change how you look, even copying other people\u2019s appearances.' },
+            { id: 'longevity', name: 'Longevity', description: 'You can live for 3x longer than Earthlings.' },
+            { id: 'can-doesnt-mean-should', name: 'Can Doesn\u2019t Mean Should', description: 'Trying to scientifically modify your body kills you.' },
+            { id: 'pseudo-regeneration', name: 'Pseudo-Regeneration', description: 'You can spend blood in your blood bar to heal equal to 1/4 of the amount spent.' },
+            { id: 'abnormal', name: 'Abnormal', description: 'You cannot use recovery capsules or ki capsules, and you do not heal from eating Senzu Beans.' }
         ],
         type: 'method'
     }

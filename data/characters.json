@@ -1,1 +1,5150 @@
-{}
+{
+  "306501966672953355": [
+    {
+      "id": "1787323900000",
+      "createdAt": "2026-08-21T14:51:40.000Z",
+      "name": "Horen",
+      "race": "Saiyan",
+      "class": "Low Class",
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 9,
+      "fuel": 100,
+      "techniques": [
+        "Ki Sense",
+        "Fly",
+        "Savage Elbow",
+        "Tiger Teep",
+        "Leaping Tiger Fist",
+        "Feral Fury Knee"
+      ],
+      "searchesUsed": 1,
+      "searchArea": "Earth-9",
+      "searchResetDate": "Wed Aug 26 2026",
+      "zeni": 1288139,
+      "lastAgeCheck": 1787842283291,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "healingPod": false,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [
+        "False Super Saiyan",
+        "Super Saiyan"
+      ],
+      "activeForm": null,
+      "formMastery": {
+        "Super Saiyan": 5
+      },
+      "techniqueMastery": {
+        "Ki Sense": 3,
+        "Fly": 5
+      },
+      "masteryBonus": {
+        "Savage Elbow": 1
+      },
+      "masteryReady": false,
+      "age": 27,
+      "stats": {
+        "str": 23977,
+        "dex": 18358,
+        "con": 23219,
+        "wil": 13626,
+        "spi": 13692,
+        "int": 9
+      },
+      "modifiers": {
+        "str": 30,
+        "dex": 28,
+        "con": 30,
+        "wil": 25,
+        "spi": 25,
+        "int": 0
+      },
+      "maxHP": 320,
+      "maxKi": 320,
+      "background": "None provided",
+      "mutation": "None",
+      "alignment": "Positive",
+      "powerLevel": 110695,
+      "currentHP": 320,
+      "currentKi": 320,
+      "fatigue": 0,
+      "inventory": [
+        "3x Component",
+        "14x Copper Wires",
+        "Fishing Tackle",
+        "Camp Fire",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "2x Large Home",
+        "Drill",
+        "2x Shovel",
+        "5x [Destroyed][Unrepairable] Engine Conjunction",
+        "15x Resources",
+        "Dragon Ball",
+        "2x Hunting Traps",
+        "10x Steel Ore",
+        "3x Small Training Weight",
+        "10x Senzu Bean",
+        "2x [Broken] Motherboard",
+        "13x Iron Ore",
+        "3x Ki Recovery Capsule",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "Pickaxe",
+        "Tongs",
+        "Armor Mold",
+        "Ingot Mold",
+        "Anvil",
+        "Smelting Forge",
+        "2x Ebonite",
+        "Soul Stone",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Good Steel Sword",
+          "weaponType": "Sword",
+          "weaponAttackMod": 8,
+          "weaponDexPenalty": 6,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0,
+          "quality": "Good",
+          "material": "Steel"
+        },
+        {
+          "name": "Good Steel Sword",
+          "weaponType": "Sword",
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 10,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0,
+          "quality": "Good",
+          "material": "Steel"
+        },
+        {
+          "name": "Ok Mithril Light Armor",
+          "armorReduction": 12,
+          "armorDexReduction": 24,
+          "armorDurability": 9,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Ok",
+          "material": "Mithril",
+          "weight": "Light"
+        },
+        {
+          "name": "Bad Mithril Light Armor",
+          "armorReduction": 0,
+          "armorDexReduction": 22,
+          "armorDurability": 23,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Bad",
+          "material": "Mithril",
+          "weight": "Light"
+        },
+        {
+          "name": "Good Mithril Light Armor",
+          "armorReduction": 12,
+          "armorDexReduction": 19,
+          "armorDurability": 21,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Good",
+          "material": "Mithril",
+          "weight": "Light"
+        },
+        "Recovery Capsule",
+        "2x Healer's Kit",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Philosophy Book",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        }
+      ],
+      "inventorySlots": 100,
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "experience": 0,
+      "level": 1,
+      "updatedAt": "2026-08-29T21:18:39.238Z",
+      "lastDailyReset": "Sat Aug 29 2026",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "resources": 92888,
+      "gathersUsed": 1,
+      "gatherArea": "Earth-11",
+      "gatherResetDate": "Wed Aug 26 2026",
+      "fightingStyle": "Tiger",
+      "unspentPoints": 0,
+      "lastRestChargeTime": 1788038247315,
+      "fishTackle": [],
+      "alignmentValue": 990,
+      "companions": [
+        {
+          "id": "comp_mt83twng_223",
+          "name": "Raina",
+          "race": "Earthling",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -12802,
+          "stats": {
+            "str": 606,
+            "dex": 394,
+            "con": 906,
+            "wil": 296,
+            "spi": 336
+          },
+          "bonusStats": {
+            "str": 5297,
+            "dex": 5611,
+            "con": 5331,
+            "wil": 5209,
+            "spi": 5236
+          },
+          "companionship": 126,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Fly",
+            "Ki Application",
+            "Kamehameha",
+            "Kamehameha Surge",
+            "Dashing Kamehameha",
+            "Destructo Disc",
+            "Pump Up"
+          ],
+          "fightingStyle": "Turtle",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-25T03:27:41.452Z",
+          "techniqueMastery": {
+            "Tiger Teep": 1,
+            "Ki Application": 1
+          },
+          "masteryBonus": {
+            "Shin Drive": 1,
+            "Spirit Ball": 4,
+            "Fly": 8,
+            "Leaping Tiger Fist": 1,
+            "Feral Fury Knee": 1,
+            "Dashing Kamehameha": 1,
+            "Destructo Disc": 1,
+            "Kamehameha Surge": 1
+          },
+          "fatigue": 10,
+          "lastBirthAt": 1787636925651,
+          "lastCompanionRestChargeTime": 1788037659990,
+          "inBattle": false,
+          "restCharges": 2
+        },
+        {
+          "id": "comp_mt89q644_105",
+          "name": "Peppa",
+          "race": "Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -1439,
+          "stats": {
+            "str": 558,
+            "dex": 530,
+            "con": 516,
+            "wil": 322,
+            "spi": 114
+          },
+          "bonusStats": {
+            "str": 7075,
+            "dex": 7297,
+            "con": 7094,
+            "wil": 6943,
+            "spi": 7000
+          },
+          "companionship": 176,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Fly",
+            "Ki Application",
+            "Ki Efficiency",
+            "Wolf Fang Fist",
+            "Whirlwind Kick",
+            "Neo Wolf Fang Fist"
+          ],
+          "fightingStyle": "Wolf",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 5,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-25T06:12:44.788Z",
+          "techniqueMastery": {
+            "Ki Efficiency": 1,
+            "Spirit Ball": 1,
+            "Whirlwind Kick": 2,
+            "Neo Wolf Fang Fist": 1
+          },
+          "masteryBonus": {
+            "Fly": 10,
+            "Ki Application": 4,
+            "Ki Efficiency": 5,
+            "Spirit Ball": 1,
+            "Neo Wolf Fang Fist": 2
+          },
+          "inBattle": true,
+          "lastCompanionRestChargeTime": 1788037659990,
+          "restCharges": 2,
+          "fatigue": 10,
+          "zenkaiPending": {
+            "source": "Saiyan Zenkai",
+            "gainPercent": 14,
+            "powerLevel": 13844
+          },
+          "armor": "Good Mithril Light Armor",
+          "armorReduction": 21,
+          "armorDexReduction": 20,
+          "armorDurability": 3
+        },
+        {
+          "id": "comp_mt9kzus4_890",
+          "name": "Kaien",
+          "race": "Half-Saiyan",
+          "gender": "Male",
+          "alignment": "Positive",
+          "alignmentValue": 7726,
+          "stats": {
+            "str": 5644,
+            "dex": 3716,
+            "con": 5684,
+            "wil": 4556,
+            "spi": 2348,
+            "int": 8
+          },
+          "bonusStats": {
+            "str": 21,
+            "dex": 21,
+            "con": 20,
+            "wil": 20,
+            "spi": 20
+          },
+          "companionship": 3,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1788038158612,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Sense",
+            "Sweeping Swing",
+            "Thrusting Strikes",
+            "Lacerating Slash"
+          ],
+          "fightingStyle": "Legionary Discipline",
+          "weapon": "Expert Halberd",
+          "weaponAttackMod": 12,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-26T04:15:58.612Z",
+          "techniqueMastery": {},
+          "masteryBonus": {
+            "Spirit Ball": 1,
+            "Lacerating Slash": 1
+          },
+          "inBattle": false
+        }
+      ],
+      "homeLocation": "Earth",
+      "homeSpace": 9,
+      "zenkaiPending": null,
+      "preMissionAlignValue": 890,
+      "preMissionAlignment": "Positive",
+      "heaviestFishWeightKg": 842.62,
+      "heaviestFishName": "Massive Fish",
+      "kiApplication": true,
+      "peakFatigue": 0,
+      "kiEfficiency": 0.1,
+      "lastActivityAt": 1788038335972,
+      "lastActivitySavedAt": 1788038319226,
+      "children": [
+        {
+          "id": "child_mt88vbo3_13456",
+          "name": "Niku",
+          "race": "Half-Saiyan",
+          "gender": "male",
+          "birthDate": 1787636925651,
+          "motherName": "Raina",
+          "fatherId": "1787323900000",
+          "fatherName": "Horen",
+          "custodianUserId": "306501966672953355",
+          "siblings": 1,
+          "racialAbilities": [
+            "To Tail or to Not",
+            "Zenkai",
+            "Intense Anger",
+            "Adept in Ki"
+          ],
+          "stats": {
+            "str": 1199,
+            "dex": 1074,
+            "con": 1292,
+            "wil": 958,
+            "spi": 1020,
+            "int": 5
+          },
+          "prodigy": false,
+          "isSeed": false,
+          "bonusStats": {
+            "str": 0,
+            "dex": 0,
+            "con": 0,
+            "wil": 0,
+            "spi": 0
+          },
+          "techniques": [],
+          "isChild": true,
+          "incest": false,
+          "alignment": "Neutral",
+          "alignmentValue": 0,
+          "nextFeedAt": 1787892867267,
+          "inBattle": false,
+          "createdAt": "2026-08-25T05:48:45.651Z",
+          "currentHP": 124
+        }
+      ],
+      "dead": true,
+      "homeType": "Large Home",
+      "homeStorage": [],
+      "homeStorageSlots": 1000,
+      "companionPregnancies": [
+        {
+          "motherType": "companion",
+          "companionId": "comp_mt83twng_223",
+          "motherName": "Raina",
+          "motherRace": "Earthling",
+          "motherUserId": "306501966672953355",
+          "fatherId": "1787323900000",
+          "fatherName": "Horen",
+          "fatherRace": "Saiyan",
+          "fatherUserId": "306501966672953355",
+          "motherStats": {
+            "str": 732,
+            "dex": 519,
+            "con": 1029,
+            "wil": 416,
+            "spi": 453
+          },
+          "fatherStats": {
+            "str": 1665,
+            "dex": 1628,
+            "con": 1555,
+            "wil": 1500,
+            "spi": 1586,
+            "int": 9
+          },
+          "dueAt": 1787636840911,
+          "resolved": true,
+          "incest": false
+        }
+      ],
+      "lastProcreationPartner": {
+        "id": "comp_mt83twng_223",
+        "type": "companion",
+        "name": "Raina",
+        "companionship": 50
+      },
+      "abilityMastery": {
+        "Ki Application": 3,
+        "Ki Efficiency": 3
+      },
+      "rival": {
+        "name": "Rafael",
+        "race": "Saibamen",
+        "gender": "Male",
+        "baseStats": {
+          "str": 1344,
+          "dex": 2998,
+          "con": 2302,
+          "wil": 1294,
+          "spi": 1234
+        },
+        "techniques": [
+          "Spirit Ball",
+          "Fly"
+        ],
+        "fightingStyle": null,
+        "weapon": "Masterwork Scythe",
+        "weaponType": "Scythe",
+        "weaponAttackMod": 6,
+        "weaponDamageMode": "str",
+        "weaponBypass": false,
+        "weaponDexPenalty": 3,
+        "weaponRank": 4,
+        "armor": "Masterwork Heavy Armor",
+        "armorReduction": 39,
+        "armorDexReduction": 51,
+        "armorDurability": 17,
+        "armorRank": 4,
+        "passives": [
+          "Determined",
+          "Battle-Hardened",
+          "Keen Senses",
+          "Flight",
+          "Power Surge",
+          "Ruthless"
+        ],
+        "defeats": 10,
+        "persuasionProgress": 0,
+        "spares": 2,
+        "createdAt": 1787705397505,
+        "flying": true,
+        "kiSense": true,
+        "kiAppDamage": 10,
+        "weaponConBonus": 0,
+        "weaponWilBonus": 0
+      },
+      "pickaxeDurability": 3,
+      "visitedSlots": [
+        "Earth-10",
+        "Earth-6",
+        "Earth-3",
+        "Earth-1"
+      ],
+      "travelingMerchant": null,
+      "npcQuest": null,
+      "npcQuestCooldownUntil": 1787725328176,
+      "canonActionUsedAt": 1787861846539
+    }
+  ],
+  "385605201723260928": [
+    {
+      "id": "1787986821915",
+      "createdAt": "2026-08-29T07:00:21.915Z",
+      "name": "Cotten Eye Joe",
+      "race": "Frost Demon",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Frieza Planet",
+      "space": 34,
+      "fuel": 100,
+      "techniques": [
+        "Fly"
+      ],
+      "searchesUsed": 6,
+      "searchArea": "Frieza Planet-33",
+      "searchResetDate": "Sat Aug 29 2026",
+      "zeni": 190000,
+      "lastAgeCheck": 1787986797393,
+      "resources": 2,
+      "unspentPoints": 771,
+      "gathersUsed": 3,
+      "gatherArea": "Frieza Planet-34",
+      "gatherResetDate": "Sat Aug 29 2026",
+      "fightingStyle": null,
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 0,
+      "lastRestChargeTime": 1787990397393,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [
+        "1st Form",
+        "2nd Form",
+        "3rd Form",
+        "4th Form",
+        "100% 4th Form"
+      ],
+      "clan": null,
+      "namekianEgg": false,
+      "rebirthSaga": null,
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {},
+      "masteryReady": true,
+      "age": 102,
+      "stats": {
+        "str": 1762,
+        "dex": 1742,
+        "con": 1686,
+        "wil": 1731,
+        "spi": 1739,
+        "int": 9
+      },
+      "modifiers": {
+        "str": 17,
+        "dex": 17,
+        "con": 17,
+        "wil": 17,
+        "spi": 17,
+        "int": 0
+      },
+      "maxHP": 190,
+      "maxKi": 190,
+      "background": "None provided",
+      "mutation": "Prodigious Achievement",
+      "alignment": "Positive",
+      "alignmentValue": 10,
+      "companions": [
+        {
+          "id": "comp_mte1a8xq_20",
+          "name": "Icer",
+          "race": "Frost Demon",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -2701,
+          "stats": {
+            "str": 84,
+            "dex": 63,
+            "con": 78,
+            "wil": 63,
+            "spi": 72,
+            "int": 10
+          },
+          "bonusStats": {
+            "str": 563,
+            "dex": 557,
+            "con": 538,
+            "wil": 551,
+            "spi": 553
+          },
+          "companionship": 25,
+          "fatigue": 10,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787992382078,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Fly"
+          ],
+          "fightingStyle": null,
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-29T07:03:02.078Z",
+          "techniqueMastery": {
+            "Fly": 1
+          },
+          "masteryBonus": {
+            "Spirit Ball": 2,
+            "Fly": 2
+          }
+        }
+      ],
+      "powerLevel": 10806,
+      "currentHP": 72,
+      "currentKi": 190,
+      "fatigue": 13,
+      "peakFatigue": 13,
+      "inventory": [
+        "Iron Ore",
+        "Fishing Tackle",
+        "[Broken] Motherboard",
+        "Magic Carpet",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "[Destroyed][Unrepairable] Engine Conjunction",
+        "Shovel"
+      ],
+      "inventorySlots": 10,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "Prodigious Achievement",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": "Bo-Staff",
+      "armor": null,
+      "weaponAttackMod": 3,
+      "weaponDamageMode": "dex",
+      "weaponBypass": true,
+      "weaponDexPenalty": 1,
+      "armorReduction": 0,
+      "armorDexReduction": 0,
+      "armorDurability": 0,
+      "lastActivityAt": 1787992064804,
+      "lastActivitySavedAt": 1787992057009,
+      "updatedAt": "2026-08-29T08:39:22.978Z",
+      "preMissionAlignValue": 0,
+      "preMissionAlignment": "Neutral",
+      "lastDailyReset": "Sat Aug 29 2026",
+      "travelingMerchant": null,
+      "children": [],
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "heaviestFishWeightKg": 780.23,
+      "heaviestFishName": "Massive Fish",
+      "carpetFreeRestAt": 1787989929056,
+      "weaponType": "Bo-Staff",
+      "weaponConBonus": 0,
+      "weaponWilBonus": 0,
+      "weaponSpiDmgPct": 0,
+      "weaponWilDmgPct": 0,
+      "lastLimitBreakPL": 6110,
+      "lastLimitBreakReq": 1.5,
+      "limitBreakMult": 10,
+      "visitedSlots": [
+        "Frieza Planet-34"
+      ]
+    }
+  ],
+  "1064761238216777809": [
+    {
+      "id": "1787523042094",
+      "createdAt": "2026-08-23T22:10:42.094Z",
+      "name": "Kabu",
+      "race": "Tuffle",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 14,
+      "fuel": 100,
+      "techniques": [
+        "Ki Sense",
+        "Fly",
+        "Ki Efficiency",
+        "Ki Application",
+        "Kamehameha",
+        "Kamehameha Surge",
+        "Dashing Kamehameha",
+        "Destructo Disc",
+        "Pump Up"
+      ],
+      "searchesUsed": 3,
+      "searchArea": "Earth-14",
+      "searchResetDate": "Sat Aug 29 2026",
+      "zeni": 1620197,
+      "lastAgeCheck": 1787782229739,
+      "resources": 41692,
+      "unspentPoints": 1222,
+      "gathersUsed": 3,
+      "gatherArea": "Earth-13",
+      "gatherResetDate": "Sat Aug 29 2026",
+      "fightingStyle": "Turtle",
+      "kiEfficiency": 0.1,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "lastRestChargeTime": 1787978429739,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": "light",
+      "weightsDurability": 23,
+      "weightsEquipped": true,
+      "forms": [
+        "False Super Saiyan"
+      ],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {
+        "Pump Up": 5,
+        "Kamehameha Surge": 2,
+        "Fly": 5,
+        "Ki Sense": 1
+      },
+      "masteryBonus": {},
+      "masteryReady": true,
+      "age": 14,
+      "stats": {
+        "str": 28691,
+        "dex": 27690,
+        "con": 28532,
+        "wil": 25176,
+        "spi": 25033,
+        "int": 13
+      },
+      "modifiers": {
+        "str": 30,
+        "dex": 30,
+        "con": 30,
+        "wil": 30,
+        "spi": 30,
+        "int": 0
+      },
+      "maxHP": 300,
+      "maxKi": 370,
+      "background": "None provided",
+      "mutation": "None",
+      "alignment": "Positive",
+      "alignmentValue": 335,
+      "companions": [
+        {
+          "id": "comp_mt9jor8x_595",
+          "name": "Tavin",
+          "race": "Half-Saiyan",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -15189,
+          "stats": {
+            "str": 1278,
+            "dex": 2628,
+            "con": 2002,
+            "wil": 2394,
+            "spi": 970,
+            "int": 10
+          },
+          "bonusStats": {
+            "str": 11230,
+            "dex": 10717,
+            "con": 11147,
+            "wil": 9441,
+            "spi": 9350
+          },
+          "companionship": 119,
+          "fatigue": 10,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787980161201,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Sweeping Swing",
+            "Thrusting Strikes",
+            "Lacerating Slash"
+          ],
+          "fightingStyle": "Legionary Discipline",
+          "weapon": "Expert Halberd",
+          "weaponAttackMod": 12,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": true,
+          "createdAt": "2026-08-26T03:39:21.201Z",
+          "techniqueMastery": {
+            "Ki Application": 2,
+            "Sweeping Swing": 2
+          },
+          "masteryBonus": {
+            "Thrusting Strikes": 5,
+            "Spirit Ball": 5,
+            "Lacerating Slash": 6,
+            "Ki Application": 2
+          },
+          "zenkaiPending": {
+            "source": "Half-Saiyan Zenkai",
+            "gainPercent": 9,
+            "powerLevel": 11428
+          },
+          "forms": [
+            "False Super Saiyan"
+          ],
+          "activeForm": null
+        },
+        {
+          "id": "comp_mt9p9ymp_692",
+          "name": "Varen",
+          "race": "Half-Saiyan",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -7093,
+          "stats": {
+            "str": 5170,
+            "dex": 5338,
+            "con": 5518,
+            "wil": 2118,
+            "spi": 2062,
+            "int": 4
+          },
+          "bonusStats": {
+            "str": 10430,
+            "dex": 9978,
+            "con": 10349,
+            "wil": 8822,
+            "spi": 8708
+          },
+          "companionship": 150,
+          "fatigue": 20,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787987748625,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Dodon Ray",
+            "Dodon Barrage",
+            "Machine Gun Punches"
+          ],
+          "fightingStyle": "Crane",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 7,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-26T06:15:48.625Z",
+          "techniqueMastery": {
+            "Tiger Teep": 2,
+            "Dodon Ray": 2,
+            "Spirit Ball": 1,
+            "Ki Application": 1,
+            "Dodon Barrage": 1
+          },
+          "masteryBonus": {
+            "Leaping Tiger Fist": 2,
+            "Savage Elbow": 1,
+            "Machine Gun Punches": 2,
+            "Ki Application": 5,
+            "Spirit Ball": 1,
+            "Dodon Barrage": 1
+          },
+          "zenkaiPending": {
+            "source": "Half-Saiyan Zenkai",
+            "gainPercent": 5,
+            "powerLevel": 22839
+          },
+          "forms": [
+            "False Super Saiyan"
+          ],
+          "activeForm": null
+        },
+        {
+          "id": "comp_mt9pq21z_88",
+          "name": "Lucian",
+          "race": "Cerealian",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -9968,
+          "stats": {
+            "str": 4568,
+            "dex": 5222,
+            "con": 3168,
+            "wil": 2104,
+            "spi": 3730,
+            "int": 5
+          },
+          "bonusStats": {
+            "str": 10806,
+            "dex": 10353,
+            "con": 10729,
+            "wil": 9208,
+            "spi": 9095
+          },
+          "companionship": 74,
+          "fatigue": 20,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787986699559,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Vital Strike",
+            "Wolf Fang Fist",
+            "Whirlwind Kick",
+            "Neo Wolf Fang Fist"
+          ],
+          "fightingStyle": "Wolf",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-26T06:28:19.559Z",
+          "techniqueMastery": {
+            "Tornado Roundhouse": 1,
+            "Wolf Fang Fist": 1
+          },
+          "masteryBonus": {
+            "Heaven's Howl": 3,
+            "Vital Strike": 5,
+            "Spirit Ball": 6,
+            "Crashing Thunder Kick": 1,
+            "Whirlwind Kick": 2,
+            "Neo Wolf Fang Fist": 1
+          }
+        }
+      ],
+      "powerLevel": 165458,
+      "currentHP": 300,
+      "currentKi": 124,
+      "fatigue": 7.8856299299999995,
+      "inventory": [
+        "Anvil",
+        "Smelting Forge",
+        "Tongs",
+        "Ingot Mold",
+        "Armor Mold",
+        "Dragon Ball",
+        "Blood Ruby",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "3x Fishing Tackle",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "31x Senzu Bean",
+        "14x Copper Wires",
+        "Drill",
+        "2x Soul Stone",
+        "2x Gravitational Control Chip",
+        "5x Welder Charges",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Katchin",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Pickaxe",
+        "Blood Vial",
+        "5x Component",
+        "2x Jeremy Wade's Fishing Rod",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "2x Shovel",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "6x Hunting Traps",
+        "6x Iron Ore",
+        "62x Mixed Capsule",
+        "4x Steel Ore",
+        "3x Small Training Weight",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "6x [Destroyed][Unrepairable] Engine Conjunction",
+        "7x [Broken] Motherboard",
+        "5x Ki Recovery Capsule",
+        "3x Recovery Capsule",
+        "Ancient Wuxia Talisman",
+        "3x Healer's Kit",
+        "True Capsule",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "Bansho Fan",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "5x Resources",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        }
+      ],
+      "inventorySlots": 70,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "updatedAt": "2026-08-29T20:55:13.026Z",
+      "lastDailyReset": "Fri Aug 28 2026",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "peakFatigue": 26.2854331,
+      "weapon": "Spear of Longinus",
+      "weaponType": "Spear of Longinus",
+      "weaponAttackMod": 19,
+      "weaponDamageMode": "halfWilHalfStr",
+      "weaponBypass": false,
+      "weaponDexPenalty": 3,
+      "weaponConBonus": 5,
+      "weaponWilBonus": 5,
+      "armor": null,
+      "armorReduction": null,
+      "armorDexReduction": null,
+      "armorDurability": null,
+      "heaviestFishWeightKg": 840.84,
+      "heaviestFishName": "Massive Fish",
+      "lastActivityAt": 1788036913026,
+      "lastActivitySavedAt": 1788036910592,
+      "pickaxeDurability": 3,
+      "travelingMerchant": null,
+      "preMissionAlignValue": 310,
+      "preMissionAlignment": "Positive",
+      "children": [],
+      "visitedSlots": [
+        "Earth-17",
+        "Earth-10",
+        "Earth-6",
+        "Earth-3",
+        "Earth-1",
+        "Earth-24"
+      ],
+      "npcQuestCooldownUntil": 1787933621258,
+      "rival": {
+        "name": "Cyrus",
+        "race": "Tortle",
+        "gender": "Male",
+        "baseStats": {
+          "str": 862,
+          "dex": 1342,
+          "con": 942,
+          "wil": 538,
+          "spi": 1180
+        },
+        "techniques": [
+          "Spirit Ball",
+          "Ki Sense"
+        ],
+        "fightingStyle": null,
+        "weapon": "Fine Spiked Club",
+        "weaponType": "Spiked Club",
+        "weaponAttackMod": 3,
+        "weaponDamageMode": "str",
+        "weaponBypass": true,
+        "weaponDexPenalty": 2,
+        "weaponRank": 3,
+        "armor": "Masterwork Light Armor",
+        "armorReduction": 23,
+        "armorDexReduction": 13,
+        "armorDurability": 14,
+        "armorRank": 3,
+        "passives": [
+          "Determined",
+          "Battle-Hardened",
+          "Keen Senses",
+          "Flight",
+          "Power Surge"
+        ],
+        "defeats": 7,
+        "persuasionProgress": 6,
+        "spares": 0,
+        "createdAt": 1787715737779,
+        "flying": true,
+        "kiSense": true,
+        "kiAppDamage": 5,
+        "weaponConBonus": 0,
+        "weaponWilBonus": 0
+      },
+      "kiApplication": true,
+      "lastLimitBreakPL": 29664,
+      "lastLimitBreakReq": 1.5,
+      "limitBreakMult": 10,
+      "abilityMastery": {
+        "Ki Application": 3,
+        "Ki Efficiency": 3
+      },
+      "npcQuest": null
+    }
+  ],
+  "1186803257000087582": [
+    {
+      "id": "1787620247758",
+      "createdAt": "2026-08-25T01:10:47.758Z",
+      "name": "Way of the Sausage-Way",
+      "race": "Tortle",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 70,
+      "fuel": 100,
+      "techniques": [
+        "Fly",
+        "Ki Sense",
+        "Ki Efficiency",
+        "Wolf Fang Fist",
+        "Whirlwind Kick",
+        "Neo Wolf Fang Fist"
+      ],
+      "searchesUsed": 3,
+      "searchArea": "Earth-70",
+      "searchResetDate": "Tue Aug 25 2026",
+      "zeni": 261265,
+      "lastAgeCheck": 1787620167653,
+      "resources": 56,
+      "unspentPoints": 0,
+      "gathersUsed": 3,
+      "gatherArea": "Earth-70",
+      "gatherResetDate": "Tue Aug 25 2026",
+      "fightingStyle": "Wolf",
+      "kiEfficiency": 0.1,
+      "gravityChamber": 0,
+      "restCharges": 0,
+      "lastRestChargeTime": 1787717367653,
+      "healingPod": false,
+      "shellState": "shed",
+      "shedTime": 1787708825902,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {
+        "Ki Sense": 1,
+        "Fly": 2,
+        "Ki Application": 1
+      },
+      "masteryReady": true,
+      "age": 17,
+      "stats": {
+        "str": 1336,
+        "dex": 2009,
+        "con": 1762,
+        "wil": 1224,
+        "spi": 1113,
+        "int": 10
+      },
+      "modifiers": {
+        "str": 15,
+        "dex": 19,
+        "con": 17,
+        "wil": 15,
+        "spi": 14,
+        "int": 0
+      },
+      "maxHP": 290,
+      "maxKi": 190,
+      "background": "None provided",
+      "mutation": "None",
+      "alignment": "Positive",
+      "alignmentValue": 590,
+      "companions": [],
+      "powerLevel": 8565,
+      "currentHP": 236,
+      "currentKi": 118,
+      "fatigue": 59.379999999999995,
+      "peakFatigue": 84.6,
+      "inventory": [
+        "2x Eldritch Rune",
+        "Fishing Tackle",
+        "Shovel",
+        "Dragon Ball",
+        "4x Iron Ore",
+        "Mithril",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Anvil",
+        "Smelting Forge",
+        "Pickaxe",
+        "Tongs",
+        "2x Ingot Mold",
+        {
+          "name": "Fine Steel Katana",
+          "quantity": 1,
+          "weaponType": "Katana",
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 5,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0
+        },
+        "Armor Mold",
+        "Hunting Traps",
+        "2x Copper Wires",
+        "Steel Ore",
+        "Component",
+        {
+          "name": "Ok Steel Nodachi",
+          "quantity": 1,
+          "weaponType": "Nodachi",
+          "weaponAttackMod": 7,
+          "weaponDexPenalty": 6,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 2,
+          "maxDurability": 3
+        }
+      ],
+      "inventorySlots": 20,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": null,
+      "armor": "Good Mithril Medium Armor",
+      "weaponAttackMod": null,
+      "weaponDamageMode": null,
+      "weaponBypass": false,
+      "weaponDexPenalty": null,
+      "armorReduction": 28,
+      "armorDexReduction": 29,
+      "armorDurability": 6,
+      "lastActivityAt": 1787719501394,
+      "lastActivitySavedAt": 1787719456240,
+      "updatedAt": "2026-08-26T04:45:01.394Z",
+      "heaviestFishWeightKg": 759.67,
+      "heaviestFishName": "Massive Fish",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "preMissionAlignValue": 580,
+      "preMissionAlignment": "Positive",
+      "lastDailyReset": "Tue Aug 25 2026",
+      "kiApplication": true,
+      "weaponType": null,
+      "weaponConBonus": null,
+      "weaponWilBonus": null,
+      "pickaxeDurability": 3,
+      "abilityMastery": {},
+      "travelingMerchant": null,
+      "weaponSpiDmgPct": null,
+      "weaponWilDmgPct": null,
+      "armorWilBonus": 0,
+      "armorSpiBonus": 0,
+      "rival": {
+        "name": "Radek",
+        "race": "Half-Saiyan",
+        "gender": "Male",
+        "baseStats": {
+          "str": 1317,
+          "dex": 2007,
+          "con": 1071,
+          "wil": 1569,
+          "spi": 1002
+        },
+        "techniques": [
+          "Spirit Ball",
+          "Fly"
+        ],
+        "fightingStyle": null,
+        "weapon": null,
+        "weaponType": null,
+        "weaponAttackMod": 0,
+        "weaponDamageMode": null,
+        "weaponBypass": false,
+        "weaponDexPenalty": 0,
+        "weaponRank": 0,
+        "armor": null,
+        "armorReduction": 0,
+        "armorDexReduction": 0,
+        "armorDurability": 0,
+        "armorRank": 0,
+        "passives": [],
+        "defeats": 0,
+        "persuasionProgress": 0,
+        "spares": 0,
+        "createdAt": 1787719373418
+      }
+    }
+  ],
+  "830334971741995039": [
+    {
+      "id": "1787699076725",
+      "createdAt": "2026-08-25T23:04:36.725Z",
+      "name": "Yunjin",
+      "race": "Frost Demon",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Frieza Planet",
+      "space": 66,
+      "fuel": 100,
+      "techniques": [
+        "Fly",
+        "Ki Application",
+        "One-Two",
+        "Liver Punch",
+        "Corkscrew",
+        "Ki Sense",
+        "Ki Efficiency"
+      ],
+      "searchesUsed": 7,
+      "searchArea": "Frieza Planet-66",
+      "searchResetDate": "Sat Aug 29 2026",
+      "zeni": 2414206,
+      "lastAgeCheck": 1787958241981,
+      "resources": 802,
+      "unspentPoints": 1443,
+      "gathersUsed": 3,
+      "gatherArea": "Frieza Planet-66",
+      "gatherResetDate": "Sat Aug 29 2026",
+      "fightingStyle": "Boxing",
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "lastRestChargeTime": 1788048241981,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": "light",
+      "weightsDurability": 17,
+      "weightsEquipped": false,
+      "forms": [
+        "1st Form",
+        "2nd Form",
+        "3rd Form",
+        "4th Form",
+        "100% 4th Form"
+      ],
+      "activeForm": null,
+      "formMastery": {
+        "100% 4th Form": 5,
+        "1st Form": 2,
+        "4th Form": 2
+      },
+      "techniqueMastery": {
+        "Clothesline": 1,
+        "Fly": 5,
+        "One-Two": 5,
+        "Kamehameha": 3,
+        "Ki Sense": 5,
+        "Liver Punch": 5,
+        "Corkscrew": 5
+      },
+      "masteryBonus": {
+        "Suplex": 1,
+        "Kamehameha": 1,
+        "4th Form": 3,
+        "Tornado Roundhouse": 1
+      },
+      "masteryReady": true,
+      "age": 125,
+      "stats": {
+        "str": 1575,
+        "dex": 6432,
+        "con": 1562,
+        "wil": 1536,
+        "int": 1,
+        "spi": 5643
+      },
+      "modifiers": {
+        "str": 16,
+        "dex": 22,
+        "con": 16,
+        "wil": 16,
+        "spi": 21,
+        "int": 0
+      },
+      "maxHP": 180,
+      "maxKi": 230,
+      "background": "None provided",
+      "mutation": "None",
+      "alignment": "Positive",
+      "alignmentValue": 1585,
+      "companions": [
+        {
+          "id": "comp_mtbv9tb7_368",
+          "name": "Kabura",
+          "race": "Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -1908,
+          "stats": {
+            "str": 4191,
+            "dex": 2004,
+            "con": 3801,
+            "wil": 1716,
+            "spi": 4395,
+            "int": 1
+          },
+          "bonusStats": {
+            "str": 4845,
+            "dex": 4835,
+            "con": 4824,
+            "wil": 4774,
+            "spi": 4762
+          },
+          "companionship": 294,
+          "fatigue": 0,
+          "restCharges": 1,
+          "lastCompanionRestChargeTime": 1788048551779,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Kamehameha",
+            "Kamehameha Surge",
+            "Dashing Kamehameha",
+            "Destructo Disc",
+            "Pump Up"
+          ],
+          "fightingStyle": "Turtle",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": true,
+          "createdAt": "2026-08-27T18:39:11.779Z",
+          "techniqueMastery": {
+            "Spirit Ball": 5,
+            "Machine Gun Punches": 1,
+            "Destructo Disc": 5,
+            "Dashing Kamehameha": 4,
+            "Kamehameha": 4,
+            "Kamehameha Surge": 4
+          },
+          "masteryBonus": {
+            "Dodon Ray": 3,
+            "Dodon Barrage": 1,
+            "Pump Up": 3
+          },
+          "weaponType": null,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "zenkaiPending": {
+            "source": "Saiyan Zenkai",
+            "gainPercent": 2,
+            "powerLevel": 35505
+          }
+        },
+        {
+          "id": "comp_mtby7ll8_422",
+          "name": "Aurelia",
+          "race": "Alien",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -14772,
+          "stats": {
+            "str": 6684,
+            "dex": 7659,
+            "con": 3021,
+            "wil": 4155,
+            "spi": 3687,
+            "int": 1
+          },
+          "bonusStats": {
+            "str": 2786,
+            "dex": 2784,
+            "con": 2778,
+            "wil": 2746,
+            "spi": 2746
+          },
+          "companionship": 60,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1788048087308,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Efficiency",
+            "Dodon Ray",
+            "Dodon Barrage",
+            "Machine Gun Punches"
+          ],
+          "fightingStyle": "Crane",
+          "weapon": "Tempered Scythe",
+          "weaponAttackMod": 5,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": "Masterwork Heavy Armor",
+          "armorReduction": 63,
+          "armorDexReduction": 54,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-27T20:01:27.308Z",
+          "techniqueMastery": {
+            "Dodon Ray": 3,
+            "Dodon Barrage": 2,
+            "Ki Efficiency": 2,
+            "Machine Gun Punches": 2,
+            "Spirit Ball": 3
+          },
+          "masteryBonus": {
+            "Machine Gun Punches": 1,
+            "Ki Efficiency": 6,
+            "Dodon Barrage": 4,
+            "Spirit Ball": 1
+          },
+          "weaponType": "Scythe",
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "id": "comp_mtbyj8n5_956",
+          "name": "Kairo",
+          "race": "Earthling",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -14461,
+          "stats": {
+            "str": 7920,
+            "dex": 4869,
+            "con": 6420,
+            "wil": 7350,
+            "spi": 4590,
+            "int": 9
+          },
+          "bonusStats": {
+            "str": 3635,
+            "dex": 3633,
+            "con": 3628,
+            "wil": 3597,
+            "spi": 3597
+          },
+          "companionship": 57,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1788048630401,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Crashing Thunder Kick",
+            "Tornado Roundhouse",
+            "Heaven's Howl"
+          ],
+          "fightingStyle": "Taekwondo",
+          "weapon": "Tempered Halberd",
+          "weaponAttackMod": 7,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": "Expert Heavy Armor",
+          "armorReduction": 35,
+          "armorDexReduction": 62,
+          "armorDurability": 0,
+          "kiAppDamage": 7,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-27T20:10:30.401Z",
+          "techniqueMastery": {
+            "Crashing Thunder Kick": 2,
+            "Tornado Roundhouse": 2,
+            "Ki Application": 1,
+            "Spirit Ball": 1
+          },
+          "masteryBonus": {
+            "Heaven's Howl": 7,
+            "Ki Application": 4,
+            "Spirit Ball": 6,
+            "Crashing Thunder Kick": 3,
+            "Tornado Roundhouse": 2
+          },
+          "weaponType": "Halberd",
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "lastLimitBreakPL": 45355,
+          "limitBreakMult": 10
+        },
+        {
+          "id": "comp_mtcclvro_948",
+          "name": "Yami",
+          "race": "Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -29483,
+          "stats": {
+            "str": 22320,
+            "dex": 15480,
+            "con": 11164,
+            "wil": 8415,
+            "spi": 17914,
+            "int": 6
+          },
+          "bonusStats": {
+            "str": 2378,
+            "dex": 2374,
+            "con": 2370,
+            "wil": 2342,
+            "spi": 2342
+          },
+          "companionship": 83,
+          "fatigue": 20,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1788047068308,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Assassinate",
+            "Pin-Point Blow",
+            "Incognito",
+            "Secret Poison"
+          ],
+          "fightingStyle": "Assassin",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": true,
+          "createdAt": "2026-08-28T02:44:28.308Z",
+          "techniqueMastery": {
+            "Spirit Ball": 3,
+            "Incognito": 1,
+            "Ki Application": 1,
+            "Assassinate": 1,
+            "Secret Poison": 1
+          },
+          "masteryBonus": {
+            "Pin-Point Blow": 6,
+            "Incognito": 3,
+            "Assassinate": 1
+          },
+          "zenkaiPending": {
+            "source": "Saiyan Zenkai",
+            "gainPercent": 1,
+            "powerLevel": 99416
+          }
+        }
+      ],
+      "powerLevel": 20258,
+      "currentHP": 71,
+      "currentKi": 221,
+      "fatigue": 3,
+      "peakFatigue": 10,
+      "inventory": [
+        "3x Shovel",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "Fishing Tackle",
+        "11x Mixed Capsule",
+        "10x Resources",
+        "4x [Broken] Motherboard",
+        {
+          "name": "Masterwork Power Pole",
+          "quantity": 1,
+          "weaponType": "Power Pole",
+          "weaponAttackMod": 5,
+          "weaponDexPenalty": 0,
+          "weaponDamageMode": "str",
+          "weaponBypass": true,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        "2x Ki Recovery Capsule",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Seed of Might",
+        "2x Small Training Weight",
+        "Blood Vial",
+        "Magic Carpet",
+        "2x Copper Wires",
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Iron Ore",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "Sage Water",
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        "2x Senzu Bean",
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Dinosaur Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 25,
+          "ki": 25,
+          "fatigue": -5
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        },
+        {
+          "name": "Deer Meat",
+          "type": "consumable",
+          "cooked": true,
+          "hp": 7,
+          "ki": 7,
+          "fatigue": -2
+        }
+      ],
+      "inventorySlots": 100,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": "Masterwork Nodachi",
+      "armor": null,
+      "weaponAttackMod": 7,
+      "weaponDamageMode": "halfAttackHalfDex",
+      "weaponBypass": false,
+      "weaponDexPenalty": 0,
+      "armorReduction": null,
+      "armorDexReduction": null,
+      "armorDurability": null,
+      "lastActivityAt": 1788049702387,
+      "lastActivitySavedAt": 1788049652051,
+      "updatedAt": "2026-08-30T00:28:22.388Z",
+      "inTransitUntil": 1788049702988,
+      "transitDestination": {
+        "location": "Frieza Planet",
+        "space": 67
+      },
+      "lastDailyReset": "Sat Aug 29 2026",
+      "preMissionAlignValue": 1575,
+      "preMissionAlignment": "Positive",
+      "abilityMastery": {
+        "Ki Application": 3,
+        "Ki Efficiency": 3
+      },
+      "children": [],
+      "heaviestFishWeightKg": 672.4,
+      "heaviestFishName": "Massive Fish",
+      "weaponType": "Nodachi",
+      "weaponConBonus": 0,
+      "weaponWilBonus": 0,
+      "rival": {
+        "name": "Talia",
+        "race": "Earthling",
+        "gender": "Female",
+        "baseStats": {
+          "str": 420,
+          "dex": 400,
+          "con": 366,
+          "wil": 510,
+          "spi": 428
+        },
+        "techniques": [
+          "Spirit Ball"
+        ],
+        "fightingStyle": null,
+        "weapon": "Masterwork Spiked Club",
+        "weaponType": "Spiked Club",
+        "weaponAttackMod": 7,
+        "weaponDamageMode": "str",
+        "weaponBypass": true,
+        "weaponDexPenalty": 0,
+        "weaponRank": 4,
+        "armor": "Masterwork Light Armor",
+        "armorReduction": 34,
+        "armorDexReduction": 15,
+        "armorDurability": 21,
+        "armorRank": 4,
+        "passives": [
+          "Determined",
+          "Battle-Hardened",
+          "Keen Senses",
+          "Flight",
+          "Power Surge",
+          "Ruthless"
+        ],
+        "defeats": 22,
+        "persuasionProgress": 9,
+        "spares": 0,
+        "createdAt": 1787725261563,
+        "flying": true,
+        "kiSense": true,
+        "kiAppDamage": 10,
+        "weaponConBonus": 0,
+        "weaponWilBonus": 0
+      },
+      "kiApplication": true,
+      "weaponSpiDmgPct": 0,
+      "weaponWilDmgPct": 0,
+      "travelingMerchant": null,
+      "armorWilBonus": null,
+      "armorSpiBonus": null,
+      "visitedSlots": [
+        "Earth-1",
+        "Earth-3"
+      ],
+      "npcQuestCooldownUntil": 1787857322066,
+      "dead": false,
+      "deathAlignmentValue": 600,
+      "deathAlignment": "Positive",
+      "deathLocation": "Earth",
+      "deathSpace": 4,
+      "huntResetDate": "Sat Aug 29 2026",
+      "huntsUsed": 2,
+      "huntArea": "Frieza Planet-65",
+      "carpetFreeRestAt": 1788048012978,
+      "hellSaga": null,
+      "zenkaiPending": null
+    }
+  ],
+  "test_durability": [
+    {
+      "id": "1",
+      "createdAt": "2026-08-23T05:43:45.852Z",
+      "race": "Earthling",
+      "maxHP": 100,
+      "currentHP": 100,
+      "fatigue": 0,
+      "inventory": [
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Small Fish",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 2,
+          "ki": 2
+        },
+        "2x Component"
+      ],
+      "inventorySlots": 10,
+      "statusEffects": [],
+      "techniques": [],
+      "transformations": [],
+      "mutations": "None",
+      "experience": 0,
+      "level": 1,
+      "updatedAt": "2026-08-23T05:43:45.856Z",
+      "location": "Earth",
+      "space": 1,
+      "fuel": 100,
+      "gravityChamber": 0,
+      "restCharges": 2,
+      "lastRestChargeTime": 1787463984232,
+      "healingPod": false,
+      "searchesUsed": 0,
+      "searchArea": "Earth-1",
+      "searchResetDate": "Sun Aug 23 2026",
+      "zeni": 0,
+      "resources": 0,
+      "unspentPoints": 0,
+      "gathersUsed": 0,
+      "gatherArea": "Earth-1",
+      "gatherResetDate": "Sun Aug 23 2026",
+      "fightingStyle": null,
+      "lastAgeCheck": 1787463984233,
+      "currentKi": 20,
+      "maxKi": 20,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {},
+      "masteryReady": false,
+      "age": 1
+    }
+  ],
+  "690008687963537440": [
+    {
+      "id": "1787476421846",
+      "createdAt": "2026-08-23T09:13:41.846Z",
+      "name": "Kaeyanne",
+      "race": "Half-Saiyan",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 11,
+      "fuel": 100,
+      "techniques": [],
+      "searchesUsed": 0,
+      "searchArea": "Earth-11",
+      "searchResetDate": "Sun Aug 23 2026",
+      "zeni": 0,
+      "lastAgeCheck": 1787476385337,
+      "resources": 0,
+      "unspentPoints": 0,
+      "gathersUsed": 0,
+      "gatherArea": "Earth-11",
+      "gatherResetDate": "Sun Aug 23 2026",
+      "fightingStyle": null,
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 2,
+      "lastRestChargeTime": 1787476385337,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {},
+      "masteryReady": false,
+      "age": 18,
+      "stats": {
+        "str": 1,
+        "dex": 1,
+        "con": 1,
+        "wil": 1,
+        "spi": 1
+      },
+      "modifiers": {
+        "str": 0,
+        "dex": 0,
+        "con": 0,
+        "wil": 0,
+        "spi": 0,
+        "int": 0
+      },
+      "maxHP": 20,
+      "maxKi": 20,
+      "background": "None provided",
+      "mutation": "Hope of the Universe",
+      "alignment": "Neutral",
+      "powerLevel": 11,
+      "currentHP": 20,
+      "currentKi": 20,
+      "fatigue": 0,
+      "inventory": [],
+      "inventorySlots": 10,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "experience": 0,
+      "level": 1,
+      "updatedAt": "2026-08-23T09:15:21.338Z"
+    }
+  ],
+  "658395370426204167": [
+    {
+      "id": "1787497109730",
+      "createdAt": "2026-08-23T14:58:29.730Z",
+      "name": "Pael",
+      "race": "Cerealian",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 92,
+      "fuel": 100,
+      "techniques": [
+        "Ki Sense",
+        "Dodon Ray",
+        "Dodon Barrage",
+        "Machine Gun Punches",
+        "Fly",
+        "Vital Strike"
+      ],
+      "searchesUsed": 4,
+      "searchArea": "Earth-92",
+      "searchResetDate": "Fri Aug 28 2026",
+      "zeni": 2170898,
+      "lastAgeCheck": 1787756286277,
+      "resources": 12354,
+      "unspentPoints": 83,
+      "gathersUsed": 3,
+      "gatherArea": "Earth-36",
+      "gatherResetDate": "Fri Aug 28 2026",
+      "fightingStyle": "Crane",
+      "kiEfficiency": 0.1,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "lastRestChargeTime": 1787776086277,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": "heavy",
+      "weightsDurability": 8,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {
+        "Dodon Ray": 4,
+        "Ki Sense": 5,
+        "Fly": 5,
+        "Vital Strike": 1
+      },
+      "masteryBonus": {
+        "Dodon Ray": 5,
+        "Vital Strike": 2
+      },
+      "masteryReady": true,
+      "age": 15,
+      "stats": {
+        "str": 669,
+        "dex": 558,
+        "con": 350,
+        "wil": 921,
+        "int": 3,
+        "spi": 3648
+      },
+      "modifiers": {
+        "str": 12,
+        "dex": 11,
+        "con": 10,
+        "wil": 13,
+        "spi": 20,
+        "int": 0
+      },
+      "maxHP": 120,
+      "maxKi": 270,
+      "background": "None provided",
+      "mutation": "Hunter of Legend",
+      "alignment": "Positive",
+      "alignmentValue": 2455,
+      "companions": [
+        {
+          "id": "comp_mt60tudm_615",
+          "name": "Icer",
+          "race": "Frost Demon",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -1241,
+          "stats": {
+            "str": 19,
+            "dex": 20,
+            "con": 15,
+            "wil": 11,
+            "spi": 17
+          },
+          "bonusStats": {
+            "str": 4266,
+            "dex": 4197,
+            "con": 4135,
+            "wil": 4065,
+            "spi": 3979
+          },
+          "techniques": [
+            "Spirit Ball",
+            "Dodon Ray",
+            "Dodon Barrage",
+            "Machine Gun Punches"
+          ],
+          "fightingStyle": "Crane",
+          "weapon": "Expert Power Pole",
+          "weaponAttackMod": 4,
+          "weaponDamageMode": "str",
+          "weaponBypass": true,
+          "kiAppDamage": 4,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-23T16:28:07.306Z",
+          "fatigue": 20,
+          "techniqueMastery": {
+            "Dodon Barrage": 5,
+            "Dodon Ray": 5,
+            "Spirit Ball": 5,
+            "Machine Gun Punches": 5
+          },
+          "masteryBonus": {},
+          "companionship": 340,
+          "lastCompanionRestChargeTime": 1787775291121,
+          "restCharges": 2
+        },
+        {
+          "id": "comp_mt6hssop_10",
+          "name": "Damon",
+          "race": "Oni",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -8321,
+          "stats": {
+            "str": 20,
+            "dex": 20,
+            "con": 15,
+            "wil": 11,
+            "spi": 25
+          },
+          "bonusStats": {
+            "str": 2359,
+            "dex": 2320,
+            "con": 2284,
+            "wil": 2243,
+            "spi": 2184
+          },
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Fly",
+            "Sweeping Swing",
+            "Thrusting Strikes",
+            "Lacerating Slash"
+          ],
+          "fightingStyle": "Legionary Discipline",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-24T00:23:11.929Z",
+          "techniqueMastery": {
+            "Spirit Ball": 5,
+            "Ki Application": 5,
+            "Fly": 5,
+            "Thrusting Strikes": 2,
+            "Lacerating Slash": 2,
+            "Sweeping Swing": 4
+          },
+          "masteryBonus": {
+            "Spirit Ball": 2,
+            "Ki Application": 3,
+            "Thrusting Strikes": 7,
+            "Sweeping Swing": 4,
+            "Lacerating Slash": 1
+          },
+          "fatigue": 0,
+          "companionship": 160,
+          "lastCompanionRestChargeTime": 1787775291121,
+          "restCharges": 1,
+          "weaponType": null,
+          "weaponDexPenalty": 0,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "id": "comp_mt7awf45_120",
+          "name": "Talia",
+          "race": "Konatsian",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -9639,
+          "stats": {
+            "str": 338,
+            "dex": 370,
+            "con": 340,
+            "wil": 312,
+            "spi": 314
+          },
+          "bonusStats": {
+            "str": 3872,
+            "dex": 3842,
+            "con": 3814,
+            "wil": 3768,
+            "spi": 3726
+          },
+          "techniques": [
+            "Spirit Ball",
+            "Fly",
+            "Cross Slash",
+            "Ki Sharpening",
+            "Impaling Thrust",
+            "Ki Sense"
+          ],
+          "fightingStyle": "Swordsman",
+          "weapon": "Tempered Katana",
+          "weaponAttackMod": 4,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-24T13:57:49.829Z",
+          "techniqueMastery": {
+            "Ki Sense": 5,
+            "Cross Slash": 5,
+            "Impaling Thrust": 5,
+            "Spirit Ball": 5,
+            "Ki Sharpening": 5,
+            "Fly": 5
+          },
+          "masteryBonus": {},
+          "fatigue": 20,
+          "companionship": 455,
+          "lastCompanionRestChargeTime": 1787775291121,
+          "restCharges": 2
+        },
+        {
+          "id": "comp_mta5vgl3_544",
+          "name": "Pui",
+          "race": "Earthling",
+          "gender": "Male",
+          "alignment": "Positive",
+          "alignmentValue": 0,
+          "stats": {
+            "str": 2572,
+            "dex": 2440,
+            "con": 2870,
+            "wil": 1138,
+            "spi": 2392,
+            "int": 2
+          },
+          "bonusStats": {
+            "str": 685,
+            "dex": 676,
+            "con": 675,
+            "wil": 671,
+            "spi": 665
+          },
+          "companionship": 27,
+          "fatigue": 10,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787830225527,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Sweeping Swing",
+            "Thrusting Strikes",
+            "Lacerating Slash"
+          ],
+          "fightingStyle": "Legionary Discipline",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-26T14:00:25.527Z",
+          "techniqueMastery": {
+            "Thrusting Strikes": 1,
+            "Spirit Ball": 1,
+            "Lacerating Slash": 1
+          },
+          "masteryBonus": {
+            "Sweeping Swing": 3,
+            "Thrusting Strikes": 4,
+            "Spirit Ball": 5
+          },
+          "weaponType": null,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        }
+      ],
+      "powerLevel": 9462,
+      "currentHP": 1,
+      "currentKi": 270,
+      "fatigue": 74,
+      "inventory": [
+        "20x Copper Wires",
+        "45x Resources",
+        "28x Ki Recovery Capsule",
+        "12x [Broken] Motherboard",
+        "17x Steel Ore",
+        "12x [Destroyed][Unrepairable] Engine Conjunction",
+        "14x Hunting Traps",
+        "12x Shovel",
+        "2x Magic Carpet",
+        "Eldritch Rune",
+        "11x Iron Ore",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "Camp Fire",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "10x Mixed Capsule",
+        "124x Recovery Capsule",
+        "5x Senzu Bean",
+        "2x Fishing Tackle",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "4x Blood Vial",
+        "Ancient Wuxia Talisman",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "11x Healer's Kit",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Katchin",
+        "6x Component",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "4x Small Training Weight",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Small Wallet (5000 zeni)",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Large Home",
+        {
+          "name": "Worthless Halberd",
+          "quantity": 1,
+          "weaponAttackMod": 4,
+          "weaponDexPenalty": 0,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "name": "Masterwork Scythe",
+          "quantity": 1,
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 0,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "name": "Tempered Greathammer",
+          "quantity": 1,
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 0,
+          "weaponDamageMode": "str",
+          "weaponBypass": true,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "name": "Fine Halberd",
+          "quantity": 1,
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 0,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Bansho Fan",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Spear of Longinus",
+          "quantity": 1,
+          "weaponType": "Spear of Longinus",
+          "weaponAttackMod": 3,
+          "weaponDexPenalty": 10,
+          "weaponDamageMode": "halfWilHalfStr",
+          "weaponBypass": false,
+          "weaponConBonus": 5,
+          "weaponWilBonus": 5,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0
+        }
+      ],
+      "inventorySlots": 70,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": "Earth",
+      "homeSpace": 51,
+      "updatedAt": "2026-08-28T21:39:35.948Z",
+      "lastDailyReset": "Wed Aug 26 2026",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "weapon": "Masterwork Halberd",
+      "weaponType": "Halberd",
+      "weaponAttackMod": 13,
+      "weaponDamageMode": "str",
+      "weaponBypass": false,
+      "weaponDexPenalty": 6,
+      "weaponConBonus": 0,
+      "weaponWilBonus": 0,
+      "kiApplication": true,
+      "heaviestFishWeightKg": 851.76,
+      "heaviestFishName": "Massive Fish",
+      "preMissionAlignValue": 2445,
+      "preMissionAlignment": "Positive",
+      "carpetFreeRestAt": 1787920075887,
+      "peakFatigue": 74,
+      "lastActivityAt": 1787949729767,
+      "lastActivitySavedAt": 1787949729767,
+      "children": [],
+      "abilityMastery": {
+        "Ki Efficiency": 3,
+        "Ki Application": 3
+      },
+      "homeType": "Large Home",
+      "homeStorage": [],
+      "homeStorageSlots": 1000,
+      "visitedSlots": [
+        "Earth-45",
+        "Earth-17",
+        "Earth-1",
+        "Earth-46",
+        "Earth-36"
+      ],
+      "rival": {
+        "name": "Piano",
+        "race": "Namekian",
+        "gender": "Male",
+        "baseStats": {
+          "str": 900,
+          "dex": 1156,
+          "con": 672,
+          "wil": 1366,
+          "spi": 788
+        },
+        "techniques": [
+          "Spirit Ball"
+        ],
+        "fightingStyle": null,
+        "weapon": "Expert Katana",
+        "weaponType": "Katana",
+        "weaponAttackMod": 5,
+        "weaponDamageMode": "halfAttackHalfDex",
+        "weaponBypass": false,
+        "weaponDexPenalty": 6,
+        "weaponRank": 3,
+        "armor": "Tempered Medium Armor",
+        "armorReduction": 32,
+        "armorDexReduction": 35,
+        "armorDurability": 24,
+        "armorRank": 3,
+        "passives": [
+          "Determined",
+          "Battle-Hardened",
+          "Keen Senses",
+          "Flight",
+          "Power Surge"
+        ],
+        "defeats": 7,
+        "persuasionProgress": 4,
+        "spares": 0,
+        "createdAt": 1787771723221,
+        "flying": true,
+        "kiSense": true,
+        "kiAppDamage": 5,
+        "weaponConBonus": 0,
+        "weaponWilBonus": 0
+      },
+      "travelingMerchant": null,
+      "weaponSpiDmgPct": 0,
+      "weaponWilDmgPct": 0,
+      "raphaelApplied": true,
+      "npcQuest": {
+        "type": "fish",
+        "target": 34,
+        "progress": 18,
+        "reward": {
+          "statPoints": 701,
+          "zeni": 30208
+        },
+        "npc": "Master Roshi",
+        "specialName": "Roshi's Island"
+      },
+      "npcQuestCooldownUntil": 1787924110748,
+      "dead": false,
+      "deathAlignmentValue": 2420,
+      "deathAlignment": "Positive",
+      "deathLocation": "Earth",
+      "deathSpace": 58,
+      "hellSaga": null,
+      "zenkaiPending": null
+    }
+  ],
+  "331965902973173761": [
+    {
+      "id": "1787531598625",
+      "createdAt": "2026-08-24T00:33:18.625Z",
+      "name": "Kokonotsu",
+      "race": "Konatsian",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Otherworld",
+      "space": 28,
+      "fuel": 100,
+      "techniques": [
+        "Ki Sense",
+        "Fly",
+        "Rising Sun Technique",
+        "Sweeping Sunlight",
+        "Early Morning",
+        "Crimson Sky Flurry",
+        "Hero's Flute"
+      ],
+      "searchesUsed": 7,
+      "searchArea": "Otherworld-28",
+      "searchResetDate": "Fri Aug 28 2026",
+      "zeni": 5853552,
+      "lastAgeCheck": 1787790768390,
+      "resources": 11020,
+      "unspentPoints": 418,
+      "gathersUsed": 3,
+      "gatherArea": "Otherworld-28",
+      "gatherResetDate": "Fri Aug 28 2026",
+      "fightingStyle": "Shogun",
+      "kiEfficiency": 0.1,
+      "gravityChamber": 0,
+      "restCharges": 0,
+      "lastRestChargeTime": 1787931168390,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": "heavy",
+      "weightsDurability": 29,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {
+        "Fly": 5,
+        "Ki Sense": 2,
+        "Ki Sharpening": 5,
+        "Cross Slash": 5,
+        "Impaling Thrust": 5,
+        "Early Morning": 3
+      },
+      "masteryBonus": {
+        "Ki Efficiency": 1,
+        "Ki Sense": 4,
+        "Early Morning": 8,
+        "Crimson Sky Flurry": 6
+      },
+      "masteryReady": false,
+      "age": 7,
+      "stats": {
+        "str": 4015,
+        "dex": 5777,
+        "con": 3962,
+        "wil": 3967,
+        "int": 9,
+        "spi": 5110
+      },
+      "modifiers": {
+        "str": 20,
+        "dex": 21,
+        "con": 20,
+        "wil": 20,
+        "spi": 21,
+        "int": 0
+      },
+      "maxHP": 220,
+      "maxKi": 240,
+      "background": "Kokonotsu had a completely normal upbringing. Besides his idolization of the heroes on the television he watched as a kid, he had no interests. He was bored, living day by day, as a bum. Until one day, he decides that he will become the greatest hero in the universe.",
+      "mutation": "None",
+      "alignment": "Positive",
+      "alignmentValue": 745,
+      "companions": [
+        {
+          "id": "comp_mt8c16zz_252",
+          "name": "Korna",
+          "race": "Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -6553,
+          "stats": {
+            "str": 330,
+            "dex": 556,
+            "con": 262,
+            "wil": 182,
+            "spi": 374
+          },
+          "bonusStats": {
+            "str": 2081,
+            "dex": 2066,
+            "con": 2049,
+            "wil": 2036,
+            "spi": 2027
+          },
+          "companionship": 317,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Dodon Ray",
+            "Dodon Barrage",
+            "Machine Gun Punches",
+            "Fly"
+          ],
+          "fightingStyle": "Crane",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-25T07:17:18.383Z",
+          "techniqueMastery": {
+            "Fly": 3,
+            "Ki Application": 4,
+            "Dodon Ray": 2,
+            "Machine Gun Punches": 1,
+            "Dodon Barrage": 2,
+            "Spirit Ball": 2
+          },
+          "masteryBonus": {
+            "Machine Gun Punches": 4,
+            "Dodon Barrage": 2,
+            "Dodon Ray": 2,
+            "Spirit Ball": 1,
+            "Ki Application": 1
+          },
+          "fatigue": 20,
+          "lastCompanionRestChargeTime": 1787931259616,
+          "zenkaiPending": {
+            "source": "Saiyan Zenkai",
+            "gainPercent": 7,
+            "powerLevel": 14759
+          },
+          "restCharges": 0
+        },
+        {
+          "id": "comp_mt8d4amu_175",
+          "name": "Nivor",
+          "race": "Frost Demon",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -826,
+          "stats": {
+            "str": 136,
+            "dex": 176,
+            "con": 24,
+            "wil": 324,
+            "spi": 326
+          },
+          "bonusStats": {
+            "str": 1831,
+            "dex": 1818,
+            "con": 1804,
+            "wil": 1792,
+            "spi": 1785
+          },
+          "companionship": 257,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Clothesline",
+            "Arm Crusher",
+            "Choke Slam",
+            "Suplex",
+            "Groundslam",
+            "Shove"
+          ],
+          "fightingStyle": "Wrestler",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": true,
+          "createdAt": "2026-08-25T07:47:42.678Z",
+          "techniqueMastery": {
+            "Spirit Ball": 5,
+            "Ki Application": 4
+          },
+          "masteryBonus": {
+            "Ki Application": 9,
+            "Shove": 2,
+            "Clothesline": 2,
+            "Suplex": 2,
+            "Arm Crusher": 1
+          },
+          "lastCompanionRestChargeTime": 1787931259616,
+          "restCharges": 2,
+          "fatigue": 10
+        },
+        {
+          "id": "comp_mt8fj3by_515",
+          "name": "Toren",
+          "race": "Half-Saiyan",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -14726,
+          "stats": {
+            "str": 1148,
+            "dex": 1108,
+            "con": 1028,
+            "wil": 996,
+            "spi": 804
+          },
+          "bonusStats": {
+            "str": 1047,
+            "dex": 1052,
+            "con": 1031,
+            "wil": 1023,
+            "spi": 1194
+          },
+          "companionship": 59,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "One-Two",
+            "Liver Punch",
+            "Corkscrew"
+          ],
+          "fightingStyle": "Boxing",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "kiAppDamage": 6,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-25T08:55:12.286Z",
+          "techniqueMastery": {
+            "Corkscrew": 1,
+            "One-Two": 1,
+            "Spirit Ball": 1
+          },
+          "masteryBonus": {
+            "Liver Punch": 2,
+            "Corkscrew": 1,
+            "One-Two": 3
+          },
+          "lastCompanionRestChargeTime": 1787931259616,
+          "zenkaiPending": {
+            "source": "Half-Saiyan Zenkai",
+            "gainPercent": 2,
+            "powerLevel": 12916
+          },
+          "restCharges": 2,
+          "fatigue": 20
+        }
+      ],
+      "powerLevel": 27978,
+      "currentHP": 1,
+      "currentKi": 219,
+      "fatigue": 35,
+      "inventory": [
+        "13x Shovel",
+        "Fishing Tackle",
+        "8x [Destroyed][Unrepairable] Engine Conjunction",
+        "10x Hunting Traps",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "8x [Broken] Motherboard",
+        "7x Iron Ore",
+        "35x Resources",
+        "Magic Carpet",
+        "Drill",
+        "12x Component",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "14x Copper Wires",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "3x Mithril",
+        "Seed of Might",
+        "Smelting Forge",
+        "Anvil",
+        "Ingot Mold",
+        "Armor Mold",
+        "Tongs",
+        "3x Steel Ingot",
+        {
+          "name": "Good Steel Katana",
+          "weaponType": "Katana",
+          "weaponAttackMod": 5,
+          "weaponDexPenalty": 7,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "quality": "Good",
+          "material": "Steel"
+        },
+        {
+          "name": "Good Katchin Katana",
+          "weaponType": "Katana",
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 8,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "quality": "Good",
+          "material": "Katchin"
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "5x Small Training Weight",
+        {
+          "name": "Good Katchin Nodachi",
+          "weaponType": "Nodachi",
+          "weaponAttackMod": 10,
+          "weaponDexPenalty": 12,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "quality": "Good",
+          "material": "Katchin"
+        },
+        "Blood Ruby",
+        "2x Large Home",
+        "Gravitational Control Chip",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Good Katchin Katana",
+          "quantity": 1,
+          "weaponType": "Katana",
+          "weaponAttackMod": 6,
+          "weaponDexPenalty": 7,
+          "weaponDamageMode": "halfAttackHalfDex",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Brave Sword",
+          "quantity": 1,
+          "weaponType": "Brave Sword",
+          "weaponAttackMod": 15,
+          "weaponDexPenalty": 11,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0,
+          "weaponSpiDmgPct": 0,
+          "weaponWilDmgPct": 0
+        },
+        {
+          "name": "Ok Steel Ore Heavy Armor",
+          "armorReduction": 20,
+          "armorDexReduction": 54,
+          "armorDurability": 53,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Ok",
+          "material": "Steel Ore",
+          "weight": "Heavy"
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Ok Steel Ore Heavy Armor",
+          "armorReduction": 28,
+          "armorDexReduction": 31,
+          "armorDurability": 21,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Ok",
+          "material": "Steel Ore",
+          "weight": "Heavy"
+        },
+        {
+          "name": "Good Steel Ore Heavy Armor",
+          "armorReduction": 28,
+          "armorDexReduction": 48,
+          "armorDurability": 48,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0,
+          "quality": "Good",
+          "material": "Steel Ore",
+          "weight": "Heavy"
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "Senzu Bean",
+        "Healer's Kit",
+        "2x Inventory Upgrade",
+        "Mixed Capsule",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "Steel Ore",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "Ki Recovery Capsule",
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        }
+      ],
+      "inventorySlots": 100,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": "Otherworld",
+      "homeSpace": 2,
+      "weapon": "Ok Katchin Nodachi",
+      "armor": "Good Steel Ore Heavy Armor",
+      "weaponAttackMod": 7,
+      "weaponDamageMode": "halfAttackHalfDex",
+      "weaponBypass": false,
+      "weaponDexPenalty": 6,
+      "armorReduction": 51,
+      "armorDexReduction": 48,
+      "armorDurability": 52,
+      "updatedAt": "2026-08-28T16:03:49.591Z",
+      "lastDailyReset": "Fri Aug 28 2026",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "dead": false,
+      "heaviestFishWeightKg": 854.13,
+      "heaviestFishName": "Massive Fish",
+      "preMissionAlignValue": 695,
+      "preMissionAlignment": "Positive",
+      "kiApplication": true,
+      "peakFatigue": 35,
+      "lastActivityAt": 1787933029591,
+      "lastActivitySavedAt": 1787933029591,
+      "children": [],
+      "carpetFreeRestAt": 1787930611744,
+      "weaponType": "Nodachi",
+      "weaponConBonus": 0,
+      "weaponWilBonus": 0,
+      "deathAlignmentValue": 340,
+      "deathAlignment": "Positive",
+      "deathLocation": "Earth",
+      "deathSpace": 21,
+      "pickaxeDurability": 3,
+      "hellSaga": null,
+      "zenkaiPending": null,
+      "abilityMastery": {
+        "Ki Application": 3
+      },
+      "carpetRerollDay": "Tue Aug 25 2026",
+      "carpetRerolls": 0,
+      "homeType": "Large Home",
+      "homeStorage": [],
+      "homeStorageSlots": 1000,
+      "weaponSpiDmgPct": 0,
+      "weaponWilDmgPct": 0,
+      "armorWilBonus": 0,
+      "armorSpiBonus": 0,
+      "smithingProficiency": 20,
+      "rival": {
+        "name": "Raddan",
+        "race": "Saiyan",
+        "gender": "Male",
+        "baseStats": {
+          "str": 1873,
+          "dex": 2745,
+          "con": 2263,
+          "wil": 2033,
+          "spi": 3173
+        },
+        "techniques": [
+          "Spirit Ball",
+          "Ki Sense"
+        ],
+        "fightingStyle": null,
+        "weapon": null,
+        "weaponType": null,
+        "weaponAttackMod": 0,
+        "weaponDamageMode": null,
+        "weaponBypass": false,
+        "weaponDexPenalty": 0,
+        "weaponRank": 0,
+        "armor": null,
+        "armorReduction": 0,
+        "armorDexReduction": 0,
+        "armorDurability": 0,
+        "armorRank": 0,
+        "passives": [],
+        "defeats": 0,
+        "persuasionProgress": 0,
+        "spares": 0,
+        "createdAt": 1787719802310
+      },
+      "travelingMerchant": {
+        "stock": [
+          {
+            "name": "Philosophy Book",
+            "price": 280000,
+            "qty": 0
+          },
+          {
+            "name": "Sword",
+            "price": 90000,
+            "qty": 2
+          },
+          {
+            "name": "Reactor Core",
+            "price": 11000000,
+            "qty": 1
+          },
+          {
+            "name": "Club",
+            "price": 116000,
+            "qty": 1
+          },
+          {
+            "name": "Heavy weight",
+            "price": 123000,
+            "qty": 2
+          },
+          {
+            "name": "Motherboard",
+            "price": 114000,
+            "qty": 2
+          },
+          {
+            "name": "Gravitational Control Chip",
+            "price": 3200000,
+            "qty": 1
+          }
+        ],
+        "expiresAt": 1788017533372,
+        "location": "Otherworld",
+        "space": 27
+      }
+    }
+  ],
+  "474683939710173186": [
+    {
+      "id": "1787543260095",
+      "createdAt": "2026-08-24T03:47:40.095Z",
+      "name": "Lemon",
+      "race": "Earthling",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 30,
+      "fuel": 100,
+      "techniques": [
+        "Ki Sense",
+        "Fly",
+        "Crashing Thunder Kick",
+        "Tornado Roundhouse",
+        "Heaven's Howl"
+      ],
+      "searchesUsed": 7,
+      "searchArea": "Earth-21",
+      "searchResetDate": "Wed Aug 26 2026",
+      "zeni": 9170554,
+      "lastAgeCheck": 1787718750042,
+      "resources": 15200,
+      "unspentPoints": 102,
+      "gathersUsed": 3,
+      "gatherArea": "Earth-29",
+      "gatherResetDate": "Tue Aug 25 2026",
+      "fightingStyle": "Taekwondo",
+      "kiEfficiency": 0.1,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "lastRestChargeTime": 1787719632999,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {
+        "Fly": 2
+      },
+      "masteryBonus": {},
+      "masteryReady": true,
+      "age": 16,
+      "stats": {
+        "str": 5613,
+        "dex": 11268,
+        "con": 5681,
+        "wil": 4449,
+        "spi": 4465,
+        "int": 11
+      },
+      "modifiers": {
+        "str": 21,
+        "dex": 24,
+        "con": 21,
+        "wil": 21,
+        "spi": 21,
+        "int": 0
+      },
+      "maxHP": 230,
+      "maxKi": 240,
+      "background": "None provided",
+      "mutation": "None",
+      "alignment": "Positive",
+      "alignmentValue": 780,
+      "companions": [
+        {
+          "id": "comp_mt9dbaof_669",
+          "name": "Talia",
+          "race": "Earthling",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -10631,
+          "stats": {
+            "str": 1300,
+            "dex": 3146,
+            "con": 1896,
+            "wil": 2446,
+            "spi": 1500,
+            "int": 4
+          },
+          "bonusStats": {
+            "str": 996,
+            "dex": 1797,
+            "con": 985,
+            "wil": 817,
+            "spi": 815
+          },
+          "companionship": 39,
+          "fatigue": 10,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787719255503,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Clothesline",
+            "Arm Crusher",
+            "Choke Slam",
+            "Suplex",
+            "Groundslam",
+            "Shove"
+          ],
+          "fightingStyle": "Wrestler",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-26T00:40:55.503Z",
+          "techniqueMastery": {
+            "Groundslam": 2,
+            "Suplex": 1,
+            "Shove": 1,
+            "Clothesline": 1
+          },
+          "masteryBonus": {
+            "Spirit Ball": 2,
+            "Ki Application": 5,
+            "Choke Slam": 4,
+            "Suplex": 1,
+            "Arm Crusher": 2,
+            "Clothesline": 1
+          }
+        },
+        {
+          "id": "comp_mt9hh413_943",
+          "name": "Riven",
+          "race": "Earthling",
+          "gender": "Male",
+          "alignment": "Negative",
+          "alignmentValue": -13563,
+          "stats": {
+            "str": 2400,
+            "dex": 3006,
+            "con": 2046,
+            "wil": 3226,
+            "spi": 2820,
+            "int": 4
+          },
+          "bonusStats": {
+            "str": 86,
+            "dex": 84,
+            "con": 81,
+            "wil": 69,
+            "spi": 65
+          },
+          "companionship": 27,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787719045287,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Savage Elbow",
+            "Feral Fury Knee",
+            "Tiger Teep",
+            "Leaping Tiger Fist"
+          ],
+          "fightingStyle": "Tiger",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": "Expert Heavy Armor",
+          "armorReduction": 36,
+          "armorDexReduction": 57,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": true,
+          "kiSense": false,
+          "createdAt": "2026-08-26T02:37:25.287Z",
+          "techniqueMastery": {
+            "Tiger Teep": 1,
+            "Feral Fury Knee": 1,
+            "Savage Elbow": 1
+          },
+          "masteryBonus": {
+            "Spirit Ball": 3,
+            "Tiger Teep": 8,
+            "Feral Fury Knee": 3,
+            "Leaping Tiger Fist": 2,
+            "Savage Elbow": 2
+          }
+        },
+        {
+          "id": "comp_mt9i4o72_787",
+          "name": "Elara",
+          "race": "Earthling",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -29181,
+          "stats": {
+            "str": 2646,
+            "dex": 5932,
+            "con": 4410,
+            "wil": 3426,
+            "spi": 3246,
+            "int": 11
+          },
+          "bonusStats": {
+            "str": 82,
+            "dex": 80,
+            "con": 77,
+            "wil": 68,
+            "spi": 65
+          },
+          "companionship": 22,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787720144510,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Sense",
+            "Clothesline",
+            "Arm Crusher",
+            "Choke Slam",
+            "Suplex",
+            "Groundslam",
+            "Shove"
+          ],
+          "fightingStyle": "Wrestler",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": null,
+          "armorReduction": 0,
+          "armorDexReduction": 0,
+          "armorDurability": 0,
+          "kiAppDamage": 11,
+          "flying": false,
+          "kiSense": true,
+          "createdAt": "2026-08-26T02:55:44.510Z",
+          "techniqueMastery": {
+            "Suplex": 1,
+            "Arm Crusher": 1
+          },
+          "masteryBonus": {
+            "Spirit Ball": 1,
+            "Clothesline": 3,
+            "Ki Sense": 3,
+            "Groundslam": 3,
+            "Choke Slam": 2
+          }
+        },
+        {
+          "id": "comp_mt9ilkt0_712",
+          "name": "Tova",
+          "race": "Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -27142,
+          "stats": {
+            "str": 3708,
+            "dex": 3714,
+            "con": 5728,
+            "wil": 4048,
+            "spi": 2940,
+            "int": 5
+          },
+          "bonusStats": {
+            "str": 81,
+            "dex": 79,
+            "con": 77,
+            "wil": 68,
+            "spi": 65
+          },
+          "companionship": 20,
+          "fatigue": 0,
+          "restCharges": 2,
+          "lastCompanionRestChargeTime": 1787719133268,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball",
+            "Ki Application",
+            "Wolf Fang Fist",
+            "Whirlwind Kick",
+            "Neo Wolf Fang Fist"
+          ],
+          "fightingStyle": "Wolf",
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": "Masterwork Light Armor",
+          "armorReduction": 31,
+          "armorDexReduction": 8,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-26T03:08:53.268Z",
+          "techniqueMastery": {
+            "Wolf Fang Fist": 2
+          },
+          "masteryBonus": {
+            "Neo Wolf Fang Fist": 2,
+            "Ki Application": 6,
+            "Spirit Ball": 2,
+            "Whirlwind Kick": 5,
+            "Wolf Fang Fist": 1
+          }
+        }
+      ],
+      "powerLevel": 35103,
+      "currentHP": 230,
+      "currentKi": 240,
+      "fatigue": 0,
+      "inventory": [
+        "2x Fishing Tackle",
+        "16x Senzu Bean",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Dragon Ball",
+        "40x Resources",
+        {
+          "name": "Brave Sword",
+          "quantity": 1,
+          "weaponType": "Brave Sword",
+          "weaponAttackMod": 13,
+          "weaponDexPenalty": 7,
+          "weaponDamageMode": "str",
+          "weaponBypass": false,
+          "weaponConBonus": 0,
+          "weaponWilBonus": 0
+        },
+        "3x Small Training Weight",
+        "7x Component",
+        "7x Steel Ore",
+        "8x Shovel",
+        "16x Copper Wires",
+        "9x Iron Ore",
+        "4x Hunting Traps",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        "3x Mixed Capsule",
+        "Bansho Fan",
+        "2x Ki Recovery Capsule",
+        "Katchin",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Skinning Knife",
+          "durability": 20,
+          "maxDurability": 20
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "Healer's Kit",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        "Hetap™",
+        "2x Sage Water",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Masterwork Light Armor",
+          "quantity": 1,
+          "armorReduction": 14,
+          "armorDexReduction": 20,
+          "armorDurability": 8,
+          "armorWilBonus": 0,
+          "armorSpiBonus": 0
+        },
+        "[Broken] Motherboard",
+        "Large Home",
+        "Vita Drink",
+        {
+          "name": "Welding Torch",
+          "durability": 5,
+          "maxDurability": 5
+        },
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        {
+          "name": "Bear Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 12,
+          "ki": 12,
+          "fatigue": -5
+        },
+        "Recovery Capsule",
+        {
+          "name": "Fishing Rod",
+          "durability": 3,
+          "maxDurability": 3
+        },
+        "Heavy weight"
+      ],
+      "inventorySlots": 70,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": "Earth",
+      "homeSpace": 30,
+      "homeType": "Large Home",
+      "homeStorage": [],
+      "homeStorageSlots": 1000,
+      "weapon": null,
+      "armor": null,
+      "weaponAttackMod": null,
+      "weaponDamageMode": null,
+      "weaponBypass": false,
+      "weaponDexPenalty": null,
+      "armorReduction": null,
+      "armorDexReduction": null,
+      "armorDurability": null,
+      "updatedAt": "2026-08-26T05:15:14.598Z",
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "preMissionAlignValue": 770,
+      "preMissionAlignment": "Positive",
+      "weaponType": null,
+      "weaponConBonus": null,
+      "weaponWilBonus": null,
+      "lastDailyReset": "Wed Aug 26 2026",
+      "heaviestFishWeightKg": 765.2,
+      "heaviestFishName": "Massive Fish",
+      "kiApplication": true,
+      "peakFatigue": 0,
+      "lastActivityAt": 1787720641616,
+      "lastActivitySavedAt": 1787720641616,
+      "children": [],
+      "abilityMastery": {
+        "Ki Application": 3
+      },
+      "travelingMerchant": null,
+      "rival": {
+        "name": "Nadia",
+        "race": "Earthling",
+        "gender": "Female",
+        "baseStats": {
+          "str": 1088,
+          "dex": 786,
+          "con": 488,
+          "wil": 1198,
+          "spi": 644
+        },
+        "techniques": [
+          "Spirit Ball",
+          "Assassinate",
+          "Pin-Point Blow",
+          "Incognito",
+          "Secret Poison"
+        ],
+        "fightingStyle": "Assassin",
+        "weapon": null,
+        "weaponType": null,
+        "weaponAttackMod": 0,
+        "weaponDamageMode": null,
+        "weaponBypass": false,
+        "weaponDexPenalty": 0,
+        "weaponRank": 3,
+        "armor": "Tempered Heavy Armor",
+        "armorReduction": 11,
+        "armorDexReduction": 44,
+        "armorDurability": 16,
+        "armorRank": 3,
+        "passives": [
+          "Determined",
+          "Battle-Hardened",
+          "Keen Senses",
+          "Flight",
+          "Power Surge"
+        ],
+        "defeats": 7,
+        "persuasionProgress": 0,
+        "spares": 0,
+        "createdAt": 1787703931157,
+        "flying": true,
+        "kiSense": true,
+        "kiAppDamage": 5
+      },
+      "weaponSpiDmgPct": null,
+      "weaponWilDmgPct": null,
+      "visitedSlots": [
+        "Earth-31",
+        "Earth-24"
+      ],
+      "armorWilBonus": null,
+      "armorSpiBonus": null,
+      "npcQuestCooldownUntil": 1787723758494
+    }
+  ],
+  "231946762280108032": [
+    {
+      "id": "1787992213241",
+      "createdAt": "2026-08-29T08:30:13.241Z",
+      "name": "Gojo Sukuna",
+      "race": "Half-Saiyan",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 64,
+      "fuel": 100,
+      "techniques": [
+        "Savage Elbow",
+        "Feral Fury Knee",
+        "Tiger Teep",
+        "Leaping Tiger Fist"
+      ],
+      "searchesUsed": 7,
+      "searchArea": "Earth-63",
+      "searchResetDate": "Sat Aug 29 2026",
+      "zeni": 20000,
+      "lastAgeCheck": 1787992165909,
+      "resources": 64,
+      "unspentPoints": 0,
+      "gathersUsed": 3,
+      "gatherArea": "Earth-63",
+      "gatherResetDate": "Sat Aug 29 2026",
+      "fightingStyle": "Tiger",
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 0,
+      "lastRestChargeTime": 1787992165909,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [
+        "Legendary Super Saiyan"
+      ],
+      "clan": null,
+      "namekianEgg": false,
+      "rebirthSaga": null,
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {
+        "Legendary Super Saiyan": 4
+      },
+      "masteryReady": false,
+      "age": 21,
+      "stats": {
+        "str": 167,
+        "dex": 252,
+        "con": 152,
+        "wil": 146,
+        "spi": 160,
+        "int": 6
+      },
+      "modifiers": {
+        "str": 8,
+        "dex": 10,
+        "con": 7,
+        "wil": 7,
+        "spi": 8,
+        "int": 0
+      },
+      "maxHP": 90,
+      "maxKi": 100,
+      "background": "None provided",
+      "mutation": "Legendary Super Saiyan",
+      "alignment": "Positive",
+      "alignmentValue": 30,
+      "companions": [
+        {
+          "id": "comp_mte4krgi_581",
+          "name": "Dalia",
+          "race": "Half-Saiyan",
+          "gender": "Female",
+          "alignment": "Negative",
+          "alignmentValue": -3918,
+          "stats": {
+            "str": 63,
+            "dex": 48,
+            "con": 12,
+            "wil": 39,
+            "spi": 24,
+            "int": 3
+          },
+          "bonusStats": {
+            "str": 148,
+            "dex": 147,
+            "con": 146,
+            "wil": 143,
+            "spi": 143
+          },
+          "companionship": 35,
+          "fatigue": 10,
+          "restCharges": 1,
+          "lastCompanionRestChargeTime": 1787992511490,
+          "age": 20,
+          "techniques": [
+            "Spirit Ball"
+          ],
+          "fightingStyle": null,
+          "weapon": null,
+          "weaponAttackMod": 0,
+          "weaponDamageMode": null,
+          "weaponBypass": false,
+          "weaponDexPenalty": 0,
+          "armor": "Fine Medium Armor",
+          "armorReduction": 17,
+          "armorDexReduction": 50,
+          "armorDurability": 0,
+          "kiAppDamage": 0,
+          "flying": false,
+          "kiSense": false,
+          "createdAt": "2026-08-29T08:35:11.490Z",
+          "techniqueMastery": {
+            "Spirit Ball": 1
+          },
+          "masteryBonus": {
+            "Spirit Ball": 6
+          }
+        }
+      ],
+      "powerLevel": 1060,
+      "currentHP": 90,
+      "currentKi": 61,
+      "fatigue": 4.197,
+      "peakFatigue": 13.99,
+      "inventory": [
+        {
+          "name": "Fishing Rod",
+          "durability": 2,
+          "maxDurability": 3
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        },
+        {
+          "name": "Rabbit Meat",
+          "type": "consumable",
+          "cooked": false,
+          "hp": 4,
+          "ki": 4,
+          "fatigue": -2
+        }
+      ],
+      "inventorySlots": 10,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": null,
+      "armor": null,
+      "weaponAttackMod": 0,
+      "weaponDamageMode": null,
+      "weaponBypass": false,
+      "weaponDexPenalty": 0,
+      "armorReduction": 0,
+      "armorDexReduction": 0,
+      "armorDurability": 0,
+      "abilityMastery": {},
+      "updatedAt": "2026-08-29T09:02:34.943Z",
+      "lastActivityAt": 1787994122778,
+      "lastActivitySavedAt": 1787994094652,
+      "preMissionAlignValue": 20,
+      "preMissionAlignment": "Positive",
+      "lastDailyReset": "Sat Aug 29 2026",
+      "children": [],
+      "inTransitUntil": null,
+      "transitDestination": null,
+      "huntResetDate": "Sat Aug 29 2026",
+      "huntsUsed": 1,
+      "huntArea": "Earth-63",
+      "zenkaiPending": null,
+      "zenkaiSaga": 3,
+      "zenkaiCharges": 1,
+      "zenkaiExhaustedUntil": 1788080268625,
+      "heaviestFishWeightKg": 47.44,
+      "heaviestFishName": "Huge Fish"
+    }
+  ],
+  "279108235003428864": [
+    {
+      "id": "1787701307178",
+      "createdAt": "2026-08-25T23:41:47.178Z",
+      "name": "Atlas",
+      "race": "Saiyan",
+      "class": "Elite Class",
+      "eliteBonus": {
+        "stat": "wil",
+        "roll": 9
+      },
+      "location": "Earth",
+      "space": 60,
+      "fuel": 100,
+      "techniques": [
+        "Dodon Ray",
+        "Dodon Barrage",
+        "Machine Gun Punches"
+      ],
+      "searchesUsed": 3,
+      "searchArea": "Earth-60",
+      "searchResetDate": "Wed Aug 26 2026",
+      "zeni": 15000,
+      "lastAgeCheck": 1787701226801,
+      "resources": 15,
+      "unspentPoints": 50,
+      "gathersUsed": 1,
+      "gatherArea": "Earth-60",
+      "gatherResetDate": "Tue Aug 25 2026",
+      "fightingStyle": "Crane",
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 1,
+      "lastRestChargeTime": 1787701226801,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [
+        "Legendary Super Saiyan"
+      ],
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {},
+      "masteryReady": true,
+      "age": 9000,
+      "stats": {
+        "str": 56,
+        "dex": 46,
+        "con": 54,
+        "wil": 46,
+        "spi": 41,
+        "int": 3
+      },
+      "modifiers": {
+        "str": 2,
+        "dex": 2,
+        "con": 2,
+        "wil": 2,
+        "spi": 2,
+        "int": 0
+      },
+      "maxHP": 40,
+      "maxKi": 40,
+      "background": "slave",
+      "mutation": "Legendary Super Saiyan",
+      "alignment": "Positive",
+      "alignmentValue": 115,
+      "companions": [],
+      "powerLevel": 306,
+      "currentHP": 40,
+      "currentKi": 31,
+      "fatigue": 0,
+      "peakFatigue": 0,
+      "inventory": [
+        "2x Copper Wires",
+        "Shovel",
+        "Healer's Kit"
+      ],
+      "inventorySlots": 10,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": null,
+      "armor": null,
+      "weaponAttackMod": 0,
+      "weaponDamageMode": null,
+      "weaponBypass": false,
+      "weaponDexPenalty": 0,
+      "armorReduction": 0,
+      "armorDexReduction": 0,
+      "armorDurability": 0,
+      "updatedAt": "2026-08-26T20:52:46.145Z",
+      "lastActivityAt": 1787777579302,
+      "lastActivitySavedAt": 1787777566145,
+      "preMissionAlignValue": 125,
+      "preMissionAlignment": "Positive",
+      "lastDailyReset": "Tue Aug 25 2026"
+    }
+  ],
+  "218942701641531392": [
+    {
+      "id": "1787788055683",
+      "createdAt": "2026-08-26T23:47:35.683Z",
+      "name": "characterisacharacter",
+      "race": "Half-Saiyan",
+      "class": null,
+      "eliteBonus": null,
+      "location": "Earth",
+      "space": 10,
+      "fuel": 100,
+      "techniques": [],
+      "searchesUsed": 0,
+      "searchArea": "Earth-10",
+      "searchResetDate": "Wed Aug 26 2026",
+      "zeni": 0,
+      "lastAgeCheck": 1787788017877,
+      "resources": 0,
+      "unspentPoints": 0,
+      "gathersUsed": 0,
+      "gatherArea": "Earth-10",
+      "gatherResetDate": "Wed Aug 26 2026",
+      "fightingStyle": null,
+      "kiEfficiency": 0,
+      "gravityChamber": 0,
+      "restCharges": 2,
+      "lastRestChargeTime": 1787788017877,
+      "healingPod": false,
+      "shellState": "shelled",
+      "shedTime": null,
+      "weightsType": null,
+      "weightsDurability": 0,
+      "weightsEquipped": false,
+      "forms": [],
+      "clan": null,
+      "namekianEgg": false,
+      "rebirthSaga": null,
+      "activeForm": null,
+      "formMastery": {},
+      "techniqueMastery": {},
+      "masteryBonus": {},
+      "masteryReady": false,
+      "age": 1000000,
+      "stats": {
+        "str": 13,
+        "dex": 3,
+        "con": 14,
+        "wil": 10,
+        "spi": 7,
+        "int": 3
+      },
+      "modifiers": {
+        "str": 0,
+        "dex": 0,
+        "con": 0,
+        "wil": 0,
+        "spi": 0,
+        "int": 0
+      },
+      "maxHP": 20,
+      "maxKi": 20,
+      "background": "Null NaN <Test> ||Break|| bork ```test```",
+      "mutation": "None",
+      "alignment": "Neutral",
+      "alignmentValue": 0,
+      "companions": [],
+      "powerLevel": 64,
+      "currentHP": 20,
+      "currentKi": 20,
+      "fatigue": 0,
+      "peakFatigue": 0,
+      "inventory": [],
+      "inventorySlots": 10,
+      "fishTackle": [],
+      "statusEffects": [],
+      "transformations": [],
+      "mutations": "None",
+      "homeLocation": null,
+      "homeSpace": null,
+      "homeType": null,
+      "homeStorage": [],
+      "homeStorageSlots": 0,
+      "weapon": null,
+      "armor": null,
+      "weaponAttackMod": 0,
+      "weaponDamageMode": null,
+      "weaponBypass": false,
+      "weaponDexPenalty": 0,
+      "armorReduction": 0,
+      "armorDexReduction": 0,
+      "armorDurability": 0
+    }
+  ]
+}
