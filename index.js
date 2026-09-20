@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { createSaver } = require('./saver');
 const statModifier = require('./statModifier');
-const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig} = require("./config/config.json");
+const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig, oreBonuses: oreBonusesConfig, bodyControl: bodyControlConfig, android: androidConfig} = require('./config-loader').loadConfig();
 
 // Apply config-driven stat -> modifier tier tuning (falls back to built-in defaults).
 statModifier.setModifierTiers(statModifierTiers);
@@ -444,13 +444,13 @@ function getCreationCooldownRemaining(userId) {
 // ---------- Cave state (daily 5% chance per slot; a terrain marker) ----------
 // Chance tunable via config.json `caveChance` (default 0.05 = 5%).
 let caveChance = 0.05;
-try { const cfg = require('./config/config.json'); if (typeof cfg.caveChance === 'number') caveChance = cfg.caveChance; } catch (e) { /* config optional */ }
+try { const cfg = require('./config-loader').loadConfig(); if (typeof cfg.caveChance === 'number') caveChance = cfg.caveChance; } catch (e) { /* config optional */ }
 const CAVE_CHANCE = caveChance;
 const CAVE_EMOJI = '🕳️';
 // +roll bonus when mining inside a cave (pushes the ore roll toward rarer minerals).
 // Tunable via config.json `caveMineBonus` (default 6).
 let caveMineBonus = 6;
-try { const cfg = require('./config/config.json'); if (typeof cfg.caveMineBonus === 'number') caveMineBonus = cfg.caveMineBonus; } catch (e) { /* config optional */ }
+try { const cfg = require('./config-loader').loadConfig(); if (typeof cfg.caveMineBonus === 'number') caveMineBonus = cfg.caveMineBonus; } catch (e) { /* config optional */ }
 const CAVE_MINE_BONUS = caveMineBonus;
 const caveState = { date: '', caves: {} };
 // No caves in empty space or the afterlife — only walkable planets get caves.
@@ -1937,7 +1937,10 @@ function equipCompanionItem(ownerId, ownerChar, cmp, itemName) {
                 quantity: 1,
                 armorReduction: cmp.armorReduction || 0,
                 armorDexReduction: cmp.armorDexReduction || 0,
-                armorDurability: cmp.armorDurability || 0
+                armorDurability: cmp.armorDurability || 0,
+                // Preserve the material %-mods so swapping armor never silently drops them.
+                armorWilPct: cmp.armorWilPct || 0,
+                armorSpiPct: cmp.armorSpiPct || 0
             });
             swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
         }
@@ -1946,6 +1949,13 @@ function equipCompanionItem(ownerId, ownerChar, cmp, itemName) {
         cmp.armorReduction = damageReduction;
         cmp.armorDexReduction = dexReduction;
         cmp.armorDurability = durability;
+        // Keep the material %-mods on the companion's armor (companions don't consume them yet —
+        // same as before this change — but they must survive an armor swap).
+        const cmpArmorMods = getArmorMaterialMods(name);
+        cmp.armorWilPct = (typeof entry === 'object' && entry.armorWilPct != null)
+            ? (Number(entry.armorWilPct) || 0) : cmpArmorMods.wilPct;
+        cmp.armorSpiPct = (typeof entry === 'object' && entry.armorSpiPct != null)
+            ? (Number(entry.armorSpiPct) || 0) : cmpArmorMods.spiPct;
         persistCompanionEquipment(ownerId, ownerChar, cmp, inventory);
         return `🛡️ Gave **${name}** to **${cmp.name}**!\n\n💥 Damage reduction: **${damageReduction}%**\n😅 Defending DEX reduction: **${dexReduction}%**\n🔩 Durability: **${durability}**${swapNote}`;
     }
@@ -3139,6 +3149,8 @@ function appendBattleLog(logText, log) {
         else if (entry.type === 'grappleHold') logText += formatGrappleHoldEvent(entry);
         else if (entry.type === 'grappleEscape') logText += formatGrappleEscapeEvent(entry);
         else if (entry.type === 'limitBreak') logText += `\n✨ **${entry.username}** breaks their limits! (**LIMIT BREAK**, turn ${entry.round})`;
+        else if (entry.type === 'bodyBreakFree') logText += `\n🪱 **${entry.username}** thrashes — **NAT ${BODY_CONTROL.breakFreeTarget}**! The parasite is torn out and they take their body back (round ${entry.round})!`;
+        else if (entry.type === 'servantFree') logText += `\n🥚 **${entry.username}** convulses — **NAT ${BODY_CONTROL.breakFreeTarget}**! The parasite egg bursts and they are free (round ${entry.round})!`;
     });
     return logText;
 }
@@ -3279,6 +3291,9 @@ async function resolveBattleTurnAuto(battle) {
         const { log } = battle.advance();
         logText = appendBattleLog(logText, log);
     }
+
+    // Baby Tuffle body control: a hijacked player rolls to break free every `breakFreeTurns` rounds.
+    logText = maybeBodyControlBreakFreeInBattle(battle, logText);
 
     logText = await resolveNPCTurns(battle, logText);
     logText += maybeUnlockShogun(battle, current);
@@ -3655,6 +3670,23 @@ function killCharacter(userId, characterId = null, opts = {}) {
         return { name: character.name, survived: true };
     }
 
+    // Flesh is Weak (Android): a spare mechanical clone receives the consciousness upload instead of
+    // the character dying. The clone is consumed — the body is gone, the mind is not.
+    if (isAndroid(character) && !character.dead && (Number(character.androidClones) || 0) > 0) {
+        const left = (Number(character.androidClones) || 0) - 1;
+        const wakeHP = Math.max(1, Math.round((character.maxHP || 1) / 2));
+        characterManager.updateCharacter(userId, character.id, {
+            androidClones: left,
+            dead: false,
+            currentHP: wakeHP,
+            currentKi: character.maxKi || 0
+        });
+        if (client && client.users && userId) {
+            client.users.send(userId, `🤖 **${character.name}** was destroyed — their consciousness **uploads into a mechanical clone**!\nThey wake with **${wakeHP} HP**, a full battery, and **${left}** spare clone${left === 1 ? '' : 's'} left.`).catch(() => {});
+        }
+        return { name: character.name, uploaded: true };
+    }
+
     // Namekian Rebirth: if the character has an intact egg and isn't on a 5-saga cooldown, they
     // are reborn from the egg instead of dying (100%+1d20% of previous stats on top of fresh rolls).
     if (character.race === 'Namekian' && character.namekianEgg !== false
@@ -3892,6 +3924,11 @@ function checkBattleOver(battle) {
                     fatigue: newBattleFatigue,
                     peakFatigue: Math.max(finalChar.peakFatigue || 0, newBattleFatigue)
                 });
+                // Nuclear Battery (Android): after combat the battery is filled back to full (to the
+                // unlocked cap, which is what maxKi already is for an Android).
+                if (ANDROID.refillBatteryAfterCombat && isAndroid(finalChar)) {
+                    characterManager.updateCharacter(p.userId, finalChar.id, { currentKi: finalChar.maxKi || 0 });
+                }
                 if (battleFatigueGain > 0) {
                     battleFatigueText += `\n😓 **${finalChar.name}** took **${battleFatigueGain}% fatigue** from the fight!`;
                 }
@@ -4685,7 +4722,11 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
     };
     // Shared "the target takes damage" tail so every case behaves like the rest of the NPC path.
     const npcDealDamage = (amount) => {
-        const dmg = Math.max(0, amount);
+        let dmg = Math.max(0, amount);
+        // Baby Tuffle "Vesselmonger": a parasite outside of a body takes double damage.
+        if (target && target.vesselmongerBodiless) {
+            dmg = Math.floor(dmg * Math.max(1, Number(target.vesselmongerDamageMult) || 2));
+        }
         target.currentHP -= dmg;
         if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
         return dmg;
@@ -5790,6 +5831,8 @@ async function advanceBattleTurn(interaction, battle, introText) {
     // appendBattleLog covers every event type (limit break, passive drains, Hope of the Universe,
     // Fake Super Saiyan, ...) — this hand-rolled list silently dropped several of them.
     logText = appendBattleLog(logText, log);
+    // Baby Tuffle body control: a hijacked player rolls to break free every `breakFreeTurns` rounds.
+    logText = maybeBodyControlBreakFreeInBattle(battle, logText);
 
     const progressEdit = makeProgressThrottle((text) =>
         interaction.editReply({
@@ -7869,17 +7912,57 @@ const ORE_INGOTS = {
 // Material bonuses applied to forged gear (keyed by material name, e.g. 'Steel' from 'Steel Ingot').
 // `weaponStr`/`weaponDex` affect weapon attack; `weaponSpiDmgPct`/`weaponWilDmgPct` add that % of the
 // stat's mod to physical weapon damage; `armorCon`/`armorDex` are % mods to armor DR/DEX-penalty;
-// `armorWil`/`armorSpi` are flat stat bonuses granted by the armor; `durability` adjusts armor durability.
+// `armorWilPct`/`armorSpiPct` grant that % of the wearer's WIL/SPI MOD while the armor is worn
+// (Soulstone = +20% WIL, Ebonite = +20% SPI, per the Trello "SMITHING" card); `durability` adjusts
+// armor durability. Tune values — or add new materials — via config.json `oreBonuses` (each entry is
+// shallow-merged over these defaults, so a partial override is safe).
 const ORE_BONUSES = {
-    'Iron': { weaponStr: 0, weaponDex: 0, armorCon: 0, armorDex: 0, durability: 0 },
-    'Steel': { weaponStr: 2, weaponDex: 0, armorCon: 20, armorDex: 0, durability: 2 },
-    'Mithril': { weaponStr: 0, weaponDex: 1, armorCon: 0, armorDex: 20, durability: -5 },
-    'Adamantine': { weaponStr: 3, weaponDex: 2, armorCon: 30, armorDex: 0, durability: 10 },
-    'Katchin': { weaponStr: 4, weaponDex: 2, armorCon: 0, armorDex: 35, armorWil: 0, armorSpi: 0, durability: 4 },
-    'Soulstone': { weaponStr: 0, weaponDex: 0, weaponSpiDmgPct: 15, armorCon: 0, armorDex: 0, armorWil: 20, armorSpi: 0, durability: -15 },
-    'Orichalcum': { weaponStr: 5, weaponDex: -2, armorCon: 20, armorDex: -20, durability: 10 },
-    'Ebonite': { weaponStr: 0, weaponDex: 1, weaponWilDmgPct: 20, armorCon: 0, armorDex: 0, armorWil: 0, armorSpi: 20, durability: -10 }
+    'Iron': { weaponStr: 0, weaponDex: 0, armorCon: 0, armorDex: 0, armorWilPct: 0, armorSpiPct: 0, durability: 0 },
+    'Steel': { weaponStr: 2, weaponDex: 0, armorCon: 20, armorDex: 0, armorWilPct: 0, armorSpiPct: 0, durability: 2 },
+    'Mithril': { weaponStr: 0, weaponDex: 1, armorCon: 0, armorDex: 20, armorWilPct: 0, armorSpiPct: 0, durability: -5 },
+    'Adamantine': { weaponStr: 3, weaponDex: 2, armorCon: 30, armorDex: 0, armorWilPct: 0, armorSpiPct: 0, durability: 10 },
+    'Katchin': { weaponStr: 4, weaponDex: 2, armorCon: 0, armorDex: 35, armorWilPct: 0, armorSpiPct: 0, durability: 4 },
+    'Soulstone': { weaponStr: 0, weaponDex: 0, weaponSpiDmgPct: 15, armorCon: 0, armorDex: 0, armorWilPct: 20, armorSpiPct: 0, durability: -15 },
+    'Orichalcum': { weaponStr: 5, weaponDex: -2, armorCon: 20, armorDex: -20, armorWilPct: 0, armorSpiPct: 0, durability: 10 },
+    'Ebonite': { weaponStr: 0, weaponDex: 1, weaponWilDmgPct: 20, armorCon: 0, armorDex: 0, armorWilPct: 0, armorSpiPct: 20, durability: -10 }
 };
+
+// Merge config.json `oreBonuses` over the defaults (per-material shallow merge: a partial override
+// keeps every value it doesn't mention). Read at module load — a restart is required to apply edits.
+if (oreBonusesConfig && typeof oreBonusesConfig === 'object') {
+    Object.entries(oreBonusesConfig).forEach(([material, overrides]) => {
+        if (material.startsWith('_') || !overrides || typeof overrides !== 'object') return;
+        ORE_BONUSES[material] = Object.assign({}, ORE_BONUSES[material] || {}, overrides);
+    });
+}
+
+// The armor %-mods a piece of material armor grants while worn: { material, wilPct, spiPct }.
+// Resolve the material from the armor's NAME ("Fine Soulstone Medium Armor" -> Soulstone) so plain
+// string items, store stock and legacy items (which stored a flat `armorWilBonus`/`armorSpiBonus`)
+// all get the same percentage as freshly forged ones.
+function getArmorMaterialMods(itemName) {
+    const name = parseItemName(String(itemName || '')).name;
+    const material = Object.keys(ORE_BONUSES).find(m => new RegExp(`(^|\\s)${m}(\\s|$)`).test(name)) || null;
+    const b = material ? ORE_BONUSES[material] : null;
+    return {
+        material,
+        wilPct: (b && Number(b.armorWilPct)) || 0,
+        spiPct: (b && Number(b.armorSpiPct)) || 0
+    };
+}
+
+// The armor %-mods the character currently benefits from: { material, wilPct, spiPct }.
+// Prefers the % stored on the character (written by /equip when the armor was put on), falling back
+// to the material in the armor's name so legacy armor that stored a flat bonus still converts.
+function getEquippedArmorMods(character) {
+    if (!character || !character.armor) return { material: null, wilPct: 0, spiPct: 0 };
+    const byMaterial = getArmorMaterialMods(character.armor);
+    return {
+        material: byMaterial.material,
+        wilPct: character.armorWilPct != null ? (Number(character.armorWilPct) || 0) : byMaterial.wilPct,
+        spiPct: character.armorSpiPct != null ? (Number(character.armorSpiPct) || 0) : byMaterial.spiPct
+    };
+}
 
 // Mined materials that aren't smelted into ingots (no forge bonus) — listed by /info so the
 // mining table is complete.
@@ -7899,8 +7982,8 @@ function describeMaterialBonuses(material) {
     if (b.weaponWilDmgPct) weapon.push(`+${b.weaponWilDmgPct}% of your WIL mod as bonus weapon damage`);
     if (b.armorCon) armor.push(`${b.armorCon > 0 ? '+' : ''}${b.armorCon}% armor damage reduction`);
     if (b.armorDex) armor.push(`${b.armorDex > 0 ? '-' : '+'}${Math.abs(b.armorDex)}% armor DEX penalty`);
-    if (b.armorWil) armor.push(`+${b.armorWil} WIL while worn`);
-    if (b.armorSpi) armor.push(`+${b.armorSpi} SPI while worn`);
+    if (b.armorWilPct) armor.push(`+${b.armorWilPct}% of your WIL mod while worn`);
+    if (b.armorSpiPct) armor.push(`+${b.armorSpiPct}% of your SPI mod while worn`);
     if (b.durability) armor.push(`${b.durability > 0 ? '+' : ''}${b.durability} durability`);
     return { weapon, armor };
 }
@@ -8005,8 +8088,8 @@ function forgeArmor(character, ingot, weight) {
         armorReduction: damageReduction,
         armorDexReduction: dexReduction,
         armorDurability: durability,
-        armorWilBonus: oreB.armorWil || 0,
-        armorSpiBonus: oreB.armorSpi || 0,
+        armorWilPct: oreB.armorWilPct || 0,
+        armorSpiPct: oreB.armorSpiPct || 0,
         quality: q.key,
         material,
         weight
@@ -9268,6 +9351,500 @@ function consumeSpacePod(userId, character) {
     return false;
 }
 
+// ---------- Baby Tuffle body control (Trello card 48 "Baby Tuffle") ----------
+// A Baby Tuffle is a parasite: it burrows into a living host ("Life Hijack"), the victim loses
+// control of their character until they critically succeed a break-free roll, and while it wears
+// the body it adds the vessel's stats/forms onto its own ("My New Body"). If a hijacked victim
+// WIPES their character the parasite keeps that body outright — permanently, with no further
+// break-free checks. Every number is tunable via config.json `bodyControl`.
+const BODY_CONTROL = Object.assign({
+    breakFreeIntervalMinutes: 60, // out-of-combat cadence for a hijacked BODY (the card's 30 minutes was changed to 1 hour)
+    breakFreeTurns: 5,            // in-combat cadence, counted in battle rounds (the card's "5 turns")
+    breakFreeDice: 20,
+    breakFreeTarget: 20,          // NAT 20: the victim MUST critically succeed
+    lifeHijackDc: 35,
+    // Vesselmonger: penalties while outside of a body (a Baby Tuffle with no vessel).
+    vesselmongerBodiless: true,
+    bodilessDexPenalty: 7,
+    bodilessDamageMult: 2,
+    // Parasite Infection: an egg left in a previous host = a Tuffle servant with its own escape
+    // cadence (the card's 30 minutes, deliberately different from the body's hourly roll).
+    servantEggsEnabled: true,
+    servantEscapeIntervalMinutes: 30,
+    maxServants: 3,
+    creationResources: 950000,
+    creationIntReq: 13,
+    creationStatDice: '8d100',
+    creationIntDice: '1d20+5',
+    creationIntModMult: 10
+}, (bodyControlConfig && typeof bodyControlConfig === 'object') ? bodyControlConfig : {});
+const BODY_CONTROL_BREAK_MS = Math.max(1, Number(BODY_CONTROL.breakFreeIntervalMinutes) || 60) * 60 * 1000;
+const SERVANT_ESCAPE_MS = Math.max(1, Number(BODY_CONTROL.servantEscapeIntervalMinutes) || 30) * 60 * 1000;
+// The only commands a hijacked player may still use: look at what is happening to them, or wipe —
+// wiping is what hands the body to the parasite for good (see transferHijackedBody).
+const BODY_CONTROL_ALLOWED_COMMANDS = new Set(['character-view', 'character-wipe', 'info', 'ping']);
+
+// The controller recorded on a hijacked character, or null while the body is free.
+function getBodyControl(character) {
+    return (character && character.bodyControl && character.bodyControl.hostUserId) ? character.bodyControl : null;
+}
+// True while a Baby Tuffle is wearing this character's body (its owner is locked out).
+function isBodyControlled(character) { return !!getBodyControl(character); }
+// Baby Tuffles have the parasite powers — including a body they kept permanently after a wipe.
+function isBabyTuffle(entity) {
+    return !!entity && (entity.race === 'Baby Tuffle' || entity.babyTufflePiloted === true);
+}
+
+// Vesselmonger (Trello card 48): outside of a body a Baby Tuffle is a helpless parasite — 2x damage
+// taken, -7 DEX mod, and vulnerable to Spirit Fission. "Outside of a body" means it is not
+// currently wearing a vessel (`controlling`); a body kept after a wipe counts as its own body.
+// NOTE: no Spirit Fission technique exists in the bot yet — `vesselmongerBodiless` is the flag such
+// a technique (or any future one) should key off.
+function isBodilessBabyTuffle(character) {
+    if (!BODY_CONTROL.vesselmongerBodiless) return false;
+    if (!isBabyTuffle(character)) return false;
+    if (character.controlling) return false; // wearing a vessel — safe inside a body
+    return true;
+}
+function getBodilessDexPenalty(character) {
+    if (!isBodilessBabyTuffle(character)) return 0;
+    return Math.max(0, Number(BODY_CONTROL.bodilessDexPenalty) || 0);
+}
+
+// Parasite Infection: an egg "left behind in a previous host" turns them into a Tuffle servant
+// until they break free (d20, MUST critically succeed — every servantEscapeIntervalMinutes, or
+// every breakFreeTurns in combat).
+function getTuffleEgg(character) {
+    return (character && character.tuffleEgg && character.tuffleEgg.hostUserId) ? character.tuffleEgg : null;
+}
+// Every character currently serving `hostUserId` (an egg is planted on letting a host go).
+function getTuffleServants(hostUserId) {
+    const servants = [];
+    if (!hostUserId) return servants;
+    Object.entries(characterManager.characters || {}).forEach(([userId, characters]) => {
+        (characters || []).forEach(character => {
+            const egg = getTuffleEgg(character);
+            if (egg && egg.hostUserId === hostUserId) servants.push({ userId, character });
+        });
+    });
+    return servants;
+}
+function plantParasiteEgg(hostUserId, hostCharacter, victimUserId, victimCharacter) {
+    if (!BODY_CONTROL.servantEggsEnabled) return false;
+    if (!hostCharacter || !victimCharacter) return false;
+    if (isBabyTuffle(victimCharacter)) return false;   // parasites don't serve parasites
+    if (getTuffleEgg(victimCharacter)) return false;   // one egg per host
+    const cap = Math.max(1, Number(BODY_CONTROL.maxServants) || 3);
+    if (getTuffleServants(hostUserId).length >= cap) return false;
+    const now = Date.now();
+    characterManager.updateCharacter(victimUserId, victimCharacter.id, {
+        tuffleEgg: {
+            hostUserId,
+            hostName: hostCharacter.name || 'Unknown',
+            hostCharacterId: hostCharacter.id,
+            plantedAt: now,
+            lastRollAt: now,   // the first escape roll is one interval from now
+            lastRollRound: 0,  // ...and in combat, at the next multiple of breakFreeTurns
+            rolls: 0
+        }
+    });
+    queueBodyControlNotice(victimUserId,
+        `🥚 **${hostCharacter.name}** left a **parasite egg** in you on the way out!\nYou are a **Tuffle servant** and cannot act until you **critically succeed** an escape roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}) — rolled every **${BODY_CONTROL.servantEscapeIntervalMinutes} minutes**, or every **${BODY_CONTROL.breakFreeTurns} turns** in combat.`);
+    queueBodyControlNotice(hostUserId,
+        `🥚 You left an egg in **${victimCharacter.name}** — they are a **Tuffle servant** until they break free (${BODY_CONTROL.servantEscapeIntervalMinutes} min / ${BODY_CONTROL.breakFreeTurns} turns). Servants: **${getTuffleServants(hostUserId).length + 1}/${cap}**.`);
+    return true;
+}
+// Burst an egg: the servant is free again (or the egg's owner is gone).
+function clearParasiteEgg(victimUserId, victimCharacter, reason = 'escape') {
+    const egg = getTuffleEgg(victimCharacter);
+    if (!egg) return false;
+    characterManager.updateCharacter(victimUserId, victimCharacter.id, { tuffleEgg: null });
+    if (reason === 'hostGone') {
+        queueBodyControlNotice(victimUserId, `🥚💥 The **parasite egg** inside you withers — its host is gone. You are **free**!`);
+        return true;
+    }
+    queueBodyControlNotice(victimUserId, `🥚💥 The **parasite egg** bursts — you are **free** of **${egg.hostName}**!`);
+    queueBodyControlNotice(egg.hostUserId, `🥚💥 **${victimCharacter.name}** broke free of your egg — you lost a servant.`);
+    return true;
+}
+
+// Possession notices (same pattern as the zenkai/nickname queues): written when something happens
+// to a player who isn't the one interacting, read on their next /character-view.
+const bodyControlNoticeQueue = new Map(); // userId -> text
+function queueBodyControlNotice(userId, text) {
+    if (!userId || !text) return;
+    const existing = bodyControlNoticeQueue.get(userId);
+    bodyControlNoticeQueue.set(userId, existing ? `${existing}\n${text}` : text);
+}
+function takeBodyControlNotice(userId) {
+    const notice = bodyControlNoticeQueue.get(userId);
+    if (notice) bodyControlNoticeQueue.delete(userId);
+    return notice || '';
+}
+
+// Persist a stat change: modifiers, vitals (carrying current HP/Ki with any max change) and power
+// level all follow `stats`.
+function persistBodyControlStats(userId, character, stats, extra = {}) {
+    const modifiers = calculateAllModifiers(stats, character.statMultipliers);
+    const vitals = recalcVitals(character, stats);
+    return characterManager.updateCharacter(userId, character.id, {
+        stats,
+        modifiers,
+        ...vitals,
+        powerLevel: characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }),
+        ...extra
+    });
+}
+
+// "My New Body": the vessel's combat stats are added onto the controller's, and the vessel's forms
+// are granted for as long as the possession lasts. The exact deltas come back so the release
+// (break-free roll or wipe) can undo them precisely rather than re-deriving them.
+function buildVesselMerge(hostCharacter, vesselCharacter) {
+    const merged = {};
+    const stats = { ...(hostCharacter.stats || {}) };
+    ['str', 'dex', 'con', 'wil', 'spi'].forEach(stat => {
+        const add = Number((vesselCharacter.stats || {})[stat]) || 0;
+        if (!add) return;
+        merged[stat] = add;
+        stats[stat] = (stats[stat] || 0) + add;
+    });
+    const hostForms = Array.isArray(hostCharacter.forms) ? [...hostCharacter.forms] : [];
+    const grantedForms = (Array.isArray(vesselCharacter.forms) ? vesselCharacter.forms : [])
+        .filter(f => typeof f === 'string' && f && !hostForms.includes(f));
+    return { merged, grantedForms, stats, forms: [...hostForms, ...grantedForms] };
+}
+
+// Life Hijack: the parasite takes a body. Merges the vessel onto the controller (My New Body) and
+// marks the victim's character as controlled, which locks its owner out of it until they break free.
+function hijackBody(hostUserId, hostCharacter, victimUserId, victimCharacter) {
+    if (!hostCharacter || !victimCharacter) return false;
+    if (getBodyControl(victimCharacter)) return false;   // that body already has a pilot
+    if (hostCharacter.controlling) return false;         // one body at a time
+    const now = Date.now();
+    const merge = buildVesselMerge(hostCharacter, victimCharacter);
+    persistBodyControlStats(hostUserId, hostCharacter, merge.stats, {
+        forms: merge.forms,
+        controlling: {
+            userId: victimUserId,
+            name: victimCharacter.name || 'Unknown',
+            characterId: victimCharacter.id,
+            since: now,
+            mergedStats: merge.merged,
+            grantedForms: merge.grantedForms
+        }
+    });
+    characterManager.updateCharacter(victimUserId, victimCharacter.id, {
+        bodyControl: {
+            hostUserId,
+            hostName: hostCharacter.name || 'Unknown',
+            hostCharacterId: hostCharacter.id,
+            since: now,
+            lastRollAt: now,   // the first out-of-combat roll is one interval from now
+            lastRollRound: 0,  // the first in-combat roll is at the next multiple of breakFreeTurns
+            rolls: 0
+        }
+    });
+    queueBodyControlNotice(victimUserId,
+        `🪱 **${hostCharacter.name}** burrows into your body!\nYou have lost control of **${victimCharacter.name}** — you cannot act with them until you **critically succeed** a break-free roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}), rolled every **${BODY_CONTROL.breakFreeIntervalMinutes} minutes**, or every **${BODY_CONTROL.breakFreeTurns} turns** in combat.\nWiping the character hands the body to the parasite **permanently**.`);
+    queueBodyControlNotice(hostUserId,
+        `🪱 You take **${victimCharacter.name}**'s body! **My New Body**: the vessel's stats and forms are added onto yours until they break free (every ${BODY_CONTROL.breakFreeIntervalMinutes} minutes / ${BODY_CONTROL.breakFreeTurns} turns).`);
+    return true;
+}
+
+// End a possession: clear both sides, subtract the merged stats and remove the granted forms.
+function releaseBodyControl(victimUserId, victimCharacter, reason = 'breakFree') {
+    const bc = getBodyControl(victimCharacter);
+    if (!bc) return false;
+    const hostUserId = bc.hostUserId;
+    const hostCharacter = characterManager.getCharacter(hostUserId, bc.hostCharacterId);
+    characterManager.updateCharacter(victimUserId, victimCharacter.id, { bodyControl: null });
+    if (hostCharacter && hostCharacter.controlling && hostCharacter.controlling.characterId === victimCharacter.id) {
+        const merged = hostCharacter.controlling.mergedStats || {};
+        const stats = { ...(hostCharacter.stats || {}) };
+        Object.entries(merged).forEach(([stat, add]) => { stats[stat] = Math.max(1, (stats[stat] || 0) - add); });
+        const granted = hostCharacter.controlling.grantedForms || [];
+        const forms = (Array.isArray(hostCharacter.forms) ? hostCharacter.forms : []).filter(f => !granted.includes(f));
+        persistBodyControlStats(hostUserId, hostCharacter, stats, { forms, controlling: null });
+    }
+    const verb = reason === 'wipe'
+        ? `${victimCharacter.name} was wiped — the body is the parasite's for good.`
+        : reason === 'hostGone'
+            ? `${victimCharacter.name} is free — their parasite no longer exists.`
+            : `${victimCharacter.name} tears free of the parasite.`;
+    queueBodyControlNotice(hostUserId, `🪱 **${victimCharacter.name}** is no longer your vessel (${verb})\n**My New Body** has ended: the vessel's stats and forms were taken back.`);
+    if (!victimCharacter.dead) {
+        queueBodyControlNotice(victimUserId, `✅ **${victimCharacter.name}** is yours again!`);
+    }
+    // Parasite Infection: letting go of a host OUT of combat leaves an egg behind — they become a
+    // Tuffle servant. An in-combat break-free is a clean escape (no egg), so tearing the parasite
+    // out mid-fight never immediately re-locks the winner.
+    if (reason === 'breakFree' && !battleManager.getBattleForUser(victimUserId)) {
+        plantParasiteEgg(hostUserId, hostCharacter, victimUserId, victimCharacter);
+    }
+    return true;
+}
+
+// One break-free attempt: a d20 that must critically succeed (NAT 20 by default).
+function attemptBodyControlBreakFree(userId, character, opts = {}) {
+    const bc = getBodyControl(character);
+    if (!bc) return { broken: false, text: '' };
+    const dice = Math.max(1, Number(BODY_CONTROL.breakFreeDice) || 20);
+    const target = Math.max(1, Number(BODY_CONTROL.breakFreeTarget) || 20);
+    const roll = getRandomInt(dice);
+    const nextState = { ...bc, lastRollAt: Date.now(), rolls: (bc.rolls || 0) + 1 };
+    if (opts.round != null) nextState.lastRollRound = opts.round;
+    if (roll < target) {
+        characterManager.updateCharacter(userId, character.id, { bodyControl: nextState });
+        return { broken: false, roll, text: '' };
+    }
+    releaseBodyControl(userId, character, 'breakFree');
+    return {
+        broken: true,
+        roll,
+        text: `🪱 **${character.name}** thrashes — **NAT ${roll}**! The parasite is torn out!\n✅ **${character.name}** is back under their own control.`
+    };
+}
+
+// One escape attempt from a Parasite Infection egg: a d20 that must critically succeed, exactly
+// like the body's break-free roll but on the servant's own cadence.
+function attemptServantEscape(userId, character, opts = {}) {
+    const egg = getTuffleEgg(character);
+    if (!egg) return { escaped: false, text: '' };
+    const dice = Math.max(1, Number(BODY_CONTROL.breakFreeDice) || 20);
+    const target = Math.max(1, Number(BODY_CONTROL.breakFreeTarget) || 20);
+    const roll = getRandomInt(dice);
+    const nextState = { ...egg, lastRollAt: Date.now(), rolls: (egg.rolls || 0) + 1 };
+    if (opts.round != null) nextState.lastRollRound = opts.round;
+    if (roll < target) {
+        characterManager.updateCharacter(userId, character.id, { tuffleEgg: nextState });
+        return { escaped: false, roll, text: '' };
+    }
+    clearParasiteEgg(userId, character, 'escape');
+    return {
+        escaped: true,
+        roll,
+        text: `🥚 **${character.name}** convulses — **NAT ${roll}**! The parasite egg bursts and they are free.`
+    };
+}
+
+// A one-line possession status for /character-view: either "your body is being worn", "you are
+// wearing a vessel" or "you kept a body outright".
+function formatBodyControlStatus(character, userId = null) {
+    if (!character) return '';
+    const bc = getBodyControl(character);
+    if (bc) {
+        return `\n🪱 **BODY HIJACKED** by **${bc.hostName}** — you can't act as **${character.name}** until you critically succeed a break-free roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}; every **${BODY_CONTROL.breakFreeIntervalMinutes} min** or **${BODY_CONTROL.breakFreeTurns} turns**). Attempts so far: **${bc.rolls || 0}**.`;
+    }
+    const egg = getTuffleEgg(character);
+    if (egg) {
+        return `\n🥚 **TUFFLE SERVANT** — an egg of **${egg.hostName}** controls you; you can't act until you critically succeed an escape roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}; every **${BODY_CONTROL.servantEscapeIntervalMinutes} min** or **${BODY_CONTROL.breakFreeTurns} turns**). Attempts so far: **${egg.rolls || 0}**.`;
+    }
+    // From here on the character is the parasite itself, so its servants are worth showing in every
+    // state (wearing a vessel, keeping a body, or bodiless).
+    const lines = [];
+    if (character.controlling) {
+        lines.push(`🪱 **Wearing a vessel**: **${character.controlling.name}** — **My New Body** adds their stats and forms onto yours until they break free.`);
+    } else if (character.possessedPermanently) {
+        lines.push(`🪱 **Kept body**: you kept **${character.name}** outright when its owner wiped it (**no break-free checks**).`);
+    } else if (isBodilessBabyTuffle(character)) {
+        lines.push(`🪱 **Vesselmonger**: you are **outside of a body** — take **x${Math.max(1, Number(BODY_CONTROL.bodilessDamageMult) || 2)} damage** and **-${getBodilessDexPenalty(character)} DEX mod** until you take a vessel (**Life Hijack** a bleeding foe).`);
+    }
+    const servants = userId ? getTuffleServants(userId) : [];
+    if (servants.length) {
+        const cap = Math.max(1, Number(BODY_CONTROL.maxServants) || 3);
+        lines.push(`🥚 Servants (**${servants.length}/${cap}**): **${servants.map(s => s.character.name).join(', ')}**.`);
+    }
+    return lines.length ? `\n${lines.join('\n')}` : '';
+}
+
+// Out-of-combat cadences: a hijacked BODY rolls every `breakFreeIntervalMinutes` (hourly) and a
+// Parasite Infection EGG / Tuffle servant rolls every `servantEscapeIntervalMinutes` (30 minutes).
+// Also reaps orphans: if the controlling character no longer exists, nobody could ever break free,
+// so the body is released and the egg bursts.
+function runBodyControlDowntime() {
+    const now = Date.now();
+    Object.keys(characterManager.characters || {}).forEach(userId => {
+        (characterManager.characters[userId] || []).forEach(character => {
+            const bc = getBodyControl(character);
+            const egg = getTuffleEgg(character);
+            if (!bc && !egg) return;
+            // The parasite/egg-layer was wiped or deleted — free their victims.
+            if (bc && !characterManager.getCharacter(bc.hostUserId, bc.hostCharacterId)) {
+                releaseBodyControl(userId, character, 'hostGone');
+                return;
+            }
+            if (egg && !characterManager.getCharacter(egg.hostUserId, egg.hostCharacterId)) {
+                clearParasiteEgg(userId, character, 'hostGone');
+                return;
+            }
+            if (battleManager.getBattleForUser(userId)) return;  // in combat: the 5-turn rule covers it
+            if (bc && now - (bc.lastRollAt || 0) >= BODY_CONTROL_BREAK_MS) {
+                attemptBodyControlBreakFree(userId, character, {});
+            } else if (egg && now - (egg.lastRollAt || 0) >= SERVANT_ESCAPE_MS) {
+                attemptServantEscape(userId, character, {});
+            }
+        });
+    });
+}
+
+// In-combat cadence: every `breakFreeTurns` rounds each hijacked player still in the fight gets one
+// roll. Called wherever a battle turn advances, so the roll rides the real turn counter.
+function maybeBodyControlBreakFreeInBattle(battle, logText) {
+    if (!battle || !battle.active) return logText;
+    const every = Math.max(1, Number(BODY_CONTROL.breakFreeTurns) || 5);
+    if (!battle.round || battle.round % every !== 0) return logText;
+    let text = logText;
+    (battle.turnOrder || []).forEach(p => {
+        if (isNPC(p) || isCompanion(p)) return;
+        const { character } = getParticipantEntity(p);
+        const bc = getBodyControl(character);
+        const egg = getTuffleEgg(character);
+        if (!bc && !egg) return;
+        if (bc && bc.lastRollRound !== battle.round) {
+            const res = attemptBodyControlBreakFree(p.userId, character, { round: battle.round });
+            if (res.broken) {
+                // Hand the body back mid-fight: they are no longer out of the fight.
+                p.isIncapacitated = false;
+                p.bodyHijacked = false;
+                text = appendBattleLog(text, [{ type: 'bodyBreakFree', username: p.username || character.name, round: battle.round }]);
+            }
+        }
+        if (egg && egg.lastRollRound !== battle.round) {
+            const res = attemptServantEscape(p.userId, character, { round: battle.round });
+            if (res.escaped) {
+                p.isIncapacitated = false;
+                p.bodyServant = false;
+                text = appendBattleLog(text, [{ type: 'servantFree', username: p.username || character.name, round: battle.round }]);
+            }
+        }
+    });
+    return text;
+}
+
+// A hijacked victim wiping their own character hands the body to the parasite for good: it becomes
+// the Baby Tuffle's ACTIVE character, keeps its own race/stats/forms, and the parasite's powers
+// still work through it. No break-free checks — there is no one left to break free to.
+function transferHijackedBody(victimUserId, victimCharacter) {
+    const bc = getBodyControl(victimCharacter);
+    if (!bc) return null;
+    const hostUserId = bc.hostUserId;
+    const hostCharacter = characterManager.getCharacter(hostUserId, bc.hostCharacterId);
+    // Undo My New Body on the parasite first — from here on the body's power is its own.
+    if (hostCharacter && hostCharacter.controlling && hostCharacter.controlling.characterId === victimCharacter.id) {
+        const merged = hostCharacter.controlling.mergedStats || {};
+        const stats = { ...(hostCharacter.stats || {}) };
+        Object.entries(merged).forEach(([stat, add]) => { stats[stat] = Math.max(1, (stats[stat] || 0) - add); });
+        const granted = hostCharacter.controlling.grantedForms || [];
+        const forms = (Array.isArray(hostCharacter.forms) ? hostCharacter.forms : []).filter(f => !granted.includes(f));
+        persistBodyControlStats(hostUserId, hostCharacter, stats, { forms, controlling: null });
+    }
+    const moved = characterManager.transferCharacter(victimUserId, victimCharacter.id, hostUserId, {
+        bodyControl: null,
+        possessedBy: hostUserId,
+        possessedPermanently: true,
+        possessedSince: Date.now(),
+        originalUserId: victimUserId,
+        babyTufflePiloted: true // the parasite keeps its powers while wearing a body it owns
+    }, { makeActive: true });
+    if (!moved) return null;
+    queueBodyControlNotice(hostUserId,
+        `🪱 **${moved.name}** was wiped by its owner — you keep the body **permanently**!\nIt is now your active character, with no break-free checks. Your own body stays in your character list.`);
+    queueBodyControlNotice(victimUserId,
+        `🪱 You wiped **${moved.name}** while it was hijacked — the parasite keeps that body **permanently**. You can make a new character with \`/character-create\`.`);
+    return moved;
+}
+
+// The lock-out message for a hijacked player, or null when they are free to act.
+function getBodyControlLockReply(interaction) {
+    if (interaction.isAutocomplete()) return null;
+    const character = characterManager.getCharacter(interaction.user.id);
+    const bc = getBodyControl(character);
+    const egg = getTuffleEgg(character);
+    if (!bc && !egg) return null;
+    if (interaction.isChatInputCommand() && BODY_CONTROL_ALLOWED_COMMANDS.has(interaction.commandName)) return null;
+    if (egg) {
+        const eggRolls = egg.rolls || 0;
+        return `🥚 **${character.name}** is a **Tuffle servant** — an egg left by **${egg.hostName}** controls you.\n`
+            + `You can't act with them until you **critically succeed** an escape roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}) — rolled every **${BODY_CONTROL.servantEscapeIntervalMinutes} minutes**, or every **${BODY_CONTROL.breakFreeTurns} turns** in combat. (**${eggRolls}** attempt${eggRolls === 1 ? '' : 's'} so far.)\n`
+            + 'Use `/character-view` to watch, or `/character-wipe` to give the body up.';
+    }
+    const rolls = bc.rolls || 0;
+    return `🪱 **${character.name}** is not your body right now — **${bc.hostName}** is wearing it.\n`
+        + `You can't act with them until you **critically succeed** a break-free roll (**NAT ${BODY_CONTROL.breakFreeTarget}** on a d${BODY_CONTROL.breakFreeDice}) — rolled every **${BODY_CONTROL.breakFreeIntervalMinutes} minutes**, or every **${BODY_CONTROL.breakFreeTurns} turns** in combat. (**${rolls}** attempt${rolls === 1 ? '' : 's'} so far.)\n`
+        + 'Use `/character-view` to watch, or `/character-wipe` to hand the body over for good.';
+}
+
+// ---------- Android (Trello card 26) ----------
+// A converted mechanical body. Its Ki pool IS the "Nuclear Battery" (charge): the SPI-derived max
+// is only the *potential* charge, and just the unlocked share (50% at first) is usable until it is
+// upgraded. It never suffers energy fatigue, cannot eat/rest/train, and a spare mechanical clone
+// can save it from death. Every number is tunable via config.json `android`.
+const ANDROID = Object.assign({
+    creationResources: 50000,
+    creationStatDice: '8d100',
+    creationIntModMult: 3,
+    creationTuffleStatDice: '8d100',
+    creationTuffleFlat: 120,
+    creationTuffleIntModMult: 10,
+    creationIntDice: '1d15+5',
+    convertibleRaces: ['Cerealian', 'Earthling', 'Tuffle'],
+    chargeCapPctStart: 50,
+    chargeCapLadder: [50, 60, 70, 80, 90, 100],
+    chargeUpgradeResources: 100000,
+    chargeUpgradeItems: { Component: 10 },
+    refillBatteryAfterCombat: true,
+    blockEating: true,
+    blockResting: true,
+    blockTraining: true,
+    cloneResources: 250000,
+    cloneItems: { Component: 5, Motherboard: 1 },
+    maxClones: 3
+}, (androidConfig && typeof androidConfig === 'object') ? androidConfig : {});
+
+function isAndroid(entity) {
+    return !!entity && (entity.race === 'Android' || entity.androidBody === true);
+}
+// Nuclear Battery: the share of the SPI-derived (potential) charge the body can actually use.
+// 100 for everyone else, so `calculateKi` can apply it unconditionally.
+function getAndroidChargeCapPct(character) {
+    if (!isAndroid(character)) return 100;
+    const start = Math.max(1, Math.min(100, Number(ANDROID.chargeCapPctStart) || 50));
+    const pct = Number(character && character.chargeCapPct);
+    return Math.max(1, Math.min(100, Number.isFinite(pct) && pct > 0 ? pct : start));
+}
+// The upgrade ladder for the charge cap (the card's "must be upgraded to use more potential").
+function getAndroidChargeLadder() {
+    const raw = Array.isArray(ANDROID.chargeCapLadder) ? ANDROID.chargeCapLadder : [];
+    const clean = [...new Set(raw.map(Number).filter(n => Number.isFinite(n) && n > 0 && n <= 100))].sort((a, b) => a - b);
+    return clean.length ? clean : [50, 60, 70, 80, 90, 100];
+}
+// The next rung above the character's current cap, or null when fully unlocked.
+function getNextAndroidChargeCap(character) {
+    const ladder = getAndroidChargeLadder();
+    const cap = getAndroidChargeCapPct(character);
+    return ladder.find(step => step > cap) || null;
+}
+// The Nuclear Battery / clone status block for /character-view.
+function formatAndroidStatus(character) {
+    if (!character || !isAndroid(character)) return '';
+    const cap = getAndroidChargeCapPct(character);
+    const potential = cap < 100
+        ? Math.max(1, Math.round((character.maxKi || 0) * 100 / cap))
+        : (character.maxKi || 0);
+    const clones = Math.max(0, Number(character.androidClones) || 0);
+    const maxClones = Math.max(1, Number(ANDROID.maxClones) || 3);
+    const next = getNextAndroidChargeCap(character);
+    return `\n🔋 **Nuclear Battery**: charge **${Math.max(0, Math.round(character.currentKi || 0))}/${character.maxKi || 0}** — **${cap}%** of a potential **${potential}** unlocked${next ? ` (next: **${next}%** via \`/charge-upgrade\`)` : ' (**fully unlocked**)'}`
+        + `\n🤖 **Mechanical clones**: **${clones}/${maxClones}** — a spare clone uploads your consciousness when you die (\`/make-clone\`)`;
+}
+// Flesh is Weak: machines can't eat, sleep or train.
+function getAndroidBlockReply(character, action) {
+    if (!isAndroid(character)) return null;
+    const configKey = { eat: 'blockEating', rest: 'blockResting', train: 'blockTraining' }[action];
+    if (!configKey || !ANDROID[configKey]) return null;
+    return `🤖 **${character.name}** is an **Android** — **Flesh is Weak**: a machine can't ${action}. Upgrade or repair instead (see \`/character-view\`).`;
+}
+
 // ---------- Combat techniques (from the Dragonball D&D Trello board) ----------
 const COMBAT_SKILLS = {
     'Shove': { cost: 'action', needsTarget: true, ki: 'pct5', kiCostsPct: [5, 4, 3, 2], desc: '5% Ki (4%/3%/2% with mastery): shove the target. Uses your Action (never your bonus action). Target makes a DEX save (DC d20+your CON mod) or is Off-Balance (-50% DEX defense). On success, you get your action back.' },
@@ -9340,7 +9917,9 @@ const COMBAT_SKILLS = {
     // --- Gohan\'s technique (taught by Gohan at Goku\'s House and Roshi\'s Island) ---
     'Masenko': { cost: 'action', needsTarget: true, ki: 'd12pct', attack: { dice: '1d12', mod: 'wil' }, desc: 'Gohan\'s technique. 1d12% Ki: hands charged above the head, fired as a two-handed beam — 1d12+WIL damage.' },
     // --- Blinding flash (taught by Tien at the Crane School and Krillin on Roshi\'s Island) ---
-    'Solar Flare': { cost: 'bonus', needsTarget: false, ki: 'flat5', desc: '5 Ki (bonus action): a blinding flash of light — every enemy has disadvantage on their next attack and this turn.' }
+    'Solar Flare': { cost: 'bonus', needsTarget: false, ki: 'flat5', desc: '5 Ki (bonus action): a blinding flash of light — every enemy has disadvantage on their next attack and this turn.' },
+    // --- Baby Tuffle racial technique (Trello card 48 "Baby Tuffle") ---
+    'Life Hijack': { cost: 'action', needsTarget: true, ki: 'd20pct', babyTuffleOnly: true, requiresBleeding: true, desc: 'Baby Tuffle. d20% Ki: burrow into a foe who is BLEEDING. They make a CON save (d20+CON mod) vs DC 35 — on a failure they lose their body and you take it, controlling their character until they critically succeed a break-free roll (every hour, or every 5 battle turns).' }
 };
 
 // Each technique is defined without a `name` field; populate it from its key so logs like
@@ -9349,7 +9928,7 @@ for (const name of Object.keys(COMBAT_SKILLS)) COMBAT_SKILLS[name].name = name;
 
 // These techniques have their own handler in executeCombatSkill, so the generic
 // "attack" block must not re-apply damage after the switch runs.
-const DEDICATED_SKILL_CASES = new Set(['One-Two', 'Liver Punch', 'Corkscrew', 'Savage Elbow', 'Tiger Teep', 'Leaping Tiger Fist', 'Dodon Barrage', 'Cross Slash', 'Gyaku-Zuki', 'Mae-Geri', 'Uraken', 'Shuto-Uchi', 'Assassinate', 'Pin-Point Blow', 'Incognito', 'Secret Poison', 'Crashing Thunder Kick', 'Tornado Roundhouse', "Heaven's Howl", 'Rising Sun Technique', 'Sweeping Sunlight', 'Neo Wolf Fang Fist', 'Crimson Sky Flurry', 'Early Morning', 'Thrusting Strikes', 'Lacerating Slash', 'Kamehameha', 'Kamehameha Surge', 'Destructo Disc', 'Solar Flare', 'Supernova']);
+const DEDICATED_SKILL_CASES = new Set(['One-Two', 'Liver Punch', 'Corkscrew', 'Savage Elbow', 'Tiger Teep', 'Leaping Tiger Fist', 'Dodon Barrage', 'Cross Slash', 'Gyaku-Zuki', 'Mae-Geri', 'Uraken', 'Shuto-Uchi', 'Assassinate', 'Pin-Point Blow', 'Incognito', 'Secret Poison', 'Crashing Thunder Kick', 'Tornado Roundhouse', "Heaven's Howl", 'Rising Sun Technique', 'Sweeping Sunlight', 'Neo Wolf Fang Fist', 'Crimson Sky Flurry', 'Early Morning', 'Thrusting Strikes', 'Lacerating Slash', 'Kamehameha', 'Kamehameha Surge', 'Destructo Disc', 'Solar Flare', 'Supernova', 'Life Hijack']);
 
 // ---------- PER-TECHNIQUE MASTERY TABLES ----------
 // Indexed by mastery level; a level past the end of an array repeats the last entry (players cap
@@ -10154,6 +10733,25 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         return interaction.reply({ content: '❌ That target is no longer available!', ephemeral: true });
     }
 
+    // Life Hijack has hard requirements (a Baby Tuffle, and a BLEEDING player body to burrow into).
+    // Validate them up front so an invalid attempt never burns the action or the Ki.
+    if (skill.name === 'Life Hijack') {
+        const hijacker = characterManager.getCharacter(interaction.user.id);
+        if (!isBabyTuffle(hijacker)) {
+            return interaction.reply({ content: '❌ Only a **Baby Tuffle** can hijack a body!', ephemeral: true });
+        }
+        const hijackVictim = target ? getParticipantEntity(target).character : null;
+        if (!hijackVictim || isNPC(target) || isCompanion(target)) {
+            return interaction.reply({ content: '❌ **Life Hijack** needs another player\'s body — NPCs and companions can\'t be hijacked.', ephemeral: true });
+        }
+        if (getBodyControl(hijackVictim)) {
+            return interaction.reply({ content: `❌ **${target.username}** has already lost their body!`, ephemeral: true });
+        }
+        if ((target.bleedTurns || 0) <= 0) {
+            return interaction.reply({ content: `🩸 **${target.username}** isn't **Bleeding** — you need an open cut to burrow into!`, ephemeral: true });
+        }
+    }
+
     // Turning a sustained toggle OFF (lowering Ki Sense/Fly, dropping Ki Sharpening/Pump Up/
     // Kaioken) is always free — it costs NO Ki and NO action, so a fighter can drop a toggle at
     // any time to stop its drain and conserve Ki. Only switching one ON costs a bonus action + Ki.
@@ -10272,6 +10870,10 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         // Yokai (Ghastly Structure): the ghostly form takes +25% damage from all sources.
         if (target && target.race === 'Yokai') {
             finalDmg = Math.floor(finalDmg * 1.25);
+        }
+        // Baby Tuffle "Vesselmonger": a parasite outside of a body takes double damage.
+        if (target && target.vesselmongerBodiless) {
+            finalDmg = Math.floor(finalDmg * Math.max(1, Number(target.vesselmongerDamageMult) || 2));
         }
         // Crane's Mark: a KI technique hitting a marked entity deals extra damage (scaled off the
         // marker's WIL mod). Any attacker triggers it — the mark is what sears.
@@ -10763,6 +11365,28 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             } else {
                 log += `\n🛡️ **${target.username}** resists the poison!`;
             }
+            break;
+        }
+        case 'Life Hijack': {
+            // Baby Tuffle (Trello card 48): burrow into a BLEEDING foe. The card's save is a flat
+            // "CON save of 35", so this is d20 + CON mod (validated up front: a Baby Tuffle acting
+            // on another player's bleeding body).
+            const dc = Math.max(1, Number(BODY_CONTROL.lifeHijackDc) || 35);
+            const conSave = battle.rollDice(20) + battle.getEffectiveModifier(target, 'con');
+            if (conSave >= dc) {
+                log += `\n🛡️ **${target.username}** forces the parasite out! (CON save **${conSave}** vs **${dc}**)`;
+                break;
+            }
+            const hijackHost = characterManager.getCharacter(current.userId);
+            const hijackVictim = getParticipantEntity(target).character;
+            if (!hijackBody(current.userId, hijackHost, target.userId, hijackVictim)) {
+                log += `\n❌ You couldn't take that body!`;
+                break;
+            }
+            target.isIncapacitated = true;
+            target.bodyHijacked = true;
+            log += `\n🪱 **${target.username}** fails the CON save (**${conSave}** vs **${dc}**) and **loses their body**!`;
+            log += `\n👤 **${current.username}** takes control of **${target.username}** — **My New Body**: the vessel's stats and forms are now theirs.`;
             break;
         }
         case 'Crashing Thunder Kick': {
@@ -12103,6 +12727,12 @@ function getStatModifierBreakdown(character, stat) {
         if (kiApp.passive && kiApp.dex) sources.push(`Ki Application +${kiApp.dex}`);
         if (character.mutation === 'Third Eye') sources.push('Third Eye +3');
     }
+    if (stat === 'wil' || stat === 'spi') {
+        // Armor material %-mods (Soulstone +20% WIL, Ebonite +20% SPI).
+        const armorMods = getEquippedArmorMods(character);
+        const pct = stat === 'wil' ? armorMods.wilPct : armorMods.spiPct;
+        if (pct) sources.push(`${armorMods.material || 'Armor'} armor +${pct}% ${stat.toUpperCase()} mod`);
+    }
     return sources.length ? sources.join(' · ') : '—';
 }
 
@@ -12843,12 +13473,27 @@ function applyFormToStats(character) {
     // Ki Application passive below so its +1/4 WIL mod bonus tracks the wielded/worn gear.
     const weaponConBonus = Number(character.weaponConBonus) || 0;
     const weaponWilBonus = Number(character.weaponWilBonus) || 0;
-    const armorWilBonus = Number(character.armorWilBonus) || 0;
-    const armorSpiBonus = Number(character.armorSpiBonus) || 0;
     if (weaponConBonus) stats.con = (stats.con || 0) + weaponConBonus;
     if (weaponWilBonus) stats.wil = (stats.wil || 0) + weaponWilBonus;
-    if (armorWilBonus) stats.wil = (stats.wil || 0) + armorWilBonus;
-    if (armorSpiBonus) stats.spi = (stats.spi || 0) + armorSpiBonus;
+    // Armor material bonuses (Trello "SMITHING"): Soulstone armor grants +20% of the wearer's WIL
+    // MOD and Ebonite +20% of their SPI MOD — a % of the modifier, exactly like the weapons'
+    // SPI/WIL damage % — not a flat stat. Applied BEFORE the Ki Application passive below so its
+    // +1/4 WIL mod bonus tracks the worn armor too.
+    const armorMods = getEquippedArmorMods(character);
+    if (armorMods.wilPct || armorMods.spiPct) {
+        const wornMods = calculateAllModifiers(stats, character.statMultipliers);
+        if (armorMods.wilPct) {
+            modBonus.wil = (modBonus.wil || 0) + Math.max(0, Math.round((wornMods.wil || 0) * armorMods.wilPct / 100));
+        }
+        if (armorMods.spiPct) {
+            modBonus.spi = (modBonus.spi || 0) + Math.max(0, Math.round((wornMods.spi || 0) * armorMods.spiPct / 100));
+        }
+    }
+    // Vesselmonger (Trello Baby Tuffle card 48): a parasite that is outside of a body is vulnerable
+    // — it takes double damage (the `vesselmongerBodiless`/`vesselmongerDamageMult` fields below are
+    // read by the damage paths) and suffers -7 DEX mod.
+    const bodilessDexPenalty = getBodilessDexPenalty(character);
+    if (bodilessDexPenalty > 0) modBonus.dex = (modBonus.dex || 0) - bodilessDexPenalty;
     // Ki Application: active toggle until mastery 3 (then passive, free). Only apply its
     // DEX/damage at build time when it's passive; otherwise the fight toggles it on as a bonus action.
     const kiApplication = getKiApplicationEffects(character);
@@ -12914,6 +13559,11 @@ function applyFormToStats(character) {
             armorReduction: Number(character.armorReduction) || 0,
             armorDexReduction: Number(character.armorDexReduction) || 0,
             armor: character.armor || null,
+            armorWilPct: armorMods.wilPct,
+            armorSpiPct: armorMods.spiPct,
+            // Vesselmonger: a bodiless Baby Tuffle takes double damage (read by the damage paths).
+            vesselmongerBodiless: isBodilessBabyTuffle(character),
+            vesselmongerDamageMult: Math.max(1, Number(BODY_CONTROL.bodilessDamageMult) || 2),
             flyDrainReduction: getFlyMasteryEffects(character).drainReduction,
             flyDexDefenseBonus: getFlyMasteryEffects(character).dexDefense,
             flyRetreatBonus: getFlyMasteryEffects(character).retreatBonus,
@@ -12953,7 +13603,7 @@ function getFormKiRegen(character) {
 const DEFAULT_RACIAL_KI_REGEN_PCT = { Earthling: 5, 'Half-Saiyan': 4, 'Frost Demon': 3 };
 const RACIAL_KI_REGEN_PCT = (() => {
     try {
-        const cfg = require('./config/config.json');
+        const cfg = require('./config-loader').loadConfig();
         if (cfg.racialKiRegenPct && typeof cfg.racialKiRegenPct === 'object') return cfg.racialKiRegenPct;
         if (typeof cfg.racialKiRegenPct === 'number') return cfg.racialKiRegenPct;
     } catch (e) { /* config optional */ }
@@ -12977,7 +13627,7 @@ function getRacialKiRegenPct(race) {
 const DEFAULT_KI_REGEN_WIL_PCT = { Earthling: 4, 'Half-Saiyan': 2, default: 50 };
 const KI_REGEN_WIL_PCT = (() => {
     try {
-        const cfg = require('./config/config.json');
+        const cfg = require('./config-loader').loadConfig();
         if (cfg.kiRegenWilPct && typeof cfg.kiRegenWilPct === 'object') return cfg.kiRegenWilPct;
         if (typeof cfg.kiRegenWilPct === 'number') return cfg.kiRegenWilPct;
     } catch (e) { /* config optional */ }
@@ -13016,6 +13666,8 @@ function wilScaledFormRegen(formRegen, wilMod) {
     return formRegen;
 }
 function getBattleKiRegen(character) {
+    // Nuclear Battery (Android): "you cannot regenerate charge in combat" — no in-battle regen at all.
+    if (isAndroid(character)) return null;
     const wilMod = calculateModifier((character.stats || {}).wil);
     const formRegen = getFormKiRegen(character);
     // Form regen (Acrosian suppression forms etc.) benefits from WIL control too — the bonus is
@@ -15363,7 +16015,7 @@ function huntMeatQty(key) {
 // `huntAnimalTierRatios`. The old per-tier `maxStat` ceilings froze animals at roughly 2k–93k PL
 // no matter how strong the hunter was.
 let huntAnimalPLRatio = 0.6;
-try { const cfg = require('./config/config.json'); if (typeof cfg.huntAnimalPLRatio === 'number') huntAnimalPLRatio = cfg.huntAnimalPLRatio; } catch (e) { /* config optional */ }
+try { const cfg = require('./config-loader').loadConfig(); if (typeof cfg.huntAnimalPLRatio === 'number') huntAnimalPLRatio = cfg.huntAnimalPLRatio; } catch (e) { /* config optional */ }
 const HUNT_ANIMAL_PL_RATIO = huntAnimalPLRatio;
 const HUNT_ANIMAL_TIER_RATIO_DEFAULTS = {
     rabbit: 0.35,
@@ -15373,7 +16025,7 @@ const HUNT_ANIMAL_TIER_RATIO_DEFAULTS = {
     dinosaur: 1.35
 };
 const HUNT_ANIMAL_TIER_RATIOS = { ...HUNT_ANIMAL_TIER_RATIO_DEFAULTS };try {
-    const cfg = require('./config/config.json');
+    const cfg = require('./config-loader').loadConfig();
     if (cfg.huntAnimalTierRatios && typeof cfg.huntAnimalTierRatios === 'object') {
         Object.entries(cfg.huntAnimalTierRatios).forEach(([k, v]) => {
             if (typeof v === 'number' && v > 0) HUNT_ANIMAL_TIER_RATIOS[k] = v;
@@ -16263,7 +16915,7 @@ function isLocationDestroyed(planet, space) {
 // Duration is tunable via config.json `planetDestroyedDurationHours` (default 3 days).
 let planetDestroyedMs = 3 * 24 * 60 * 60 * 1000;
 try {
-    const cfg = require('./config/config.json');
+    const cfg = require('./config-loader').loadConfig();
     if (typeof cfg.planetDestroyedDurationHours === 'number') planetDestroyedMs = cfg.planetDestroyedDurationHours * 60 * 60 * 1000;
 } catch (e) { /* config optional */ }
 const PLANET_DESTROYED_MS = planetDestroyedMs;
@@ -17509,7 +18161,11 @@ function calculateKi(spi, race = null, statMultipliers = {}, character = null) {
         spiMod += raceModifiers.spi;
     }
     
-    return 20 + (spiMod * 10);
+    const potential = 20 + (spiMod * 10);
+    // Nuclear Battery (Android): this SPI-derived pool is the POTENTIAL max charge — only the
+    // unlocked share (chargeCapPct, 50% until upgraded) is usable. 100% for everyone else.
+    const capPct = getAndroidChargeCapPct(character);
+    return capPct >= 100 ? potential : Math.max(1, Math.round(potential * capPct / 100));
 }
 
 // Recalculate max HP/Ki after a stat change, carrying current HP/Ki up with any increase.
@@ -17694,6 +18350,8 @@ function getKiFatigue(currentKi, maxKi) {
 }
 // Total fatigue = training fatigue (stored) + missing-Ki fatigue (derived)
 function getTotalFatigue(character) {
+    // Infinite Stamina (Android): running the battery dry never fatigues a machine.
+    if (isAndroid(character)) return Math.min(100, character.fatigue || 0);
     return Math.min(100, (character.fatigue || 0) + getKiFatigue(character.currentKi, character.maxKi));
 }
 
@@ -19210,6 +19868,45 @@ client.once(Events.ClientReady, async c => {
         );
     registerCommand(potentialUnlock);
 
+    const makeBabyTuffle = new SlashCommandBuilder()
+        .setName('make-baby-tuffle')
+        .setDescription('Tuffle bioengineering: convert a player into a Baby Tuffle (13+ INT, 950,000 resources)')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('The player whose character becomes a Baby Tuffle')
+                .setRequired(true)
+        );
+    registerCommand(makeBabyTuffle);
+
+    const makeAndroid = new SlashCommandBuilder()
+        .setName('make-android')
+        .setDescription('Bioengineering: convert a Cerealian, Earthling or Tuffle into an Android (50,000 resources)')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('The player whose character is rebuilt as an Android')
+                .setRequired(true)
+        );
+    registerCommand(makeAndroid);
+
+    const makeClone = new SlashCommandBuilder()
+        .setName('make-clone')
+        .setDescription('Android: build a mechanical clone — a spare body that saves you from death')
+        .addIntegerOption(option =>
+            option
+                .setName('amount')
+                .setDescription('How many clones to build (default 1)')
+                .setRequired(false)
+                .setMinValue(1)
+        );
+    registerCommand(makeClone);
+
+    const chargeUpgrade = new SlashCommandBuilder()
+        .setName('charge-upgrade')
+        .setDescription('Android: upgrade the Nuclear Battery to unlock more of your potential max charge');
+    registerCommand(chargeUpgrade);
+
     registerCommand(calculatePowerLevel);
     registerCommand(fish);
     registerCommand(cook);
@@ -19315,6 +20012,8 @@ client.once(Events.ClientReady, async c => {
     guardedInterval(async () => {
         await runTransformationDowntime();
         checkTreeOfMight(); // a matured Tree of Might bears fruit on its canon-window expiry.
+        // Baby Tuffle body control: one break-free roll per hour for every hijacked character.
+        runBodyControlDowntime();
     }, FORM_TICK_INTERVAL_MS, 'form downtime');
 
     // Pin/update the current saga number in the #saga channel, and refresh it periodically so an
@@ -19515,6 +20214,15 @@ async function handleInteraction(interaction) {
 
     // Any non-autocomplete interaction (command/button/modal) counts as meaningful activity.
     markPlayerActive(interaction.user.id);
+
+    // A hijacked character can't be used by its owner until they break free of the Baby Tuffle:
+    // every command and button is refused with the possession status (a few read-only commands
+    // and the wipe, which hands the body over, stay available).
+    const bodyControlBlock = getBodyControlLockReply(interaction);
+    if (bodyControlBlock) {
+        const payload = { content: bodyControlBlock, ephemeral: true };
+        return (interaction.deferred || interaction.replied ? interaction.followUp(payload) : interaction.reply(payload)).catch(() => {});
+    }
 
     // Handle button interactions first
     if (interaction.isButton()) {
@@ -21977,6 +22685,8 @@ async function handleInteraction(interaction) {
         if (!character) {
             return interaction.reply('You need a character to rest! Use `/character-create` to make one.');
         }
+        const restBlock = getAndroidBlockReply(character, 'rest');
+        if (restBlock) return interaction.reply(restBlock);
 
         // Midnight reset: full heal outside of combat
         let midnightText = '';
@@ -22211,8 +22921,8 @@ async function handleInteraction(interaction) {
                 const apProf = Math.min(SMITHING_PROFICIENCY_MAX, getSmithingProficiency(character) + apGain);
                 characterManager.updateCharacter(interaction.user.id, character.id, { smithingProficiency: apProf, inventory });
                 const spareA = [];
-                if (item.armorWilBonus) spareA.push(`**+${item.armorWilBonus} WIL**`);
-                if (item.armorSpiBonus) spareA.push(`**+${item.armorSpiBonus} SPI**`);
+                if (item.armorWilPct) spareA.push(`**+${item.armorWilPct}% WIL mod**`);
+                if (item.armorSpiPct) spareA.push(`**+${item.armorSpiPct}% SPI mod**`);
                 const aBuffs = spareA.length ? `\n💪 While worn: ${spareA.join(' and ')}\n` : '';
                 return interaction.reply(`🛡️ **${character.name}** forged **${item.name}**!\n🛠️ **+${apGain} Smithing Proficiency** (total **${apProf}**).\n🔥 Fuel: **Coal ×${FORGE_COAL_COST}** burned.\n\n💥 Damage reduction: **${item.armorReduction}%**\n😅 Defending DEX reduction: **${item.armorDexReduction}%**\n🔩 Durability: **${item.armorDurability}**${aBuffs}\nEquip it with \`/equip\`.`);
             }
@@ -24062,6 +24772,8 @@ async function handleInteraction(interaction) {
         if (!character) {
             return interaction.reply('You need a character to eat! Use `/character-create` to make one.');
         }
+        const eatBlock = getAndroidBlockReply(character, 'eat');
+        if (eatBlock) return interaction.reply(eatBlock);
 
         const itemName = interaction.options.getString('item');
         const spec = FOOD_ITEMS[itemName];
@@ -24139,6 +24851,8 @@ async function handleInteraction(interaction) {
         if (!character) {
             return interaction.reply('You need a character to eat! Use `/character-create` to make one.');
         }
+        const eatAllBlock = getAndroidBlockReply(character, 'eat');
+        if (eatAllBlock) return interaction.reply(eatAllBlock);
 
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
         const tackle = getFishTackle(character);
@@ -24517,25 +25231,33 @@ async function handleInteraction(interaction) {
                     armorReduction: character.armorReduction,
                     armorDexReduction: character.armorDexReduction,
                     armorDurability: character.armorDurability,
-                    armorWilBonus: character.armorWilBonus || 0,
-                    armorSpiBonus: character.armorSpiBonus || 0
+                    armorWilPct: character.armorWilPct || 0,
+                    armorSpiPct: character.armorSpiPct || 0
                 });
                 swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
             }
             consumeInventorySlot(inventory, entryIdx);
-            const armorWilBonus = (typeof entry === 'object' && entry.armorWilBonus != null) ? entry.armorWilBonus : 0;
-            const armorSpiBonus = (typeof entry === 'object' && entry.armorSpiBonus != null) ? entry.armorSpiBonus : 0;
+            // Armor material %-mods (Soulstone +20% WIL, Ebonite +20% SPI): the rolled item carries
+            // them; otherwise derive them from the material in the armor's name.
+            const materialMods = getArmorMaterialMods(itemName);
+            const armorWilPct = (typeof entry === 'object' && entry.armorWilPct != null)
+                ? (Number(entry.armorWilPct) || 0) : materialMods.wilPct;
+            const armorSpiPct = (typeof entry === 'object' && entry.armorSpiPct != null)
+                ? (Number(entry.armorSpiPct) || 0) : materialMods.spiPct;
             characterManager.updateCharacter(interaction.user.id, character.id, {
                 inventory,
                 armor: itemName,
                 armorReduction: damageReduction,
                 armorDexReduction: dexReduction,
                 armorDurability: durability,
-                armorWilBonus,
-                armorSpiBonus
+                armorWilPct,
+                armorSpiPct
             });
-            const armorBuffs = (armorWilBonus || armorSpiBonus)
-                ? `\n💪 While worn: **+${armorWilBonus || 0} WIL** and **+${armorSpiBonus || 0} SPI**`
+            const armorBuffs = (armorWilPct || armorSpiPct)
+                ? `\n💪 While worn: ${[
+                    armorWilPct ? `**+${armorWilPct}% of your WIL mod**` : null,
+                    armorSpiPct ? `**+${armorSpiPct}% of your SPI mod**` : null
+                ].filter(Boolean).join(' and ')}`
                 : '';
             return interaction.reply(`🛡️ **${character.name}** equipped **${itemName}**!\n\n💥 Damage reduction: **${damageReduction}%**\n😅 Defending DEX reduction: **${dexReduction}%**\n🔩 Durability: **${durability}**${armorBuffs}${swapNote}`);
         }
@@ -24611,8 +25333,8 @@ async function handleInteraction(interaction) {
                 armorReduction: character.armorReduction,
                 armorDexReduction: character.armorDexReduction,
                 armorDurability: character.armorDurability,
-                armorWilBonus: character.armorWilBonus || 0,
-                armorSpiBonus: character.armorSpiBonus || 0
+                armorWilPct: character.armorWilPct || 0,
+                armorSpiPct: character.armorSpiPct || 0
             };
             inventory.push(armorObj);
             characterManager.updateCharacter(interaction.user.id, character.id, {
@@ -24621,8 +25343,8 @@ async function handleInteraction(interaction) {
                 armorReduction: null,
                 armorDexReduction: null,
                 armorDurability: null,
-                armorWilBonus: null,
-                armorSpiBonus: null
+                armorWilPct: null,
+                armorSpiPct: null
             });
             return interaction.reply(`🛡️ **${character.name}** unequipped **${name}**! It was returned to your inventory.`);
         }
@@ -24782,11 +25504,18 @@ async function handleInteraction(interaction) {
              /(Masterwork|Expert|Tempered|Fine|Regular|Bad|Worthless)\s+Armor/i.test(itemName) ||
              /Rusted Kavacha Armor/i.test(itemName));
         if (isArmor) {
+            // Material %-mods (Soulstone +20% WIL, Ebonite +20% SPI) come from the armor's material.
+            const matMods = getArmorMaterialMods(itemName);
+            const matParts = [];
+            if (matMods.wilPct) matParts.push(`**+${matMods.wilPct}% of your WIL mod**`);
+            if (matMods.spiPct) matParts.push(`**+${matMods.spiPct}% of your SPI mod**`);
+            const matLine = matParts.length ? `💪 While worn: ${matParts.join(' and ')}\n` : '';
             let text = `🛡️ **${itemName}**\n\n`;
             if (typeof entry === 'object' && entry.armorReduction != null) {
                 text += `💥 Damage reduction: **${entry.armorReduction}%**\n`;
                 text += `😅 Defending DEX reduction: **${entry.armorDexReduction}%**\n`;
                 text += `🔩 Durability: **${entry.armorDurability}**\n`;
+                text += matLine;
             } else {
                 const weight = /Light/i.test(itemName) ? 'Light' : /Heavy/i.test(itemName) ? 'Heavy' : 'Medium';
                 let dr, dex, dur;
@@ -24796,6 +25525,7 @@ async function handleInteraction(interaction) {
                 text += `💥 Damage reduction: **${dr}%**\n`;
                 text += `😅 Defending DEX reduction: **${dex}%**\n`;
                 text += `🔩 Durability: **${dur}**\n`;
+                text += matLine;
                 text += `\n*(Rolled once when equipped; inspecting rolls a preview.)*`;
             }
             return interaction.reply(text);
@@ -25486,6 +26216,8 @@ async function handleInteraction(interaction) {
         const character = characterManager.getCharacter(interaction.user.id);
         const type = interaction.options.getString('type');
         const opponentUser = interaction.options.getUser('opponent');
+        const trainBlock = character ? getAndroidBlockReply(character, 'train') : null;
+        if (trainBlock) return interaction.reply(trainBlock);
 
         // Spar: challenge the other player to a real battle; they accept/decline.
         if (type === 'spar') {
@@ -26781,6 +27513,10 @@ async function handleInteraction(interaction) {
         character = characterManager.getCharacter(interaction.user.id) || character;
         const birthNotice = takeBirthNotice(interaction.user.id);
         const nicknameNotice = takeNicknameNotice(interaction.user.id);
+        // Baby Tuffle body control: capture / break-free / hand-over notices and status line.
+        const bodyControlNotice = takeBodyControlNotice(interaction.user.id);
+        const bodyControlStatus = formatBodyControlStatus(character, interaction.user.id);
+        const androidStatus = formatAndroidStatus(character);
         checkSaiyanSuperSaiyanUnlock(interaction.user.id, character);
 
         // Family / children summary.
@@ -26838,7 +27574,7 @@ async function handleInteraction(interaction) {
         const embed = new EmbedBuilder()
             .setColor(0x0099FF)
             .setTitle(activeNick ? `${character.name} — ${activeNick.emoji} ${activeNick.text}` : `${character.name}`)
-            .setDescription(`${nicknameNotice}${zenkaiNotice}${vampConversion}${birthNotice}**${character.race}${character.gender ? ` ${character.gender}` : ''}${character.class ? ` | ${character.class}` : ''}${character.beauty ? ` | 🎭 ${getBeautyLabel(character.beauty)}` : ''}** | Age ${character.age}${character.gender ? ` | ${character.gender}` : ''}${getNicknameList(character).length ? `\n🏷️ ${formatNicknameList(character)}` : ''}\n📍 **${viewLocation}** - Space ${viewSpace}${caveMarker(viewLocation, viewSpace)}${specialName ? ` (${specialName})` : ''}${homeText}${gearText}${hasSpaceship(character) ? ` 🚀 Lv${character.spaceshipLevel || 1}` : ''}${hasSpacePod(character) ? ' 🛸' : ''}${character.gravityChamber ? ` ⚖️ x${character.gravityChamber}` : ''}${character.weightsEquipped && character.weightsType ? ` 🏋️ ${WEIGHTS_TYPES[character.weightsType].name}` : ''}${character.activeForm ? ` 🔥 ${character.activeForm}` : ''}${hasActiveTalisman(character) ? ' 🧿 Talisman' : ''}${isVampire(character) ? `\n🩸 Blood: **${character.bloodBar || 0}/${getVampireBloodMax(character)}**` : ''}${travelRemaining > 0 ? `\n✈️ In transit — arriving in ~${formatDuration(travelRemaining)}` : ''}`)
+            .setDescription(`${nicknameNotice}${zenkaiNotice}${vampConversion}${birthNotice}${bodyControlNotice}**${character.race}${character.gender ? ` ${character.gender}` : ''}${character.class ? ` | ${character.class}` : ''}${character.beauty ? ` | 🎭 ${getBeautyLabel(character.beauty)}` : ''}** | Age ${character.age}${character.gender ? ` | ${character.gender}` : ''}${getNicknameList(character).length ? `\n🏷️ ${formatNicknameList(character)}` : ''}\n📍 **${viewLocation}** - Space ${viewSpace}${caveMarker(viewLocation, viewSpace)}${specialName ? ` (${specialName})` : ''}${homeText}${gearText}${hasSpaceship(character) ? ` 🚀 Lv${character.spaceshipLevel || 1}` : ''}${hasSpacePod(character) ? ' 🛸' : ''}${character.gravityChamber ? ` ⚖️ x${character.gravityChamber}` : ''}${character.weightsEquipped && character.weightsType ? ` 🏋️ ${WEIGHTS_TYPES[character.weightsType].name}` : ''}${character.activeForm ? ` 🔥 ${character.activeForm}` : ''}${hasActiveTalisman(character) ? ' 🧿 Talisman' : ''}${isVampire(character) ? `\n🩸 Blood: **${character.bloodBar || 0}/${getVampireBloodMax(character)}**` : ''}${travelRemaining > 0 ? `\n✈️ In transit — arriving in ~${formatDuration(travelRemaining)}` : ''}${bodyControlStatus}${androidStatus}`)
             .addFields(
                 { 
                     name: '⚡ Power Level', 
@@ -27604,13 +28340,21 @@ async function handleInteraction(interaction) {
             return interaction.reply('❌ You don\'t have any characters to wipe!');
         }
 
-        // Delete the character
-        const deleted = characterManager.deleteCharacter(interaction.user.id, character.id);
+        // A hijacked body can't just be deleted: the Baby Tuffle keeps it — permanently, as its
+        // active character, with no further break-free checks.
+        const hijackedBody = getBodyControl(character);
+        const deleted = hijackedBody
+            ? !!transferHijackedBody(interaction.user.id, character)
+            : characterManager.deleteCharacter(interaction.user.id, character.id);
 
         if (deleted) {
             // Clear any pending character creation
             pendingCharacters.delete(interaction.user.id);
             activeCreations.delete(interaction.user.id);
+
+            if (hijackedBody) {
+                return interaction.reply(`🪱 **${character.name}** has been handed over.\n\n**${hijackedBody.hostName}** keeps that body **permanently** — no break-free checks, and it is now their active character. You're free to \`/character-create\` a new one.`);
+            }
 
             return interaction.reply(`🗑️ **Character Deleted**\n\n**${character.name}** (${character.race}, PL: ${formatPL(character.powerLevel)}) has been permanently wiped from the database.\n\nYou can create a new character with \`/character-create\`.`);
         } else {
@@ -27661,6 +28405,218 @@ async function handleInteraction(interaction) {
 
         const names = characters.map(c => `${c.name} (${c.race}, PL: ${c.powerLevel ?? '?'})`).join(', ');
         return interaction.reply(`🗑️ **Wiped ${target.username}**'s character data (**${count}** character${count === 1 ? '' : 's'}):\n\n${names}\n\nThey can create a new character with \`/character-create\`.`);
+    }
+
+    if (interaction.commandName === 'make-baby-tuffle') {
+        const creator = characterManager.getCharacter(interaction.user.id);
+        if (!creator) {
+            return interaction.reply('You need a character to do bioengineering! Use `/character-create` to make one.');
+        }
+        const targetUser = interaction.options.getUser('user');
+        if (!targetUser) return interaction.reply('❌ Pick a player to convert.');
+        if (targetUser.id === interaction.user.id) return interaction.reply('❌ A Tuffle needs a **subject** — you can\'t convert yourself.');
+        const targetChar = characterManager.getCharacter(targetUser.id);
+        if (!targetChar) return interaction.reply(`❌ **${targetUser.username}** doesn't have a character to convert.`);
+
+        // "Advances in Bioengineering" (Trello Tuffle card 29): 13+ INT and 950,000 resources.
+        if (creator.race !== 'Tuffle') {
+            return interaction.reply('❌ Only **Tuffles** have the **Advances in Bioengineering** passive needed to make a Baby Tuffle.');
+        }
+        const intReq = Math.max(1, Number(BODY_CONTROL.creationIntReq) || 13);
+        if ((creator.stats.int || 0) < intReq) {
+            return interaction.reply(`❌ Making a **Baby Tuffle** needs **${intReq}+ INT** (you have **${creator.stats.int || 0}**).`);
+        }
+        const cost = Math.max(0, Number(BODY_CONTROL.creationResources) || 950000);
+        if ((creator.resources || 0) < cost) {
+            return interaction.reply(`❌ Making a **Baby Tuffle** costs **${cost.toLocaleString()} resources** (you have **${(creator.resources || 0).toLocaleString()}** — mine more with \`/mine\`).`);
+        }
+        if (isBabyTuffle(targetChar)) {
+            return interaction.reply(`❌ **${targetChar.name}** is already a **Baby Tuffle**!`);
+        }
+
+        // The creator's INT decides how strong the parasite starts: every combat stat is
+        // `8d100 + (creator INT mod × 10)` and INT is `1d20+5` (Trello card 48).
+        const creationIntMod = calculateModifier(creator.stats.int || 0);
+        const perStatBonus = Math.round(creationIntMod * (Number(BODY_CONTROL.creationIntModMult) || 10));
+        const stats = {};
+        ['str', 'dex', 'con', 'wil', 'spi'].forEach(stat => {
+            stats[stat] = Math.max(1, rollDiceString(BODY_CONTROL.creationStatDice || '8d100') + perStatBonus);
+        });
+        stats.int = Math.max(1, rollDiceString(BODY_CONTROL.creationIntDice || '1d20+5'));
+
+        // "Gain a mutation roll" — data-driven: resolves against the Baby Tuffle mutation pool,
+        // which is empty until one is added to mutations.js.
+        const mutationPool = getAvailableMutations('Baby Tuffle', null);
+        const grantedMutation = mutationPool.length ? mutationPool[getRandomInt(mutationPool.length) - 1] : null;
+
+        const techniques = Array.isArray(targetChar.techniques) ? [...targetChar.techniques] : [];
+        if (!techniques.includes('Life Hijack')) techniques.push('Life Hijack');
+
+        const modifiers = calculateAllModifiers(stats, targetChar.statMultipliers);
+        const vitals = recalcVitals(targetChar, stats);
+        const updates = {
+            race: 'Baby Tuffle',
+            stats,
+            modifiers,
+            ...vitals,
+            currentHP: vitals.maxHP,
+            currentKi: vitals.maxKi,
+            powerLevel: characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }),
+            techniques
+        };
+        if (grantedMutation) updates.mutation = grantedMutation.name;
+        characterManager.updateCharacter(targetUser.id, targetChar.id, updates);
+        if (grantedMutation) {
+            // Same persistence shape as /set-mutation: applyMutationEffects mutates in place, so
+            // re-read the character and write back every field it touches.
+            const converted = characterManager.getCharacter(targetUser.id, targetChar.id);
+            applyMutationEffects(targetUser.id, converted, grantedMutation.name);
+            characterManager.updateCharacter(targetUser.id, targetChar.id, {
+                forms: converted.forms,
+                stats: converted.stats,
+                modifiers: converted.modifiers,
+                maxHP: converted.maxHP,
+                maxKi: converted.maxKi,
+                currentHP: converted.currentHP,
+                currentKi: converted.currentKi,
+                powerLevel: converted.powerLevel,
+                kiEfficiency: converted.kiEfficiency,
+                kiSense: converted.kiSense,
+                abilityMastery: converted.abilityMastery,
+                techniqueMastery: converted.techniqueMastery,
+                techniques: converted.techniques
+            });
+        }
+        // The creator pays for the procedure.
+        characterManager.updateCharacter(interaction.user.id, creator.id, { resources: (creator.resources || 0) - cost });
+
+        const statLine = ['str', 'dex', 'con', 'wil', 'spi'].map(s => `${s.toUpperCase()} **${stats[s]}**`).join(' | ');
+        const mutationText = grantedMutation
+            ? `\n🧬 Mutation roll: **${grantedMutation.name}**`
+            : '\n🧬 Mutation roll: no **Baby Tuffle** mutations exist yet (add one in `mutations.js` to enable it)';
+        return interaction.reply(`🧪 **${creator.name}** splices a **Baby Tuffle**!\n\n👤 **${targetChar.name}** (was ${targetChar.race}) is now a **Baby Tuffle** — a parasite that needs a body.\n📊 ${statLine}\n🧠 INT **${stats.int}**${mutationText}\n🪱 Learned **Life Hijack**: burrow into a **BLEEDING** foe in battle to take their body.\n💰 Cost: **${cost.toLocaleString()} resources** (you have **${((creator.resources || 0) - cost).toLocaleString()}**).`);
+    }
+
+    if (interaction.commandName === 'make-android') {
+        const creator = characterManager.getCharacter(interaction.user.id);
+        if (!creator) {
+            return interaction.reply('You need a character to do bioengineering! Use `/character-create` to make one.');
+        }
+        const targetUser = interaction.options.getUser('user');
+        if (!targetUser) return interaction.reply('❌ Pick a player to convert.');
+        if (targetUser.id === interaction.user.id) return interaction.reply('❌ A bioengineer needs a **subject** — you can\'t rebuild your own body.');
+        const targetChar = characterManager.getCharacter(targetUser.id);
+        if (!targetChar) return interaction.reply(`❌ **${targetUser.username}** doesn't have a character to convert.`);
+
+        // Card 26: only Cerealian / Earthling / Tuffle bodies can be converted.
+        if (isAndroid(targetChar)) return interaction.reply(`❌ **${targetChar.name}** is already an **Android**!`);
+        const convertible = Array.isArray(ANDROID.convertibleRaces) ? ANDROID.convertibleRaces : [];
+        if (convertible.length && !convertible.includes(targetChar.race)) {
+            return interaction.reply(`❌ Only **${convertible.join('**, **')}** bodies can be converted — **${targetChar.name}** is a **${targetChar.race}**.`);
+        }
+        const cost = Math.max(0, Number(ANDROID.creationResources) || 50000);
+        if ((creator.resources || 0) < cost) {
+            return interaction.reply(`❌ Making an **Android** costs **${cost.toLocaleString()} resources** (you have **${(creator.resources || 0).toLocaleString()}** — mine more with \`/mine\`).`);
+        }
+
+        // The creator's INT decides how strong the body comes out. A TUFFLE creator uses the
+        // "Advances in Bioengineering" formula instead (card 29): 8d100 + 120 + INT mod x10.
+        const tuffleCreator = creator.race === 'Tuffle';
+        const intMod = calculateModifier(creator.stats.int || 0);
+        const diceSpec = tuffleCreator ? (ANDROID.creationTuffleStatDice || '8d100') : (ANDROID.creationStatDice || '8d100');
+        const flat = tuffleCreator ? (Number(ANDROID.creationTuffleFlat) || 0) : 0;
+        const intMult = Number(tuffleCreator ? ANDROID.creationTuffleIntModMult : ANDROID.creationIntModMult) || 0;
+        const perStat = flat + Math.round(intMod * intMult);
+        const stats = {};
+        ['str', 'dex', 'con', 'wil', 'spi'].forEach(stat => {
+            stats[stat] = Math.max(1, rollDiceString(diceSpec) + perStat);
+        });
+        stats.int = Math.max(1, rollDiceString(ANDROID.creationIntDice || '1d15+5'));
+
+        const chargeCapStart = Math.max(1, Math.min(100, Number(ANDROID.chargeCapPctStart) || 50));
+        // Vitals must be computed as the NEW race so Nuclear Battery caps the charge pool.
+        const asAndroid = { ...targetChar, race: 'Android', androidBody: true, chargeCapPct: chargeCapStart };
+        const modifiers = calculateAllModifiers(stats, targetChar.statMultipliers);
+        const vitals = recalcVitals(asAndroid, stats);
+        characterManager.updateCharacter(targetUser.id, targetChar.id, {
+            race: 'Android',
+            androidBody: true,
+            stats,
+            modifiers,
+            ...vitals,
+            currentHP: vitals.maxHP,
+            currentKi: vitals.maxKi,
+            powerLevel: characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }),
+            chargeCapPct: chargeCapStart,
+            androidClones: Math.max(0, Number(targetChar.androidClones) || 0)
+        });
+        // The creator pays for the procedure.
+        characterManager.updateCharacter(interaction.user.id, creator.id, { resources: (creator.resources || 0) - cost });
+
+        const statLine = ['str', 'dex', 'con', 'wil', 'spi'].map(s => `${s.toUpperCase()} **${stats[s]}**`).join(' | ');
+        return interaction.reply(`🔧 **${creator.name}** rebuilds **${targetChar.name}** into an **${'Android'}**!${tuffleCreator ? '\n🧬 **Advances in Bioengineering** — improved formula (**+120** and **INT mod x10**).' : ''}\n\n👤 Was **${targetChar.race}** | 📊 ${statLine}\n🧠 INT **${stats.int}**\n🔋 **Nuclear Battery**: charge **${vitals.maxKi}** max (**${chargeCapStart}%** of potential) — refilled after every fight, **no regen in combat**\n🤖 **Flesh is Weak**: no eating, resting or training — build clones with \`/make-clone\` so death uploads your mind instead\n💰 Cost: **${cost.toLocaleString()} resources** (you have **${((creator.resources || 0) - cost).toLocaleString()}**).`);
+    }
+
+    if (interaction.commandName === 'make-clone') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) return interaction.reply('You need a character! Use `/character-create` to make one.');
+        if (!isAndroid(character)) return interaction.reply('❌ Only an **Android** can build **mechanical clones** (card 26: Flesh is Weak).');
+        const maxClones = Math.max(1, Number(ANDROID.maxClones) || 3);
+        const have = Math.max(0, Number(character.androidClones) || 0);
+        if (have >= maxClones) return interaction.reply(`🤖 **${character.name}** already has **${have}/${maxClones}** clones — that's the cap.`);
+        const build = Math.min(Math.max(1, interaction.options.getInteger('amount') || 1), maxClones - have);
+        const cost = Math.max(0, Number(ANDROID.cloneResources) || 0) * build;
+        const items = (ANDROID.cloneItems && typeof ANDROID.cloneItems === 'object') ? ANDROID.cloneItems : {};
+        const inventory = Array.isArray(character.inventory) ? character.inventory : [];
+        const itemList = Object.entries(items).map(([name, qty]) => `**${name} ×${qty * build}**`).join(' + ');
+        if ((character.resources || 0) < cost) {
+            return interaction.reply(`❌ Building **${build}** clone${build === 1 ? '' : 's'} costs **${cost.toLocaleString()} resources** (you have **${(character.resources || 0).toLocaleString()}**).`);
+        }
+        const missing = Object.entries(items).filter(([name, qty]) => countInventoryItem(inventory, name) < qty * build);
+        if (missing.length) {
+            return interaction.reply(`❌ Building **${build}** clone${build === 1 ? '' : 's'} needs ${itemList} — you're missing **${missing.map(([name]) => name).join(', ')}**.`);
+        }
+        Object.entries(items).forEach(([name, qty]) => removeInventoryItems(inventory, name, qty * build));
+        characterManager.updateCharacter(interaction.user.id, character.id, {
+            androidClones: have + build,
+            resources: (character.resources || 0) - cost,
+            inventory
+        });
+        return interaction.reply(`🤖 **${character.name}** builds **${build}** mechanical clone${build === 1 ? '' : 's'}! (**${have + build}/${maxClones}**)\n\n🔧 Parts: ${itemList}\n💰 Cost: **${cost.toLocaleString()} resources**\n\nWhen you would die, a clone receives your consciousness upload instead (**consumed on use**).`);
+    }
+
+    if (interaction.commandName === 'charge-upgrade') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) return interaction.reply('You need a character! Use `/character-create` to make one.');
+        if (!isAndroid(character)) return interaction.reply('❌ Only an **Android** has a **Nuclear Battery** to upgrade (card 26).');
+        const next = getNextAndroidChargeCap(character);
+        const cap = getAndroidChargeCapPct(character);
+        if (next == null) {
+            return interaction.reply(`🔋 **${character.name}**'s battery is already **fully unlocked** — **100%** of the potential max charge.`);
+        }
+        const cost = Math.max(0, Number(ANDROID.chargeUpgradeResources) || 0);
+        const items = (ANDROID.chargeUpgradeItems && typeof ANDROID.chargeUpgradeItems === 'object') ? ANDROID.chargeUpgradeItems : {};
+        const inventory = Array.isArray(character.inventory) ? character.inventory : [];
+        const itemList = Object.entries(items).map(([name, qty]) => `**${name} ×${qty}**`).join(' + ');
+        if ((character.resources || 0) < cost) {
+            return interaction.reply(`❌ Unlocking **${next}%** costs **${cost.toLocaleString()} resources** (you have **${(character.resources || 0).toLocaleString()}**).`);
+        }
+        const missing = Object.entries(items).filter(([name, qty]) => countInventoryItem(inventory, name) < qty);
+        if (missing.length) {
+            return interaction.reply(`❌ Unlocking **${next}%** also needs ${itemList} — you're missing **${missing.map(([name]) => name).join(', ')}**.`);
+        }
+        Object.entries(items).forEach(([name, qty]) => removeInventoryItems(inventory, name, qty));
+        // Recompute the charge pool at the new cap (the current charge carries, clamped to the new max).
+        const upgraded = { ...character, chargeCapPct: next, inventory };
+        const vitals = recalcVitals(upgraded, character.stats);
+        characterManager.updateCharacter(interaction.user.id, character.id, {
+            chargeCapPct: next,
+            inventory,
+            resources: (character.resources || 0) - cost,
+            maxKi: vitals.maxKi,
+            currentKi: Math.min(vitals.maxKi, (character.currentKi || 0) + Math.max(0, vitals.maxKi - (character.maxKi || 0)))
+        });
+        return interaction.reply(`🔋 **${character.name}**'s **Nuclear Battery** is upgraded!\n\n⚡ Usable charge: **${cap}%** → **${next}%** of potential (max charge **${vitals.maxKi}**)\n🔧 Parts: ${itemList}\n💰 Cost: **${cost.toLocaleString()} resources**`);
     }
 
     if (interaction.commandName === 'wipe-game') {
@@ -28111,3 +29067,43 @@ module.exports.buildMissionPreviewText = buildMissionPreviewText;
 // Rival builders (regression test for the "Cannot access 'maxHP' before initialization" crash).
 module.exports.buildRivalParticipant = buildRivalParticipant;
 module.exports.buildRivalAllyParticipant = buildRivalAllyParticipant;
+// Forge/material armor %-mods (Soulstone +20% WIL, Ebonite +20% SPI) — test hooks.
+module.exports.ORE_BONUSES = ORE_BONUSES;
+module.exports.getArmorMaterialMods = getArmorMaterialMods;
+module.exports.getEquippedArmorMods = getEquippedArmorMods;
+module.exports.applyFormToStats = applyFormToStats;
+module.exports.forgeArmor = forgeArmor;
+module.exports.getStatModifierBreakdown = getStatModifierBreakdown;
+// Baby Tuffle body control (possession) — test hooks.
+module.exports.BODY_CONTROL = BODY_CONTROL;
+module.exports.getBodyControl = getBodyControl;
+module.exports.isBodyControlled = isBodyControlled;
+module.exports.isBabyTuffle = isBabyTuffle;
+module.exports.hijackBody = hijackBody;
+module.exports.releaseBodyControl = releaseBodyControl;
+module.exports.attemptBodyControlBreakFree = attemptBodyControlBreakFree;
+module.exports.maybeBodyControlBreakFreeInBattle = maybeBodyControlBreakFreeInBattle;
+module.exports.transferHijackedBody = transferHijackedBody;
+module.exports.formatBodyControlStatus = formatBodyControlStatus;
+module.exports.takeBodyControlNotice = takeBodyControlNotice;
+module.exports.getBodyControlLockReply = getBodyControlLockReply;
+module.exports.runBodyControlDowntime = runBodyControlDowntime;
+module.exports.isBodilessBabyTuffle = isBodilessBabyTuffle;
+module.exports.getBodilessDexPenalty = getBodilessDexPenalty;
+module.exports.getTuffleEgg = getTuffleEgg;
+module.exports.getTuffleServants = getTuffleServants;
+module.exports.plantParasiteEgg = plantParasiteEgg;
+module.exports.attemptServantEscape = attemptServantEscape;
+module.exports.clearParasiteEgg = clearParasiteEgg;
+// Android (Nuclear Battery / Flesh is Weak) — test hooks.
+module.exports.ANDROID = ANDROID;
+module.exports.isAndroid = isAndroid;
+module.exports.getAndroidChargeCapPct = getAndroidChargeCapPct;
+module.exports.getNextAndroidChargeCap = getNextAndroidChargeCap;
+module.exports.formatAndroidStatus = formatAndroidStatus;
+module.exports.getAndroidBlockReply = getAndroidBlockReply;
+module.exports.calculateKi = calculateKi;
+module.exports.recalcVitals = recalcVitals;
+module.exports.getTotalFatigue = getTotalFatigue;
+module.exports.getBattleKiRegen = getBattleKiRegen;
+module.exports.killCharacter = killCharacter;

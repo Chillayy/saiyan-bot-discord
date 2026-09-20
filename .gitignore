@@ -1,8 +1,11 @@
 # Dependencies
 node_modules/
 
-# Secrets / local configuration (Discord token, client id, guild id, game tunables).
-# NOT committed - every machine/deployment keeps its own copy.
+# Local secrets: Discord token / client id / guild id. NOT committed - every machine and
+# deployment keeps its own copy. Start from config/secrets.example.json.
+config/secrets.json
+
+# Optional per-machine tuning overrides, layered over the committed config/default-config.json.
 config/config.json
 
 # Environment variables

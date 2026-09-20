@@ -1,7 +1,7 @@
 // Battle System Module
 const statModifier = require('./statModifier');
 const { combineMultipliers, combinePercents, applyAdditiveMultipliers } = statModifier;
-const battleConfig = require('./config/config.json');
+const battleConfig = require('./config-loader').loadConfig();
 // Death-save success DC (Trello "Death Save"): a higher DC makes death saves harder to pass,
 // so the Save Ally action (which auto-succeeds one save) becomes more valuable.
 // Tunable via config.json `deathSaveDC` (default 10).
@@ -1885,6 +1885,18 @@ class Battle {
             const tenacityPrevented = result.turtleTenacityPct ? Math.round(flatBase * result.turtleTenacityPct / 100) : 0;
             if (armorPrevented > 0 || tenacityPrevented > 0 || tenacityFlat > 0) {
                 result.damage = Math.max(0, result.damage - armorPrevented - tenacityPrevented - tenacityFlat);
+            }
+
+            // Baby Tuffle "Vesselmonger": a parasite outside of a body takes DOUBLE damage — an
+            // additive term on the base (like the Yokai vulnerability below), so it stacks with the
+            // other percentage terms instead of multiplying the finished number.
+            if (defender.vesselmongerBodiless && flatBase > 0) {
+                const vessMult = Math.max(1, Number(defender.vesselmongerDamageMult) || 2);
+                const bodilessDmg = Math.floor(flatBase * (vessMult - 1));
+                if (bodilessDmg > 0) {
+                    result.damage += bodilessDmg;
+                    result.vesselmongerBonus = bodilessDmg;
+                }
             }
 
             // Yokai (Ghastly Structure): the ghostly form takes +25% damage from all sources — an

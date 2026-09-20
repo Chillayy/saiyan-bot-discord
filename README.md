@@ -24,10 +24,16 @@ A Discord bot for a Dragon Ball-themed RPG system.
 
 ### 3. Configure the Bot
 
-Edit `config/config.json` and replace (this file is gitignored &mdash; each machine/deployment keeps its own copy):
-- `YOUR_DISCORD_BOT_TOKEN_HERE` with your bot token
-- `YOUR_CLIENT_ID_HERE` with your client ID
-- `YOUR_GUILD_ID_HERE` with your server ID
+Copy `config/secrets.example.json` to `config/secrets.json` (gitignored &mdash; each machine/deployment keeps its own copy) and fill in:
+- `token` &mdash; your bot token
+- `clientId` &mdash; your client ID
+- `guildId` &mdash; your server ID (optional: leave it blank/empty for global commands)
+
+All gameplay tunables live in the **committed** `config/default-config.json`. To change any of them
+without touching the shared defaults, repeat just those keys in an optional `config/config.json`
+(gitignored) &mdash; it is merged over the defaults, block by block.
+You can also supply the credentials as `DISCORD_TOKEN` / `DISCORD_CLIENT_ID` / `DISCORD_GUILD_ID`
+environment variables instead; environment variables win over every file.
 
 ### 4. Invite the Bot to Your Server
 
@@ -99,6 +105,7 @@ node index.js
 - The bot automatically registers slash commands when it starts
 - Commands are available immediately after the bot logs in
 - Hera character gets +10 bonus to search rolls
-- `config/config.json` is gitignored (secrets + tunables) &mdash; never commit it; each machine/deployment keeps its own copy
+- `config/default-config.json` is the **committed** default configuration (all gameplay tunables) &mdash; edit it to change the shipped defaults
+- `config/config.json` (optional, gitignored) overrides individual keys of the defaults; `config/secrets.json` (gitignored) holds your token/client id/guild id &mdash; never commit either
 - `data/` (live game state: characters, world, creation cooldowns) is gitignored &mdash; back it up regularly
 - Want the bot online 24/7 without your laptop? See [DEPLOY_ORACLE.md](DEPLOY_ORACLE.md)

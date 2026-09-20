@@ -1,0 +1,948 @@
+{
+  "token": "",
+  "clientId": "",
+  "guildId": "",
+  "fatigueFloorRatio": 0.3,
+  "singleEnemyStatMult": 1.75,
+  "enemyMutationChance": 0.002,
+  "enemySagaScaleExponent": 1.84,
+  "enemySagaEase": true,
+  "enemySagaDampenPower": 1,
+  "enemySagaMultMax": 1.5,
+  "enemyPLExponent": 1,
+  "enemyScaling": {
+    "casual": {
+      "ratio": 0.35
+    },
+    "hard": {
+      "ratio": 0.7
+    },
+    "very hard": {
+      "ratio": 1
+    },
+    "saga": {
+      "ratio": 1.3
+    },
+    "mentor": {
+      "ratio": 1.4
+    },
+    "boss": {
+      "ratio": 2.2
+    }
+  },
+  "huntAnimalTierRatios": {
+    "rabbit": 0.35,
+    "deer": 0.55,
+    "wolfStrong": 0.8,
+    "bear": 1,
+    "dinosaur": 1.35
+  },
+  "autoSaga": {
+    "enabled": true,
+    "basePL": 10000,
+    "step": 1.5,
+    "maxSaga": 100
+  },
+  "miscarriageChance": 10,
+  "persuadeOppositeAlignmentPenalty": 0.4,
+  "createDragonBallKiCost": 2000,
+  "customTechniqueCost": {
+    "min": 5000,
+    "perKiPct": 300
+  },
+  "customTechniqueRefundPct": 50,
+  "kingKaiTravel": {
+    "dexCap": 50000,
+    "minMinutes": 5,
+    "maxMinutes": 300,
+    "falloffExponent": 2
+  },
+  "kaioken": {
+    "multipliers": [
+      2,
+      3,
+      4,
+      5,
+      10,
+      20
+    ],
+    "kiPerTurn": [
+      20,
+      30,
+      40,
+      50,
+      100,
+      200
+    ],
+    "strainPct": [
+      10,
+      15,
+      20,
+      25,
+      40,
+      50
+    ],
+    "maxFatiguePct": 50
+  },
+  "materializeWeightMedKiDiff": 20,
+  "materializeWeightHeavyKiDiff": 30,
+  "missionNormalItemChance": 45,
+  "missionLegendaryItemChance": 3,
+  "missionDifficultyItemChanceBoost": 3,
+  "missionNegativeItemChanceBonus": 10,
+  "missionNegativeZeniMult": 1.5,
+  "missionRewardScaling": {
+    "_comment": "Stat-point payout of a quest = 0.21 x PL^0.75 x this value (per survivor, scaled to their own PL). Reference: a training session is 0.4-1.25 and a safe spar 1.0-1.2 x a relative band. Raise/lower any tier here.",
+    "casual": 1.5,
+    "hard": 2.5,
+    "very hard": 3.75,
+    "saga": 4.75,
+    "npcQuest": 1.75
+  },
+  "deathSaveDC": 10,
+  "craneMark": {
+    "minPct": 0.5,
+    "maxPct": 1,
+    "flat": 5
+  },
+  "enemyPartyScaling": {
+    "enabled": true,
+    "exponent": 1,
+    "maxMult": 10,
+    "companionWeight": 0.25
+  },
+  "kiRegenWilPct": {
+    "Earthling": 4,
+    "Half-Saiyan": 2,
+    "default": 50
+  },
+  "baseSystem": {
+    "accrualCapHours": 24,
+    "harvestCooldownMinutes": 240,
+    "costSagaFactor": 0.25,
+    "zeniSagaFactor": 0.1,
+    "foodPool": [
+      "Bread",
+      "Dumplings",
+      "Hetap™",
+      "Vita Drink"
+    ],
+    "ship": {
+      "refuel": {
+        "Uranium Fuel Cell Charging Bank": 300,
+        "Diesel Dispenser Machine": 75,
+        "Gasoline Dispenser Machine": 40
+      },
+      "buyFuelAmount": 50,
+      "buyFuelResourceCost": 5000
+    },
+    "facilities": {
+      "trainingRoom": {
+        "name": "Training Room",
+        "emoji": "🏋️",
+        "maxLevel": 5,
+        "effects": {
+          "gravity": [
+            10,
+            20,
+            50,
+            100,
+            200
+          ],
+          "trainingBonusPct": [
+            8,
+            16,
+            24,
+            32,
+            40
+          ]
+        }
+      },
+      "resourceFarm": {
+        "name": "Resource Farm",
+        "emoji": "🌱",
+        "maxLevel": 5,
+        "effects": {
+          "resourcesPerHour": [
+            120,
+            280,
+            600,
+            1200,
+            2400
+          ],
+          "harvestDice": [
+            20,
+            25,
+            30,
+            35,
+            40
+          ]
+        }
+      },
+      "zeniVault": {
+        "name": "Zeni Vault",
+        "emoji": "💰",
+        "maxLevel": 5,
+        "effects": {
+          "zeniPerHour": [
+            1500,
+            4000,
+            9000,
+            20000,
+            45000
+          ]
+        }
+      },
+      "workshop": {
+        "name": "Workshop",
+        "emoji": "🔧",
+        "maxLevel": 5,
+        "effects": {
+          "craftDiscountPct": [
+            5,
+            10,
+            15,
+            20,
+            25
+          ],
+          "smeltBonusPct": [
+            10,
+            20,
+            30,
+            40,
+            50
+          ]
+        }
+      },
+      "medBay": {
+        "name": "Med Bay",
+        "emoji": "🛏️",
+        "maxLevel": 5,
+        "effects": {
+          "extraRestCharges": [
+            0,
+            1,
+            1,
+            2,
+            2
+          ],
+          "regenSpeedPct": [
+            10,
+            20,
+            30,
+            40,
+            50
+          ]
+        }
+      },
+      "gardenKitchen": {
+        "name": "Garden & Kitchen",
+        "emoji": "🍲",
+        "maxLevel": 5,
+        "effects": {
+          "foodPerDay": [
+            2,
+            3,
+            5,
+            8,
+            12
+          ],
+          "cookDiscountPct": [
+            10,
+            20,
+            30,
+            40,
+            50
+          ]
+        }
+      },
+      "warehouse": {
+        "name": "Warehouse",
+        "emoji": "📦",
+        "maxLevel": 5,
+        "effects": {
+          "storageBonus": [
+            250,
+            600,
+            1200,
+            2500,
+            5000
+          ]
+        }
+      }
+    }
+  },
+  "pickaxeDurability": 3,
+  "battleTurnTimeoutMs": 30000,
+  "battlePacing": {
+    "stepPauseMs": 100,
+    "momentPauseMs": 450,
+    "actionPauseMs": 350,
+    "turnEndHoldMs": 700,
+    "progressThrottleMs": 300
+  },
+  "canonIntervene": {
+    "teamSize": 6,
+    "allyDifficulty": "hard"
+  },
+  "hpPerConMod": 45,
+  "attackDiceModRatio": 0.35,
+  "enemyLimitBreakChance": 0.1,
+  "enemyBossLimitBreakChance": 0.5,
+  "trainingDiceGainMult": 1,
+  "forgeCoalCost": 1,
+  "oreBonuses": {
+    "_comment": "Per-material forge bonuses, shallow-merged over the code defaults in index.js (ORE_BONUSES). armorWilPct/armorSpiPct = % of the wearer's WIL/SPI MOD granted while that material's armor is worn (Soulstone +20% WIL, Ebonite +20% SPI per the SMITHING card). Read at module load — restart to apply.",
+    "Soulstone": {
+      "armorWilPct": 20,
+      "armorSpiPct": 0
+    },
+    "Ebonite": {
+      "armorWilPct": 0,
+      "armorSpiPct": 20
+    }
+  },
+  "bodyControl": {
+    "_comment": "Baby Tuffle possession (Trello card 48). breakFreeIntervalMinutes = out-of-combat break-free cadence for a hijacked BODY (the card said 30 minutes; changed to 1 hour). breakFreeTurns = in-combat cadence in battle rounds (the card's 'every 5 turns'). A break-free needs roll >= breakFreeTarget on a d20 (NAT 20 = 'must critically succeed'). lifeHijackDc = the CON save a BLEEDING victim must beat or they lose their body. servantEscapeIntervalMinutes = out-of-combat escape cadence for a Parasite Infection EGG / Tuffle servant (the card's 30 minutes — deliberately different from the body's hourly roll). vesselmongerBodiless/bodilessDexPenalty/bodilessDamageMult = the penalties for being outside of a body. creation* = the /make-baby-tuffle flow. Read at module load — restart to apply.",
+    "breakFreeIntervalMinutes": 60,
+    "breakFreeTurns": 5,
+    "breakFreeDice": 20,
+    "breakFreeTarget": 20,
+    "lifeHijackDc": 35,
+    "vesselmongerBodiless": true,
+    "bodilessDexPenalty": 7,
+    "bodilessDamageMult": 2,
+    "servantEggsEnabled": true,
+    "servantEscapeIntervalMinutes": 60,
+    "maxServants": 3,
+    "creationResources": 950000,
+    "creationIntReq": 13,
+    "creationStatDice": "8d100",
+    "creationIntDice": "1d20+5",
+    "creationIntModMult": 10
+  },
+  "android": {
+    "_comment": "Android conversion (Trello card 26). A creator spends creationResources to convert a Cerealian/Earthling/Tuffle: each of the 5 combat stats = creationStatDice + (creator INT mod × creationIntModMult). A TUFFLE creator (Advances in Bioengineering, card 29) instead rolls creationTuffleStatDice + creationTuffleFlat + INT mod × creationTuffleIntModMult. chargeCapPctStart/chargeCapLadder = Nuclear Battery: the SPI-derived Ki pool is the *potential* max charge and only the unlocked share is usable; /charge-upgrade steps the ladder (stand-in for the card's cybernetic upgrades). clone* = Flesh is Weak mechanical clones (a clone saves you from death). block* = the card's 'cannot eat, sleep, or train'. Read at module load — restart to apply.",
+    "creationResources": 50000,
+    "creationStatDice": "8d100",
+    "creationIntModMult": 3,
+    "creationTuffleStatDice": "8d100",
+    "creationTuffleFlat": 120,
+    "creationTuffleIntModMult": 10,
+    "creationIntDice": "1d15+5",
+    "convertibleRaces": [
+      "Cerealian",
+      "Earthling",
+      "Tuffle"
+    ],
+    "chargeCapPctStart": 50,
+    "chargeCapLadder": [
+      50,
+      60,
+      70,
+      80,
+      90,
+      100
+    ],
+    "chargeUpgradeResources": 100000,
+    "chargeUpgradeItems": {
+      "Component": 10
+    },
+    "refillBatteryAfterCombat": true,
+    "blockEating": true,
+    "blockResting": true,
+    "blockTraining": true,
+    "cloneResources": 250000,
+    "cloneItems": {
+      "Component": 5,
+      "Motherboard": 1
+    },
+    "maxClones": 3
+  },
+  "racialModPercent": {
+    "default": 5,
+    "Hera": 7,
+    "Tortle": 6,
+    "Vampire": 10,
+    "Yokai": 6,
+    "Namekian": 5,
+    "Oni": 5
+  },
+  "racialModScalePenalties": true,
+  "enemyMastery": {
+    "plPerLevel": 12000,
+    "maxLevel": 5,
+    "kiApplication": {
+      "learnPL": 3000,
+      "tier2PL": 20000,
+      "tier3PL": 75000
+    },
+    "kiEfficiency": {
+      "learnPL": 2000,
+      "tier2PL": 15000,
+      "tier3PL": 50000
+    }
+  },
+  "masteryScaling": {
+    "modPctPerLevel": 5,
+    "pumpUpPctPerLevel": 5
+  },
+  "limbBreak": {
+    "chancePct": 15,
+    "sharpClawsPct": 5,
+    "blockedPct": -5,
+    "headPct": -3
+  },
+  "kamehamehaCharging": {
+    "upkeepDice": 5,
+    "upkeepFlatPct": 2,
+    "chargePerTurn": 4,
+    "maxCharge": 3,
+    "chargeBonusPerCharge": 2
+  },
+  "falseSuperSaiyan": {
+    "_comment": "Ki burned per turn while False Super Saiyan is active (Trello card: 20 Energy/turn); the form drops when this empties the user's Ki.",
+    "kiPerTurn": 20
+  },
+  "forms": {
+    "False Super Saiyan": {
+      "statMult": 1.1
+    },
+    "Super Saiyan": {
+      "statMult": 1.5
+    },
+    "Super Saiyan 2": {
+      "statMult": 2
+    },
+    "Super Saiyan 3": {
+      "statMult": 3
+    },
+    "Dark Devil": {
+      "statMult": 1.6
+    },
+    "Ultra Power": {
+      "statMult": 1.3
+    },
+    "Ultimate Power": {
+      "statMult": 1.8
+    },
+    "5th Form": {
+      "statMult": 1.75
+    },
+    "Great Namekian": {
+      "statMult": 1.3
+    },
+    "Super Namekian": {
+      "statMult": 2
+    },
+    "100% 4th Form": {
+      "statMult": 1.4
+    },
+    "Legendary Super Saiyan": {
+      "statMult": 1.9
+    },
+    "Slug": {
+      "statMult": 1.6
+    }
+  },
+  "weaponAtkPct": 40,
+  "caveChance": 0.05,
+  "caveMineBonus": 6,
+  "planetDestroyedDurationHours": 72,
+  "grappleEscapeBonus": 10,
+  "huntAnimalPLRatio": 0.6,
+  "racialKiRegenPct": {
+    "Earthling": 5,
+    "Half-Saiyan": 4,
+    "Frost Demon": 3,
+    "default": 5
+  },
+  "movementKiPct": 0.03,
+  "formTickMinutes": 10,
+  "maxCustomSkills": 5,
+  "wiseOldOneMakerKiCost": 100,
+  "statModifierTiers": [
+    {
+      "start": 1,
+      "end": 200,
+      "pointsPerMod": 20
+    },
+    {
+      "start": 201,
+      "end": 1000,
+      "pointsPerMod": 50
+    },
+    {
+      "start": 1001,
+      "end": 5000,
+      "pointsPerMod": 100
+    },
+    {
+      "start": 5001,
+      "end": 20000,
+      "pointsPerMod": 250
+    },
+    {
+      "start": 20001,
+      "end": 100000,
+      "pointsPerMod": 500
+    },
+    {
+      "start": 100001,
+      "end": null,
+      "pointsPerMod": 1000
+    }
+  ],
+  "pregnancyDurationMs": 86400000,
+  "statMultiplier": {
+    "defaultPoints": 20,
+    "perPoint": 0.1,
+    "minMultiplier": 0.7,
+    "racePoints": {
+      "Saiyan": 15,
+      "Half-Saiyan": 16,
+      "Earthling": 20,
+      "Frost Demon": 15,
+      "Namekian": 18,
+      "Cerealian": 17,
+      "Konatsian": 16,
+      "Tuffle": 17,
+      "Oni": 15,
+      "Hera": 15,
+      "Tortle": 16,
+      "Alien": 22,
+      "Android": 4,
+      "Bio-Android": 5,
+      "Majin": 6,
+      "Saibamen": 18,
+      "Vampire": 9,
+      "Sphinxian": 16
+    }
+  },
+  "kiDrainScale": {
+    "moveFlatMult": 5,
+    "formDrainMult": 5
+  },
+  "craftingRecipes": {
+    "Large Home": {
+      "ingredients": {},
+      "resources": 7500,
+      "intReq": 7,
+      "amount": 1,
+      "home": true
+    },
+    "Small Home": {
+      "ingredients": {},
+      "resources": 2500,
+      "intReq": 5,
+      "amount": 1,
+      "home": true
+    },
+    "Small Camp": {
+      "ingredients": {
+        "Tent": 1,
+        "Camp Fire": 1
+      },
+      "resources": 500,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Fishing Tackle": {
+      "ingredients": {},
+      "resources": 100,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Tent": {
+      "ingredients": {},
+      "resources": 230,
+      "intReq": 4,
+      "amount": 1
+    },
+    "Storage Container": {
+      "ingredients": {},
+      "resources": 200,
+      "intReq": 2,
+      "amount": 1,
+      "invSlots": 50
+    },
+    "Camp Fire": {
+      "ingredients": {},
+      "resources": 25,
+      "intReq": 2,
+      "amount": 1
+    },
+    "Welding Torch": {
+      "ingredients": {},
+      "resources": 100,
+      "intReq": 8,
+      "amount": 1
+    },
+    "Drill": {
+      "ingredients": {
+        "Shovel": 1
+      },
+      "resources": 1000,
+      "intReq": 7,
+      "amount": 1
+    },
+    "Shovel": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Pickaxe": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 3,
+      "amount": 1
+    },
+    "Fishing Rod": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 2,
+      "amount": 1
+    },
+    "Anvil": {
+      "ingredients": {},
+      "resources": 250,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Smelting Forge": {
+      "ingredients": {},
+      "resources": 400,
+      "intReq": 6,
+      "amount": 1
+    },
+    "Tongs": {
+      "ingredients": {},
+      "resources": 30,
+      "intReq": 2,
+      "amount": 1
+    },
+    "Ingot Mold": {
+      "ingredients": {},
+      "resources": 70,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Armor Mold": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 4,
+      "amount": 1
+    },
+    "Plane": {
+      "ingredients": {
+        "Component": 20,
+        "Welder Charges": 10,
+        "Engine": 1,
+        "ECU": 1
+      },
+      "resources": 3000,
+      "intReq": 9,
+      "amount": 1
+    },
+    "Pickup Truck": {
+      "ingredients": {
+        "Component": 15,
+        "Welder Charges": 5,
+        "Engine": 1,
+        "ECU": 1
+      },
+      "resources": 2500,
+      "intReq": 7,
+      "amount": 1
+    },
+    "Motorbike": {
+      "ingredients": {
+        "Component": 5,
+        "Engine": 1,
+        "Welder Charges": 1
+      },
+      "resources": 150,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Car": {
+      "ingredients": {
+        "Component": 8,
+        "Welder Charges": 5,
+        "Engine": 1,
+        "ECU": 1
+      },
+      "resources": 1500,
+      "intReq": 6,
+      "amount": 1
+    },
+    "Engine": {
+      "ingredients": {
+        "Component": 3,
+        "Welder Charges": 3,
+        "ECU": 1
+      },
+      "resources": 300,
+      "intReq": 7,
+      "amount": 1
+    },
+    "ECU": {
+      "ingredients": {
+        "Component": 1,
+        "Copper Wire": 1
+      },
+      "resources": 50,
+      "intReq": 7,
+      "amount": 1
+    },
+    "Advanced AI Control System": {
+      "ingredients": {
+        "Component": 2,
+        "Copper Wire": 2,
+        "Functional Motherboard": 2,
+        "Welder Charges": 1
+      },
+      "resources": 600,
+      "intReq": 12,
+      "amount": 1
+    },
+    "Hover Jet": {
+      "ingredients": {
+        "Component": 5,
+        "Copper Wire": 15,
+        "Functional Motherboard": 2,
+        "Hover Craft Engine": 1,
+        "Welder Charges": 10
+      },
+      "resources": 7800,
+      "intReq": 11,
+      "amount": 1
+    },
+    "Hovercraft Car": {
+      "ingredients": {
+        "Component": 4,
+        "Copper Wire": 8,
+        "Functional Motherboard": 1,
+        "Hover Craft Engine": 1,
+        "Welder Charges": 5
+      },
+      "resources": 4000,
+      "intReq": 11,
+      "amount": 1
+    },
+    "Hovercraft Bike": {
+      "ingredients": {
+        "Component": 1,
+        "Copper Wire": 10,
+        "Hover Craft Engine": 1,
+        "Welder Charges": 2
+      },
+      "resources": 3000,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Hovercraft Pickup Truck": {
+      "ingredients": {
+        "Component": 8,
+        "Copper Wire": 10,
+        "Welder Charges": 10,
+        "Functional Motherboard": 1,
+        "Hover Craft Engine": 1
+      },
+      "resources": 5500,
+      "intReq": 12,
+      "amount": 1
+    },
+    "Hover Craft Engine": {
+      "ingredients": {
+        "Component": 5,
+        "Copper Wire": 15,
+        "Welder Charges": 6
+      },
+      "resources": 600,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Space-pod": {
+      "ingredients": {
+        "Functional Reactor Core": 1,
+        "Functional Engine Conjunction": 2,
+        "Functional Motherboard": 2,
+        "Component": 10,
+        "Copper Wire": 13,
+        "Welder Charges": 3
+      },
+      "resources": 10000,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Spaceship": {
+      "ingredients": {
+        "Functional Reactor Core": 4,
+        "Functional Engine Conjunction": 5,
+        "Functional Motherboard": 7,
+        "Component": 15,
+        "Copper Wire": 15,
+        "Welder Charges": 6
+      },
+      "resources": 50000,
+      "intReq": 13,
+      "amount": 1
+    },
+    "Gravity Chamber": {
+      "ingredients": {
+        "Functional Motherboard": 10,
+        "Functional Reactor Core": 2,
+        "Component": 30,
+        "Copper Wire": 35,
+        "Welder Charges": 12,
+        "Gravitational Control Chip": 2
+      },
+      "resources": 25000,
+      "intReq": 13,
+      "amount": 1
+    },
+    "Uranium Fuel Cell Charging Bank": {
+      "ingredients": {
+        "Component": 15,
+        "Copper Wire": 30,
+        "Welder Charges": 10,
+        "Functional Reactor Core": 1
+      },
+      "resources": 10000,
+      "intReq": 11,
+      "amount": 1
+    },
+    "Diesel Dispenser Machine": {
+      "ingredients": {
+        "Component": 15,
+        "Copper Wire": 25,
+        "Welder Charges": 8
+      },
+      "resources": 2300,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Gasoline Dispenser Machine": {
+      "ingredients": {
+        "Component": 10,
+        "Copper Wire": 15,
+        "Welder Charges": 5
+      },
+      "resources": 1000,
+      "intReq": 9,
+      "amount": 1
+    },
+    "Gravitational Control Chip": {
+      "ingredients": {},
+      "resources": 150,
+      "intReq": 11,
+      "amount": 1
+    },
+    "Reactor Core": {
+      "ingredients": {
+        "Component": 8,
+        "Copper Wire": 5
+      },
+      "resources": 1000,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Motherboard": {
+      "ingredients": {},
+      "resources": 60,
+      "intReq": 9,
+      "amount": 1
+    },
+    "Component": {
+      "ingredients": {},
+      "resources": 75,
+      "intReq": 8,
+      "amount": 1
+    },
+    "Copper Wire": {
+      "ingredients": {},
+      "resources": 25,
+      "intReq": 7,
+      "amount": 1
+    },
+    "Components": {
+      "ingredients": {
+        "Component": 1
+      },
+      "resources": 2,
+      "intReq": 8,
+      "amount": 1
+    },
+    "Copper Wires": {
+      "ingredients": {
+        "Copper Wire": 1
+      },
+      "resources": 2,
+      "intReq": 7,
+      "amount": 1
+    },
+    "Welder Charges": {
+      "ingredients": {
+        "Welding Torch": 1
+      },
+      "resources": 5,
+      "intReq": 8,
+      "amount": 5
+    },
+    "Small Training Weight": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 4,
+      "amount": 1
+    },
+    "Med. weight": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 6,
+      "amount": 1
+    },
+    "Heavy weight": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 8,
+      "amount": 1
+    },
+    "Extremely Heavy Weight": {
+      "ingredients": {},
+      "resources": 50,
+      "intReq": 10,
+      "amount": 1
+    },
+    "Inventory Upgrade": {
+      "ingredients": {},
+      "resources": 300,
+      "intReq": 6,
+      "amount": 1,
+      "inventoryUpgrade": true
+    },
+    "Dragon Ball Stone": {
+      "ingredients": {},
+      "resources": 95,
+      "intReq": 6,
+      "amount": 1
+    },
+    "Hunting Bag": {
+      "ingredients": {},
+      "resources": 200,
+      "intReq": 5,
+      "amount": 1
+    },
+    "Dragon Radar": {
+      "ingredients": {
+        "Component": 8,
+        "Copper Wire": 15,
+        "Motherboard": 1
+      },
+      "resources": 10000,
+      "intReq": 10,
+      "amount": 1
+    }
+  }
+}

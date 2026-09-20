@@ -160,6 +160,30 @@ class CharacterManager {
         return true;
     }
 
+    // Hand a character over to another user. Used by Baby Tuffle body control: when a hijacked
+    // victim wipes their character, the parasite keeps the body. `makeActive` puts it at the FRONT
+    // of the new owner's list (getCharacter(userId) plays index 0), and `updates` is merged onto
+    // the character on the way over (ownership marks, clearing the possession state, ...).
+    transferCharacter(fromUserId, characterId, toUserId, updates = {}, { makeActive = true } = {}) {
+        const fromList = this.characters[fromUserId];
+        if (!Array.isArray(fromList)) return null;
+
+        const index = fromList.findIndex(c => c.id === characterId);
+        if (index === -1) return null;
+
+        const [character] = fromList.splice(index, 1);
+        const moved = { ...character, ...updates, updatedAt: new Date().toISOString() };
+
+        if (!Array.isArray(this.characters[toUserId])) this.characters[toUserId] = [];
+        if (makeActive) this.characters[toUserId].unshift(moved);
+        else this.characters[toUserId].push(moved);
+
+        // The strongest LIVING character can change hands (auto-saga) — invalidate the cache.
+        if (this.onPLChanged) this.onPLChanged();
+        this.saveCharactersNow(); // ownership change — persist immediately
+        return moved;
+    }
+
     // Wipe ALL of a user's characters (admin). Returns how many were removed.
     deleteAllCharacters(userId) {
         if (!this.characters[userId] || this.characters[userId].length === 0) return 0;

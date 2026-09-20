@@ -8,8 +8,9 @@ Assumptions:
 - **Push first:** the VM clones whatever is on GitHub, so commit and push your latest changes
   (`git add -A && git commit -m "Deploy prep" && git push`) before starting. The runtime files
   `saver.js`, `statModifier.js` and `baseSystem.js` must be committed or the bot will not start.
-- `config/config.json` (secrets) and `data/` (live game state) are **gitignored**: a fresh
-  clone has neither, so you upload both (Step 3).
+- `config/secrets.json` (your bot token + ids) and `data/` (live game state) are **gitignored**: a fresh
+  clone has neither, so you upload both (Step 3). All the gameplay tunables ship in the committed
+  `config/default-config.json`, so the clone is immediately runnable once the secrets are in place.
 - The bot is one long-running Node process. It needs **no open inbound ports** - it only
   connects out to Discord. Never open extra ports for it.
 
@@ -39,7 +40,7 @@ ssh ubuntu@<public-ip>
 
 sudo apt update && sudo apt upgrade -y
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs git
+sudo apt-get install -y nodejs git  
 node -v   # expect v22.x
 ```
 
@@ -55,7 +56,7 @@ cd ~/saiyanbot && npm ci
 From your **Windows laptop** (PowerShell) - upload the secret config and your current save
 data. Both are gitignored, so the clone does NOT contain them:
 ```powershell
-scp "c:\Users\shema\saiyanbot\config\config.json" ubuntu@<public-ip>:~/saiyanbot/config/config.json
+scp "c:\Users\shema\saiyanbot\config\secrets.json" ubuntu@<public-ip>:~/saiyanbot/config/secrets.json
 scp "c:\Users\shema\saiyanbot\data\characters.json" "c:\Users\shema\saiyanbot\data\world.json" "c:\Users\shema\saiyanbot\data\creationCooldowns.json" ubuntu@<public-ip>:~/saiyanbot/data/
 ```
 
@@ -113,8 +114,8 @@ git pull
 npm ci
 sudo systemctl restart saiyanbot
 ```
-`data/` and `config/config.json` are gitignored, so a pull can never clobber your live save or
-secrets. If slash commands ever look out of sync, force-refresh them (stop the service first so
+`data/` and `config/secrets.json` are gitignored, so a pull can never clobber your live save or
+credentials. If slash commands ever look out of sync, force-refresh them (stop the service first so
 two gateway sessions don't overlap):
 ```bash
 sudo systemctl stop saiyanbot
@@ -149,7 +150,7 @@ then `sudo systemctl start saiyanbot`.
 
 | Problem | Fix |
 |---|---|
-| Login fails / token invalid | Re-upload `config/config.json`; check `journalctl -u saiyanbot -n 100 --no-pager` |
+| Login fails / token invalid | Re-upload `config/secrets.json`; check `journalctl -u saiyanbot -n 100 --no-pager` |
 | "Out of host capacity" on create | Try a different Availability Domain, or use the x86 `VM.Standard.E2.1.Micro` shape |
 | Service "running" but bot silent | `journalctl -u saiyanbot -n 100 --no-pager` - the last log line says what it is waiting on |
 | Old/renamed commands still visible | `node deploy-commands.js` (service stopped), then start the service again |

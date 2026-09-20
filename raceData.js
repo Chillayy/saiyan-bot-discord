@@ -108,6 +108,20 @@ const races = {
         ],
         type: 'birth'
     },
+    'Baby Tuffle': {
+        name: 'Baby Tuffle',
+        statMultiplierPoints: 6,
+        description: 'Tuffle parasites that cannot live without a host. They burrow into a bleeding body, seize it, and drain the vessel of its full potential.',
+        abilities: ['Vesselmonger', 'Life Hijack', 'Parasite Infection', 'My New Body', 'Hateful'],
+        passives: [
+            { id: 'vesselmonger', name: 'Vesselmonger', description: 'You need a lifeform to take control of. While outside of a body you take 2x damage, suffer -7 DEX mod, and are vulnerable to Spirit Fission. Take a vessel with Life Hijack to end this.' },
+            { id: 'life-hijack', name: 'Life Hijack', description: 'Enter a body through its cuts: against a BLEEDING opponent, force a CON save (d20+CON mod) vs DC 35. On a failure they lose their body and you take it.' },
+            { id: 'parasite-infection', name: 'Parasite Infection', description: 'Letting a host go leaves a parasite egg behind, turning them into a Tuffle servant until they break free (d20, MUST critically succeed: every 30 minutes, or every 5 turns in combat). A body you are currently wearing rolls to break free every hour, or every 5 turns in combat.' },
+            { id: 'my-new-body', name: 'My New Body', description: 'While wearing a vessel you add the vessel\'s stats onto your own and receive the forms it had unlocked. Breaking free takes it all back.' },
+            { id: 'hateful', name: 'Hateful', description: 'Gain access to Revenge Death Ball.' }
+        ],
+        type: 'method'
+    },
     'Yokai': {
         name: 'Yokai',
         statMultiplierPoints: 7,
@@ -174,12 +188,12 @@ const races = {
     'Android': {
         name: 'Android',
         statMultiplierPoints: 4,
-        description: 'Artificial beings with mechanical enhancements.',
-        abilities: ['Unlimited Energy', 'Mechanical Body', 'Self-Repair'],
+        description: 'Androids are mechanical versions of their specified races. Currently, the only known races to be converted are Cerealian, Earthling, and Tuffle.',
+        abilities: ['Nuclear Battery', 'Infinite Stamina', 'Flesh is Weak'],
         passives: [
-            { id: 'nuclear-battery', name: 'Nuclear Battery', description: 'Ki replaced by charge. SPI dictates potential max charge. Starts at 50%. Refills after combat. Cannot regenerate charge in combat.' },
-            { id: 'infinite-stamina', name: 'Infinite Stamina', description: 'Never fatigued by energy.' },
-            { id: 'flesh-is-weak', name: 'Flesh is Weak', description: 'Cannot eat, sleep, or train. Can make mechanical clones. When dying, upload consciousness to clone. Upgrade through cybernetic enhancements. Must repair injuries at repair table.' }
+            { id: 'nuclear-battery', name: 'Nuclear Battery', description: 'Your Ki is replaced by charge — SPI dictates your potential max charge, and only 50% of it is usable until you upgrade. Your battery refills after every fight, and you cannot regenerate charge in combat.' },
+            { id: 'infinite-stamina', name: 'Infinite Stamina', description: 'You are never fatigued by your energy — running your battery dry costs you no fatigue.' },
+            { id: 'flesh-is-weak', name: 'Flesh is Weak', description: 'You cannot eat, sleep, or train. You can build mechanical clones (/make-clone) — when you die your consciousness uploads into one instead of passing on. Everything about you is upgraded with technology (/charge-upgrade).' }
         ],
         type: 'method'
     },

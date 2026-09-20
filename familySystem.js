@@ -4,7 +4,7 @@ const { races } = require('./raceData.js');
 
 // Optional tunables from config.json (defaults below if omitted).
 let familyTunables = {};
-try { familyTunables = require('./config/config.json'); } catch (e) {}
+try { familyTunables = require('./config-loader').loadConfig(); } catch (e) {}
 
 // ---------- Time mapping: 1 in-game year = 3 real-world days (configurable) ----------
 const AGE_UP_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // 3 real days == 1 in-game year
