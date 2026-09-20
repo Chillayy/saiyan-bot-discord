@@ -16801,7 +16801,7 @@ function startRaidTick() {
         activeRaid.startedAt = Date.now();
         activeRaid.expiresAt = Date.now() + RAID_DURATION_MS;
         activeRaid.channelId = ch.id;
-        ch.send('@everyone ⚔️ **A WORLD RAID IS UNDERWAY!** A raid of enemies has descended while it lasts (**15 min**): **every time you travel there is a 50% chance** you\'ll be ambushed by a pack of enemies! Fight them off for **8× stat gain**!').catch(() => {});
+        ch.send('⚔️ **A WORLD RAID IS UNDERWAY!** A raid of enemies has descended while it lasts (**15 min**): **every time you travel there is a 50% chance** you\'ll be ambushed by a pack of enemies! Fight them off for **8× stat gain**!').catch(() => {});
     }
 }
 
