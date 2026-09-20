@@ -24,7 +24,7 @@ A Discord bot for a Dragon Ball-themed RPG system.
 
 ### 3. Configure the Bot
 
-Edit `.gitignore/config.json` and replace:
+Edit `config/config.json` and replace (this file is gitignored &mdash; each machine/deployment keeps its own copy):
 - `YOUR_DISCORD_BOT_TOKEN_HERE` with your bot token
 - `YOUR_CLIENT_ID_HERE` with your client ID
 - `YOUR_GUILD_ID_HERE` with your server ID
@@ -99,3 +99,6 @@ node index.js
 - The bot automatically registers slash commands when it starts
 - Commands are available immediately after the bot logs in
 - Hera character gets +10 bonus to search rolls
+- `config/config.json` is gitignored (secrets + tunables) &mdash; never commit it; each machine/deployment keeps its own copy
+- `data/` (live game state: characters, world, creation cooldowns) is gitignored &mdash; back it up regularly
+- Want the bot online 24/7 without your laptop? See [DEPLOY_ORACLE.md](DEPLOY_ORACLE.md)

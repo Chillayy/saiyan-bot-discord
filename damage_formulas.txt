@@ -1,0 +1,165 @@
+========================================================================
+ SAIYAN BOT — /create CUSTOM TECHNIQUE (SKILL) SYSTEM
+========================================================================
+Reference for the `/create` command wizard: the possible options and the
+exact damage / Ki-cost formulas. Source: index.js (`CUSTOM_DICE_OPTIONS`,
+`CUSTOM_RIDERS`, `getCustomDamageDice`, `buildCustomSkillFromState`,
+`executeCombatSkill`).
+
+Custom techniques are stored on the character (`customSkills` map) and added
+to their `techniques` list so they appear in the in-battle skill menu. The
+wizard is button-driven: `/create name:<name> type:ki|physical`.
+
+------------------------------------------------------------------------
+1) WIZARD STEPS (the possibilities)
+------------------------------------------------------------------------
+  Step 1  Type        : ki | physical
+  Step 2  Cost        : Action | Bonus Action | Action + Bonus Action
+  Step 3  Effect      : Damage Attack | Status Strike | Buff Next Attack |
+                        Buff Next Damage
+  Step 4  Dice        : (damage effect only) pick a die size
+  Step 5  Mod         : ki -> WIL | SPI ; physical -> STR | DEX | CON
+  Step 6  Rider       : none / bleed / off-balance / disadvantage / stun
+                        (action only) / self-advantage / blind-ALL
+  Step 7  Area        : Single Target | All Enemies (AOE)
+  (Confirm / Cancel)
+
+Max 5 custom techniques per character (config.json `maxCustomSkills`, default 5).
+
+CREATION COST (stat points): creating a technique spends unspent stat points, NOT
+zeni. Minimum 5,000 (config.json `customTechniqueCost.min`).
+
+  cost = max(min, round(kiPctSpent * customTechniqueCost.perKiPct))
+
+  kiPctSpent = the move's dice % + its rider %  (so 0% moves -> the minimum)
+  perKiPct   = 300 by default
+
+  Examples (300/pt, min 5,000):
+    bonus 1d3          6%  -> 5,000
+    action 1d8        13%  -> 5,000
+    action 1d14       23%  -> 6,900
+    action 1d14+stun  48%  -> 14,400
+    both 1d35         46%  -> 13,800
+    both 1d35+blind   66%  -> 19,800
+
+The price is stored on the technique as `statCost` and is deducted on confirm.
+`/forget name:<technique>` deletes a created technique (removing it from the
+battle menu too) and refunds `customTechniqueRefundPct` (default 50%) of that
+`statCost`. Techniques made before the cost system (no `statCost`) refund 0.
+
+------------------------------------------------------------------------
+2) DICE OPTIONS (sides -> Ki % of max)
+------------------------------------------------------------------------
+Source: `CUSTOM_DICE_OPTIONS` (index.js). Balanced so custom damage stays
+BELOW the signature techniques per Ki spent.
+
+  Action cost        : 1d8 (13% Ki) | 1d10 (16%) | 1d12 (19%) | 1d14 (23%)
+  Bonus Action       : 1d3 (6% Ki)  | 1d4 (8%)
+  Action + Bonus     : 1d20 (30%) | 1d25 (34%) | 1d30 (40%) | 1d35 (46%)
+
+Target damage efficiency:
+  action  ~0.33 damage per 1% Ki   (avg die / Ki%)
+  bonus   ~0.30 damage per 1% Ki
+  both    ~0.39 damage per 1% Ki   (Supernova is ~0.51, Kamehameha ~0.28)
+
+------------------------------------------------------------------------
+3) RIDER / STATUS OPTIONS
+------------------------------------------------------------------------
+Source: `CUSTOM_RIDERS` (index.js). `pct` adds to the Ki cost AND shrinks the
+damage dice. `save` = the defender's stat that resists; `auto` riders apply on
+hit with no save.
+
+  none            Ki +0%   no rider
+  Bleed           +10% Ki  CON save      -> 1 turn bleed
+  Off-Balance     +15% Ki  STR save      -> -50% DEX defense
+  Disadvantage    +15% Ki  DEX save      -> disadvantage on next attack
+  Stun (1 turn)   +25% Ki  CON save      -> STUNNED (action-cost moves only)
+  Self-Advantage  +10% Ki  auto          -> advantage on your next attack roll
+  Blind ALL       +20% Ki  auto          -> every enemy blinded (disadvantage)
+
+A status-only (no damage) strike uses the rider's save and deals NO damage.
+
+------------------------------------------------------------------------
+4) DAMAGE FORMULA (custom damaging moves)
+------------------------------------------------------------------------
+Source: `getCustomDamageDice` (index.js). Applies in order:
+
+  base = chosen dice (from section 2)
+
+  if a rider is present:
+      dice = max( 4 , base - round(riderPct / 3) )
+      # Stun(+25%) -8, Off-Balance(+15%) -5, Bleed(+10%) -3, BlindALL(+20%) -6
+
+  if the move is AOE (All Enemies):
+      dice = max( 3 , floor(dice * 0.35) )
+      # AOE deals ~35% of the single-target dice (about 65% less per target)
+
+Final in-battle damage:
+      attack roll = d20 + DEX  vs  d20 + DEX
+      damage      = rollXdY(1, dice) + round( fullMod * modPct )
+
+  fullMod  = the effective stat mod for the chosen stat (ki -> WIL/SPI,
+             physical -> STR/DEX/CON)
+  modPct   = the % OF THE STAT MOD the move uses (NOT the full mod).
+
+  modPct is computed from the Ki spend and the action type
+  (`getCustomDamageModPct`):
+      base      : action+bonus 0.45 | action 0.35 | bonus 0.20
+      growth    : + 0.005 per 1% Ki spent (capped at +0.25)
+      modPct    : min( 0.80 , base + growth )
+
+  So a custom move adds a FRACTION of the stat mod, and a costlier / bigger
+  move uses more of it. Bonus-action moves add the least mod, action+bonus
+  ultimates the most.
+
+  Example modPct:
+      bonus 1d4  (8% Ki)   -> 0.20 + 0.04 = 0.24  (24% of mod)
+      action 1d14 (23% Ki) -> 0.35 + 0.115 = 0.465 (~47% of mod)
+      both 1d35 (46% Ki)   -> 0.45 + 0.23 = 0.68  (68% of mod)
+
+  Rider applies on hit via a save (or automatically for auto riders).
+
+------------------------------------------------------------------------
+5) KI-COST FORMULA
+------------------------------------------------------------------------
+  Damage move     : d{ dicePct + riderPct }pct   (% of max Ki every cast)
+  Status move     : d{ 10 + riderPct }pct
+  Buff Next Attack: flat Ki (bonus=5 scaled / action=10 scaled)
+  Buff Next Damage: flat Ki (bonus=5 scaled / action=10 scaled),
+                    next attack deals +1d4 (bonus) or +1d8 (action) extra.
+
+  "dXpct" = roll 1..X, take that % of your max Ki as the cast cost. (Ki cost
+  is a PERCENTAGE of max Ki, so it scales with your Ki pool.)
+
+------------------------------------------------------------------------
+6) EFFECT TYPES — RESULTING BEHAVIOR
+------------------------------------------------------------------------
+  Damage Attack   : customEffect='damage' -> the generic skill attack block.
+                    It ALWAYS rolls an attack throw to hit:
+                        attack throw = d20 + DEX  vs  d20 + DEX (target)
+                    If the throw lands: 1d<dice> + <modPct>% of mod, plus
+                    any rider/save. Single-target or AOE. So it can MISS.
+  Status Strike   : customEffect='status' -> NO damage and NO attack throw.
+                    It is a pure debuff, so it relies on a WIL saving throw:
+                        WIL DC (caster)  vs  WIL save (target)
+                    On a fail the target suffers the chosen status; on a
+                    success it is resisted (the debuff "misses").
+  Buff Next Attack: customEffect='buff_attack' -> your next attack roll has
+                    advantage.
+  Buff Next Damage: customEffect='buff_damage' -> your next attack deals
+                    +1d<buffDice> extra damage (buffDice = 4 bonus / 8 action).
+
+------------------------------------------------------------------------
+7) BALANCE / CAPS
+------------------------------------------------------------------------
+  - AOE deals floors(0.35x) of the single-target dice (min 3) — ~65% less per
+    target than a single-target move, so hitting all enemies never scales out
+    of control.
+  - Strong status riders shrink the damage dice more (divisor 3, was 5) so a
+    damaging move with Stun/Blind is a real trade-off, not a free bonus.
+  - Ki cost scales as a % of max Ki, so big-dice moves are expensive to
+    cast/spam and cannot be thrown every turn at full power. The stat-point
+    creation price scales with the same % (bigger moves cost more points).
+  - Custom techniques never exceed the signature techniques' damage-per-Ki.
+
+========================================================================

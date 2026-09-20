@@ -151,6 +151,7 @@ const mutations = {
         name: 'Slug',
         description: 'You are a specimen amongst the demon clan warriors. You are feared for your absolutely terrifying physique and dominant physical prowess.',
         raceRestrictions: ['Namekian'],
+        clanRestrictions: ['Demon Clan'],
         type: 'transformation',
         innate: 'Can be used on top of other forms',
         effect: {
@@ -178,6 +179,7 @@ const mutations = {
         raceRestrictions: ['Namekian'],
         type: 'passive',
         requirement: 'CANNOT BE SELECTED IF NOT DRAGON CLAN',
+        clanRestrictions: ['Dragon Clan'],
         abilities: [
             {
                 name: 'Understanding of Dormant Power',
@@ -283,10 +285,14 @@ const mutations = {
 };
 
 // Helper function to get available mutations for a race
-function getAvailableMutations(race) {
-    return Object.values(mutations).filter(mutation => 
-        mutation.raceRestrictions.length === 0 || mutation.raceRestrictions.includes(race)
-    );
+function getAvailableMutations(race, clan) {
+    return Object.values(mutations).filter(mutation => {
+        if (mutation.raceRestrictions.length > 0 && !mutation.raceRestrictions.includes(race)) return false;
+        if (mutation.clanRestrictions) {
+            if (!clan || !mutation.clanRestrictions.includes(clan)) return false;
+        }
+        return true;
+    });
 }
 
 // Helper function to get mutation by name

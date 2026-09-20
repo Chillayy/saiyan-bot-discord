@@ -2,6 +2,7 @@
 const races = {
     'Saiyan': {
         name: 'Saiyan',
+        statMultiplierPoints: 7,
         description: 'Saiyans are very similar in appearance to Human-type Earthlings with monkey-like tails.',
         classes: ['Low Class', 'Mid Class', 'Elite Class'],
         abilities: ['Warrior Race', 'Zenkai Boost', 'Great Ape Transformation'],
@@ -14,6 +15,7 @@ const races = {
     },
     'Half-Saiyan': {
         name: 'Half-Saiyan',
+        statMultiplierPoints: 8,
         description: 'Half-Saiyans are generally identical to Saiyans but sometimes lack tails. Under stress, they exhibit their human side.',
         abilities: ['Hybrid Potential', 'Adaptive Combat'],
         passives: [
@@ -26,6 +28,7 @@ const races = {
     },
     'Earthling': {
         name: 'Earthling',
+        statMultiplierPoints: 10,
         description: 'Every living being from Planet Earth, with certain abilities in common.',
         abilities: ['Masters of Ki', 'Adaptive Learning', 'Resilient Spirit'],
         passives: [
@@ -39,6 +42,7 @@ const races = {
     },
     'Frost Demon': {
         name: 'Frost Demon',
+        statMultiplierPoints: 9,
         description: 'Bipedal humanoids with red eyes and white keratinous plating covering scaly reptilian skin.',
         abilities: ['Natural Armor', 'Multiple Forms', 'Cold Resistance'],
         passives: [
@@ -53,6 +57,7 @@ const races = {
     },
     'Namekian': {
         name: 'Namekian',
+        statMultiplierPoints: 6,
         description: 'Humanoids with slug-like characteristics, including antennae and light green skin.',
         abilities: ['Regeneration', 'Fusion', 'Heightened Hearing', 'Dragon Clan/Warrior Clan'],
         passives: [
@@ -68,6 +73,7 @@ const races = {
     },
     'Cerealian': {
         name: 'Cerealian',
+        statMultiplierPoints: 7,
         description: 'Anthropomorphic aliens similar to Earthlings, with green hair and an evolved right eye.',
         abilities: ['Enhanced Vision', 'Precision Strike'],
         passives: [
@@ -79,17 +85,20 @@ const races = {
     },
     'Konatsian': {
         name: 'Konatsian',
+        statMultiplierPoints: 6,
         description: 'Humanoid appearance with varying skin tones and mystical affinity.',
         abilities: ['Mystical Heritage', 'Sword Mastery'],
         passives: [
             { id: 'heros-flute', name: "Hero's Flute", description: 'Play flute. Roll d20. If >15, remove all mental status effects including Blind Rage.' },
-            { id: 'sword-proficiency', name: 'Sword Proficiency', description: 'Valiant swordsmen. +2 STR mod to sword attacks, -4 to DEX hindrances from weapons. Stacks with Swordsman fighting style.' },
+            { id: 'sword-proficiency', name: 'Sword Proficiency', description: 'Valiant swordsmen. +5% STR mod to sword attacks, -10% to DEX hindrances from weapons. Stacks with Swordsman fighting style.' },
+            { id: 'ki-sharpening', name: 'Innate Ki Sharpening', description: 'Innately knows Ki Sharpening: bonus-action toggle for +40% damage rolls, -20% DEX attack rolls, drains Ki each turn. Mastery rolls for it are 20% easier.' },
             { id: 'feinting-strike', name: 'Feinting Strike', description: 'After crit success on sword damage roll, next attack has advantage.' }
         ],
         type: 'birth'
     },
     'Tuffle': {
         name: 'Tuffle',
+        statMultiplierPoints: 5,
         description: 'Small in stature with large brains and advanced technology affinity.',
         abilities: ['Technological Genius', 'Machine Interface'],
         passives: [
@@ -99,8 +108,22 @@ const races = {
         ],
         type: 'birth'
     },
+    'Yokai': {
+        name: 'Yokai',
+        statMultiplierPoints: 7,
+        description: 'Spirits of the dead who clawed their way back from judgment. Many carry faint traits echoing the animal or spirit legend tied to their rebirth.',
+        abilities: ['Reborn', "Yemma's Price", 'Ghastly Structure', 'Variants'],
+        passives: [
+            { id: 'reborn', name: 'Reborn', description: 'Choose 2 racial abilities to keep from your past life.' },
+            { id: 'yemmas-price', name: "Yemma's Price", description: 'Freely return to Earth from the Otherworld for 3 Legendary items and 75% of your stats.' },
+            { id: 'ghastly-structure', name: 'Ghastly Structure', description: 'Intangible — can only be hit by Ki-based techniques until struck; takes 25% more damage from all sources.' },
+            { id: 'yokai-variant', name: 'Variants', description: 'Randomly assigned: Kitsune (+5 SPI, -2 CON, Shapeshift), Nekomata (+5 DEX, -2 CON), Tengu (+4 attack with a fighting style).' }
+        ],
+        type: 'method'
+    },
     'Oni': {
         name: 'Oni',
+        statMultiplierPoints: 7,
         description: 'Muscular builds with horns, sharp claws, and varying skin tones.',
         abilities: ['Natural Weapons', 'Intimidating Presence', 'Demonic Heritage'],
         passives: [
@@ -112,6 +135,7 @@ const races = {
     },
     'Hera': {
         name: 'Hera',
+        statMultiplierPoints: 8,
         description: 'Humanoid with teal skin tones and orange hair.',
         abilities: ['Heran Strength', 'Battle Instinct'],
         passives: [
@@ -124,6 +148,7 @@ const races = {
     },
     'Tortle': {
         name: 'Tortle',
+        statMultiplierPoints: 6,
         description: 'Wise humanoid turtles of the Tortless Way, with a deep connection to nature and remarkable defensive capabilities.',
         abilities: ['Master of Defense', 'Heavy Shed', 'Way of Oogway', 'Shell Rest', 'Ancient Martial Weapon Proficiency', 'Descendants of Way'],
         passives: [
@@ -138,6 +163,7 @@ const races = {
     },
     'Alien': {
         name: 'Alien',
+        statMultiplierPoints: 8,
         description: 'Anything not specifically listed. Custom abilities must be approved.',
         abilities: ['Custom (1-3 abilities)'],
         passives: [
@@ -147,6 +173,7 @@ const races = {
     },
     'Android': {
         name: 'Android',
+        statMultiplierPoints: 4,
         description: 'Artificial beings with mechanical enhancements.',
         abilities: ['Unlimited Energy', 'Mechanical Body', 'Self-Repair'],
         passives: [
@@ -158,6 +185,7 @@ const races = {
     },
     'Bio-Android': {
         name: 'Bio-Android',
+        statMultiplierPoints: 5,
         description: 'Biological constructs with absorbed abilities.',
         abilities: ['Absorption', 'Regeneration', 'Adaptive DNA'],
         passives: [
@@ -169,6 +197,7 @@ const races = {
     },
     'Majin': {
         name: 'Majin',
+        statMultiplierPoints: 6,
         description: 'Magical beings with incredible regeneration and transformation.',
         abilities: ['Magical Nature', 'Regeneration', 'Absorption', 'Body Manipulation'],
         passives: [
@@ -181,6 +210,7 @@ const races = {
     },
     'Saibamen': {
         name: 'Saibamen',
+        statMultiplierPoints: 7,
         description: 'Plant creatures born to kill, grown from seeds and growth liquid.',
         abilities: ['We Are Not The Same', 'Apex Predator', 'Plant Life', 'Ruler of Many', 'PTSD', 'Sharp Claws', 'Simple Minded'],
         passives: [
@@ -194,8 +224,24 @@ const races = {
         ],
         type: 'birth'
     },
+    'Sphinxian': {
+        name: 'Sphinxian',
+        statMultiplierPoints: 16,
+        description: 'This constitutes the feline race descended from beings with an innate affinity for destruction. Sphinxians are naturally powerful and possess an instinctive talent for destroying anything that displeases them. Despite their immense potential, they are often spoiled, lazy, and accustomed to having their desires fulfilled without question.',
+        abilities: ['Destructive Instinct', 'Short Temper', 'Spoiled', 'Lazy', 'Insatiable Potential', 'Space Breathing'],
+        passives: [
+            { id: 'destructive-instinct', name: 'Destructive Instinct', description: 'Attacks deal +10% damage against enemies with more than 50% of their maximum HP.' },
+            { id: 'short-temper', name: 'Short Temper', description: 'When they take damage from an attack, gain 1d10+(WIL mod x0.1) damage on their next attack, stacking up to 3 times. The stacks reset after successfully landing an attack.' },
+            { id: 'spoiled', name: 'Spoiled', description: 'Consumables give 25% more benefit (rounded down). When receiving quest rewards, their reward is increased by 10%.' },
+            { id: 'lazy', name: 'Lazy', description: 'Rest benefits are doubled, but they roll a 1d5 for training unless sparring.' },
+            { id: 'insatiable-potential', name: 'Insatiable Potential', description: 'Roll 2d80+40 when rolling for potential unlocks.' },
+            { id: 'space-breathing', name: 'Space Breathing', description: 'Can survive in the vacuum of space.' }
+        ],
+        type: 'birth'
+    },
     'Vampire': {
         name: 'Vampire',
+        statMultiplierPoints: 9,
         description: 'An immortal being that feeds on the blood of the living. Gained by drinking a Blood Vial and surviving 24 hours in the shade.',
         abilities: ['Suck Blood', 'Pseudo-Regeneration', 'Shapeshifting'],
         passives: [

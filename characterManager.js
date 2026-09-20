@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { createSaver } = require('./saver');
 
 class CharacterManager {
     constructor() {
@@ -9,6 +10,15 @@ class CharacterManager {
         this.characters = this.loadCharacters();
         // Fatigue soft floor: without a Rest, fatigue can't be reduced below peak * ratio.
         this.fatigueFloorRatio = 0.3;
+        // PERF: persistence is debounced and non-blocking. saveCharacters() used to run
+        // JSON.stringify + fs.writeFileSync on EVERY mutation (HP ticks, item moves, family
+        // ticks...), which froze the event loop and delayed every player's interaction.
+        // Now mutations only mark dirty; the actual write coalesces to at most one flush
+        // per window. Game logic and the JSON shape are unchanged.
+        this._saver = createSaver(this.charactersFile, () => this.characters, { label: 'characters.json' });
+        // Optional hook (set by index.js): fired whenever a character's powerLevel may have
+        // changed so the auto-saga cache can invalidate itself without a full rescan.
+        this.onPLChanged = null;
     }
 
     ensureDataDir() {
@@ -30,14 +40,22 @@ class CharacterManager {
         }
     }
 
+    // Mark dirty and schedule a coalesced background write (non-blocking).
     saveCharacters() {
-        try {
-            fs.writeFileSync(this.charactersFile, JSON.stringify(this.characters, null, 2));
-            return true;
-        } catch (error) {
-            console.error('Error saving characters:', error);
-            return false;
-        }
+        this._saver.save();
+        return true;
+    }
+
+    // Critical-path immediate persist (e.g. character create/delete): still coalesces
+    // concurrent calls into one write, but flushes right away instead of waiting.
+    saveCharactersNow() {
+        this._saver.saveNow();
+        return true;
+    }
+
+    // Awaitable flush (used by batch migrations and shutdown paths).
+    flushCharacters() {
+        return this._saver.flush();
     }
 
     createCharacter(userId, characterData) {
@@ -57,6 +75,7 @@ class CharacterManager {
             inventory: [],
             inventorySlots: 10, // Default inventory slots
             fishTackle: [], // Fishing Tackle stores fish here (0 inventory slots)
+            huntingBag: [], // Hunting Bag stores meat here (up to 250 items)
             statusEffects: [],
             techniques: characterData.techniques || [],
             transformations: [],
@@ -78,7 +97,9 @@ class CharacterManager {
         };
 
         this.characters[userId].push(character);
-        this.saveCharacters();
+        // Character creation can raise the server's max power level (auto-saga) — invalidate cache.
+        if (this.onPLChanged) this.onPLChanged();
+        this.saveCharactersNow(); // creations are rare — persist immediately, not on the debounce window
         return character;
     }
 
@@ -112,6 +133,16 @@ class CharacterManager {
             updatedAt: new Date().toISOString()
         };
 
+        // Auto-saga cache hook: fire when the mutation could change the strongest LIVING power
+        // level. `dead` matters as much as `powerLevel` — getServerMaxPL() ignores dead characters,
+        // so the top player dying (or being revived) must drop/raise the derived saga too. Without
+        // this the saga stayed pinned to a wiped player's power level forever.
+        if (this.onPLChanged && updates
+            && (Object.prototype.hasOwnProperty.call(updates, 'powerLevel')
+                || Object.prototype.hasOwnProperty.call(updates, 'dead'))) {
+            this.onPLChanged();
+        }
+
         this.saveCharacters();
         return this.characters[userId][index];
     }
@@ -123,8 +154,20 @@ class CharacterManager {
         if (index === -1) return false;
 
         this.characters[userId].splice(index, 1);
-        this.saveCharacters();
+        // Deleting a character can remove the server's strongest player (auto-saga) — invalidate cache.
+        if (this.onPLChanged) this.onPLChanged();
+        this.saveCharactersNow(); // destructive — persist immediately
         return true;
+    }
+
+    // Wipe ALL of a user's characters (admin). Returns how many were removed.
+    deleteAllCharacters(userId) {
+        if (!this.characters[userId] || this.characters[userId].length === 0) return 0;
+        const count = this.characters[userId].length;
+        delete this.characters[userId];
+        if (this.onPLChanged) this.onPLChanged();
+        this.saveCharactersNow(); // destructive — persist immediately
+        return count;
     }
 
     modifyHP(userId, characterId, amount) {

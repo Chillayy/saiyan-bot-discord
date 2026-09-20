@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Secrets / local configuration (Discord token, client id, guild id, game tunables).
+# NOT committed - every machine/deployment keeps its own copy.
+config/config.json
+
+# Environment variables
+.env
+
+# Live game state (characters.json, world.json, creationCooldowns.json) - local/server only.
+# Never commit this; back it up separately (see DEPLOY_ORACLE.md).
+data/
+
+# Trello board export kept for reference only (large; not used at runtime)
+config/trello.json
+
+# Atomic-write temp files from saver.js
+*.tmp
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

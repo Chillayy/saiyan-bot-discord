@@ -9,7 +9,7 @@
 // Note: index.js also deploys automatically whenever the bot starts, so this is a convenience for
 // force-refreshing commands without keeping the bot running.
 
-const { token } = require('./.gitignore/config.json');
+const { token } = require('./config/config.json');
 const { client, COMMANDS_TO_DEPLOY, deployCommands } = require('./index');
 
 client.once('ready', async () => {

@@ -58,6 +58,12 @@ class BattleManager {
                 }
             });
         }
+        // Also clear any user still mapped to this battle. This covers a battle that was
+        // registered but whose turnOrder was never fully built (e.g. rollInitiative threw),
+        // so a player can never be left "in battle" with no way to interact.
+        for (const [userId, mappedId] of [...this.userBattles.entries()]) {
+            if (mappedId === battleId) this.userBattles.delete(userId);
+        }
         return this.battles.delete(battleId);
     }
 

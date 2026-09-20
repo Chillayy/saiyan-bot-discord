@@ -1,7 +1,50 @@
 const {Client, Events, GatewayIntentBits, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, PermissionsBitField, StringSelectMenuBuilder, StringSelectMenuOptionBuilder} = require("discord.js");
 const fs = require('fs');
 const path = require('path');
-const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes} = require("./.gitignore/config.json");
+const { createSaver } = require('./saver');
+const statModifier = require('./statModifier');
+const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig} = require("./config/config.json");
+
+// Apply config-driven stat -> modifier tier tuning (falls back to built-in defaults).
+statModifier.setModifierTiers(statModifierTiers);
+
+// Stat-multiplier system (character creation): players allocate "stat multiplier points"
+// per stat. Each point adds +0.1× to that stat's modifier gain (rounded down), and a stat
+// can be lowered to `minMultiplier` (default 0.7×) to free up points for other stats.
+// INT is excluded. Tunable via config.json `statMultiplier`.
+const STAT_MULTIPLIER_CONFIG = statMultiplier || {};
+const STAT_MULT_PER_POINT = (typeof STAT_MULTIPLIER_CONFIG.perPoint === 'number') ? STAT_MULTIPLIER_CONFIG.perPoint : 0.1;
+const STAT_MULT_MIN = (typeof STAT_MULTIPLIER_CONFIG.minMultiplier === 'number') ? STAT_MULTIPLIER_CONFIG.minMultiplier : 0.7;
+const STAT_MULT_DEFAULT_POINTS = (typeof STAT_MULTIPLIER_CONFIG.defaultPoints === 'number') ? STAT_MULTIPLIER_CONFIG.defaultPoints : 7;
+// Lowest a single stat's multiplier points can go (so the multiplier never dips below STAT_MULT_MIN).
+const STAT_MULT_MIN_POINTS = Math.round((STAT_MULT_MIN - 1) / STAT_MULT_PER_POINT);
+// Stats that participate in the stat-multiplier system (INT is excluded).
+const STAT_MULT_STATS = ['str', 'dex', 'con', 'wil', 'spi'];
+
+// Ki-drain scaling (config.json `kiDrainScale`): because max Ki grew a lot, flat move/technique
+// costs and form per-turn drains are multiplied up so they still matter. `moveFlatMult` scales
+// flat move costs; `formDrainMult` scales form per-turn drains. Tune both in config.
+const KI_DRAIN_CONFIG = kiDrainScale || {};
+const KI_MOVE_FLAT_MULT = (typeof KI_DRAIN_CONFIG.moveFlatMult === 'number') ? KI_DRAIN_CONFIG.moveFlatMult : 5;
+const KI_FORM_DRAIN_MULT = (typeof KI_DRAIN_CONFIG.formDrainMult === 'number') ? KI_DRAIN_CONFIG.formDrainMult : 5;
+// Kamehameha charging (config.json `kamehamehaCharging`): per-turn charge upkeep (dice + flat %)
+// that drains Ki while charging, how fast the charge builds, its cap, and the release damage bonus
+// per charge. All tunable so the signature beam is config-driven.
+const KH_CHARGING_CONFIG = kamehamehaCharging || {};
+const KH_UPKEEP_DICE = (typeof KH_CHARGING_CONFIG.upkeepDice === 'number') ? KH_CHARGING_CONFIG.upkeepDice : 5;
+const KH_UPKEEP_FLAT_PCT = (typeof KH_CHARGING_CONFIG.upkeepFlatPct === 'number') ? KH_CHARGING_CONFIG.upkeepFlatPct : 2;
+const KH_CHARGE_PER_TURN = (typeof KH_CHARGING_CONFIG.chargePerTurn === 'number') ? KH_CHARGING_CONFIG.chargePerTurn : 2;
+const KH_MAX_CHARGE = (typeof KH_CHARGING_CONFIG.maxCharge === 'number') ? KH_CHARGING_CONFIG.maxCharge : 3;
+const KH_CHARGE_BONUS_PER_CHARGE = (typeof KH_CHARGING_CONFIG.chargeBonusPerCharge === 'number') ? KH_CHARGING_CONFIG.chargeBonusPerCharge : 2;
+
+// Scale a flat Ki cost by the move multiplier (rounded up to at least 1).
+function scaleKiMove(amount) {
+    return Math.max(1, Math.round(Number(amount) * KI_MOVE_FLAT_MULT));
+}
+// Scale a form's per-turn Ki drain by the form multiplier.
+function scaleKiFormDrain(amount) {
+    return Math.max(1, Math.round(Number(amount) * KI_FORM_DRAIN_MULT));
+}
 
 // Once-per-day character creation cooldown (tunable via config.json)
 const CHARACTER_CREATE_COOLDOWN_MS = (characterCreateCooldownHours !== undefined ? characterCreateCooldownHours : 24) * 60 * 60 * 1000;
@@ -9,6 +52,35 @@ const CHARACTER_CREATE_COOLDOWN_MS = (characterCreateCooldownHours !== undefined
 // Searching limits from the Trello "Searching" card (tunable via config.json)
 const SEARCH_LIMIT_PER_AREA = searchLimitPerArea !== undefined ? searchLimitPerArea : 7;
 const SEARCH_KI_COST = searchKiCost !== undefined ? searchKiCost : 3;
+// Traveling and searching spend this % of max Ki on top of their flat base. Tunable via
+// config.json `movementKiPct` (default 0.03 = 3%).
+const MOVEMENT_KI_PCT = movementKiPct !== undefined ? movementKiPct : 0.03;
+
+// Out-of-combat form maintenance cadence: while transformed and not in combat, a character pays
+// the form's per-turn Ki drain and gets a mastery roll every `formTickMinutes`. Tunable via
+// config.json `formTickMinutes` (default 10).
+const FORM_TICK_INTERVAL_MS = (typeof formTickMinutes === 'number' && formTickMinutes > 0)
+    ? formTickMinutes * 60 * 1000
+    : 10 * 60 * 1000;
+
+// Battle pacing / "feel" (config.json `battlePacing`). Attack animations play line-by-line and the
+// auto-resolver pauses between enemy actions so players can follow the fight. These values used to
+// be hardcoded and asymmetric: the PLAYER's own attack animated at 100ms/line with no throttle,
+// while the NPC auto-resolver animated at 200ms/line (750ms on crit/hit/block lines), sat behind a
+// 900ms edit throttle, then slept 1000ms per enemy action AND 2500ms at the end of every enemy
+// turn — which made enemy turns feel laggy and stuttery next to the player's smooth animation.
+// All four are now config-driven (lower = snappier); the defaults below keep fights readable
+// without the multi-second stalls.
+const BATTLE_PACING = battlePacing || {};
+function pacingMs(key, fallback) {
+    const v = BATTLE_PACING[key];
+    return (typeof v === 'number' && v >= 0) ? v : fallback;
+}
+const BATTLE_STEP_PAUSE_MS = pacingMs('stepPauseMs', 100);              // per animation line (normal)
+const BATTLE_MOMENT_PAUSE_MS = pacingMs('momentPauseMs', 450);          // per animation line (CRITICAL HIT! / HIT LANDS! / BLOCKED!)
+const BATTLE_ACTION_PAUSE_MS = pacingMs('actionPauseMs', 350);          // between each auto-resolved enemy action
+const BATTLE_TURN_END_HOLD_MS = pacingMs('turnEndHoldMs', 700);         // extra hold once all enemies have acted
+const BATTLE_PROGRESS_THROTTLE_MS = pacingMs('progressThrottleMs', 300); // min gap between progressive UI edits
 
 // Resource gathering (Trello "Resource Gather" card; tunable via config.json)
 const GATHER_LIMIT_PER_AREA = gatherLimitPerArea !== undefined ? gatherLimitPerArea : 3;
@@ -22,7 +94,7 @@ const LIMIT_BREAK_HP_PCT = 0.15;   // ≤15% of max HP counts as "low HP"
 const LIMIT_BREAK_TURNS = 4;       // 4 consecutive low-HP turns
 const LIMIT_BREAK_GAIN_DICE = 20;  // d20 stat points on break
 const LIMIT_BREAK_GAIN_PCT = 0.10; // +10% of power level as additional points
-const LIMIT_BREAK_PL_REQ = 1.5;    // next break requires 150% of the PL you broke from
+const LIMIT_BREAK_PL_REQ = 1.65;   // next break requires 165% of the PL you broke from
 const LIMIT_BREAK_GAIN_MULT = 10;  // permanent 10x on all stat gains (except missions)
 
 // Dragon balls scatter to fresh RANDOM spawn slots each wish, drawn from this candidate pool.
@@ -49,7 +121,28 @@ function randomDragonBallSlots() {
 
 // One ball per slot. `foundBy` = userId once found (null = still on the map).
 let dragonBallState = randomDragonBallSlots().map(key => ({ key, foundBy: null }));
+
+// ---------- Namekian Dragon Balls (summon Porunga; wishes are 2× stronger) ----------
+// A second, independent 7-ball set that spawns on Namek. Collect all 7 to summon Porunga.
+const NAMEKIAN_DRAGON_BALL_SPAWN_POOL = [
+    'Namek-3', 'Namek-15', 'Namek-40', 'Namek-60', 'Namek-88', 'Namek-145', 'Namek-175', 'Namek-198'
+];
+function randomNamekianDragonBallSlots() {
+    const pool = [...NAMEKIAN_DRAGON_BALL_SPAWN_POOL];
+    const slots = [];
+    while (slots.length < DRAGON_BALL_COUNT && pool.length > 0) {
+        const idx = getRandomInt(pool.length) - 1;
+        slots.push(pool.splice(idx, 1)[0]);
+    }
+    return slots;
+}
+let namekianDragonBallState = randomNamekianDragonBallSlots().map(key => ({ key, foundBy: null }));
 const PICKAXE_DURABILITY = pickaxeDurability !== undefined ? pickaxeDurability : 3; // pickaxe durability; breaks after this many crit fails
+// Destroyed planets/locations (declared early so world state can save/load them). Planets stay
+// destroyed until a Dragon Ball wish restores them; locations auto-return after a set duration.
+const destroyedLocations = new Map();
+const destroyedPlanets = new Map();
+
 // Battle turn timeout: if a player doesn't act in time, their turn auto-resolves.
 const BATTLE_TURN_TIMEOUT_MS = battleTurnTimeoutMs !== undefined ? battleTurnTimeoutMs : 10000;
 
@@ -71,11 +164,98 @@ const SELL_RATE = sellRate !== undefined ? sellRate : 0.3;
 // Fatigue soft floor (Trello "Fatigue" card): without a Rest, fatigue can't be reduced below
 // peak_fatigue_since_rest * this ratio. Tunable via config.json `fatigueFloorRatio`.
 const FATIGUE_FLOOR_RATIO = fatigueFloorRatio !== undefined ? fatigueFloorRatio : 0.3;
+
+// A lone enemy on a challenging/very-challenging/saga mission fights like a boss: buff its stats
+// so a single foe isn't weaker than a squad of the same difficulty. Tunable via config.json
+// `singleEnemyStatMult` (1 = no boost, 1.5 = +50% stats).
+const SINGLE_ENEMY_STAT_MULT = singleEnemyStatMult !== undefined ? singleEnemyStatMult : 1.5;
+
+// Rare enemy mutations: a small chance that an enemy in a VERY-CHALLENGING or SAGA mission is
+// born with one of its race's applicable mutations. Tunable via config.json `enemyMutationChance`
+// (default 0.002 = 0.2%). Races with no mutations (or clan-restricted ones like Namekian Slug /
+// Wise Old One, since enemies have no clan) never roll.
+const ENEMY_MUTATION_CHANCE = enemyMutationChance !== undefined ? enemyMutationChance : 0.002;
+
+// Enemy stats grow super-linearly with the global saga number so later sagas get tougher faster
+// than a flat `saga × base`. Tunable via config.json `enemySagaScaleExponent` (1 = linear, 1.2 =
+// steeper each saga). The multiplier is saga^exponent, so saga 1 always stays at ×1.
+const ENEMY_SAGA_SCALE_EXPONENT = enemySagaScaleExponent !== undefined ? enemySagaScaleExponent : 1.2;
+// Saga multiplier for enemy stats (saga^exponent). Centralised so enemy generation scales the
+// same way everywhere it's used.
+function getEnemySagaMult(saga = globalSaga) {
+    return Math.pow(Math.max(1, saga || 1), ENEMY_SAGA_SCALE_EXPONENT);
+}
+// "New-player-friendly" saga scaling: for players still far below a difficulty's stat cap, the
+// saga multiplier is eased toward 1 so late-joining newcomers aren't walled out of missions by
+// impossible enemies. Established players (at/near the cap) keep full saga scaling. Tunable via
+// config.json `enemySagaEase` (false = always full saga multiplier) and `enemySagaDampenPower`
+// (1 = linear ease, higher = start easing only once closer to the cap).
+const ENEMY_SAGA_EASE = enemySagaEase !== undefined ? enemySagaEase : true;
+const ENEMY_SAGA_DAMPEN_POWER = enemySagaDampenPower !== undefined ? enemySagaDampenPower : 1;
+// Hard ceiling on the saga multiplier. Even at very high sagas the multiplier can never exceed
+// this, so a player's enemy difficulty stays anchored to their OWN power level (per the mission
+// type's ratio) instead of being multiplied into impossibility. New players easing toward 1 get
+// enemies scaled purely on their power level. Tunable via config.json `enemySagaMultMax`.
+const ENEMY_SAGA_MULT_MAX = enemySagaMultMax !== undefined ? enemySagaMultMax : 1.5;
 const {BattleManager} = require("./battleManager");
 const {CharacterManager, parseItemName, formatStackedItem, DURABLE_ITEMS} = require("./characterManager");
 const {races} = require("./raceData");
 const {getAvailableMutations, formatMutation, getMutation, mutations} = require("./mutations");
 const family = require('./familySystem');
+const baseSystem = require('./baseSystem');
+
+// Base (home) facility system — config.json `baseSystem` (per-facility shallow merge over the
+// module defaults, same pattern as `craftingRecipes`). Drives the /base menu, passive offline
+// income, and the home/ship gameplay bonuses applied below.
+const BASE = baseSystem.buildBaseConfig(baseSystemConfig);
+
+// ---------- AUTO-SAGA (auto-scale the saga from the strongest player's power level) ----------
+// When enabled (config.json `autoSaga.enabled`), the saga used for enemy difficulty and mission
+// rewards is derived from the highest power level among all living characters, so the world
+// "levels up" on its own instead of needing a manual /set-saga.
+const AUTO_SAGA_CONFIG = autoSaga || {};
+const AUTO_SAGA_ENABLED = AUTO_SAGA_CONFIG.enabled === true;
+const AUTO_SAGA_BASE_PL = (typeof AUTO_SAGA_CONFIG.basePL === 'number' && AUTO_SAGA_CONFIG.basePL > 0) ? AUTO_SAGA_CONFIG.basePL : 10000;
+const AUTO_SAGA_STEP = (typeof AUTO_SAGA_CONFIG.step === 'number' && AUTO_SAGA_CONFIG.step > 1) ? AUTO_SAGA_CONFIG.step : 1.5;
+const AUTO_SAGA_MAX = (typeof AUTO_SAGA_CONFIG.maxSaga === 'number' && AUTO_SAGA_CONFIG.maxSaga > 0) ? AUTO_SAGA_CONFIG.maxSaga : 100;
+
+// Highest power level among all living characters (the "server's strongest player").
+// PERF: this used to rescan EVERY character on EVERY call — and getEffectiveSaga() runs on
+// every enemy generation / mission roll, i.e. inside hot interaction paths. It is now cached
+// and invalidated only when a powerLevel actually changes (CharacterManager.onPLChanged hook
+// wired up right after the manager is constructed below).
+const plCache = { maxPL: 0, dirty: true };
+function getServerMaxPL() {
+    if (!plCache.dirty) return plCache.maxPL;
+    let maxPL = 0;
+    Object.values(characterManager.characters || {}).forEach(chars => {
+        (chars || []).forEach(c => {
+            if (c.dead) return;
+            if ((c.powerLevel || 0) > maxPL) maxPL = c.powerLevel || 0;
+        });
+    });
+    plCache.maxPL = maxPL;
+    plCache.dirty = false;
+    return maxPL;
+}
+
+// Formula: the saga rises by 1 every `step`-fold increase in the strongest player's PL, anchored
+// at `basePL` (the PL at which the saga first exceeds 1). Clamped to [1, maxSaga].
+//
+//   saga = maxSaga > 0 ? min(maxSaga, 1 + floor( log(maxPL/basePL) / log(step) )) : 1 + ...
+//   (maxPL < basePL -> saga 1)
+function sagaFromPL(pl) {
+    pl = Math.max(0, Number.isFinite(pl) ? pl : 0);
+    if (pl < AUTO_SAGA_BASE_PL) return 1;
+    const steps = Math.floor(Math.log(pl / AUTO_SAGA_BASE_PL) / Math.log(AUTO_SAGA_STEP));
+    return Math.min(AUTO_SAGA_MAX, 1 + steps);
+}
+
+// The saga the game actually uses for difficulty/rewards: auto-derived when enabled, else the
+// admin-set `globalSaga`.
+function getEffectiveSaga() {
+    return AUTO_SAGA_ENABLED ? sagaFromPL(getServerMaxPL()) : globalSaga;
+}
 
 const client = new Client({intents: [GatewayIntentBits.Guilds]});
 
@@ -105,6 +285,9 @@ function isBenignInteractionError(err) {
 const battleManager = new BattleManager();
 const characterManager = new CharacterManager();
 characterManager.fatigueFloorRatio = FATIGUE_FLOOR_RATIO;
+// Wire the auto-saga cache invalidation: fires only when a powerLevel actually changes
+// (create/delete/update-with-powerLevel), so getServerMaxPL() never rescans on hot paths.
+characterManager.onPLChanged = () => { plCache.dirty = true; };
 
 // ----- Automatic Zenkai-on-full-heal hook -----
 // Whenever a character's HP changes and lands on MAX HP, any pending Zenkai fires automatically
@@ -130,8 +313,32 @@ function checkAndQueueZenkai(userId) {
         const c = characterManager.getCharacter(userId);
         if (!c) return;
         const msg = checkPendingZenkai(userId, c);
-        if (msg) zenkaiNoticeQueue.set(userId, (zenkaiNoticeQueue.get(userId) || '') + msg);
+        const cmpMsg = applyCompanionZenkai(c);
+        if (cmpMsg) characterManager.saveCharacters();
+        const combined = (msg || '') + (cmpMsg || '');
+        if (combined) zenkaiNoticeQueue.set(userId, (zenkaiNoticeQueue.get(userId) || '') + combined);
     } catch (e) {}
+}
+
+// Apply any banked companion Zenkai (survived near death in a battle) to the companion's stats.
+// Companions are at full HP between battles, so a pending Zenkai fires on the next full-HP check.
+function applyCompanionZenkai(ownerChar) {
+    if (!ownerChar || !Array.isArray(ownerChar.companions)) return '';
+    let text = '';
+    ownerChar.companions.forEach(cmp => {
+        if (!cmp || !cmp.zenkaiPending) return;
+        const pending = cmp.zenkaiPending;
+        const points = Math.max(1, Math.ceil((pending.powerLevel || 1) * pending.gainPercent / 100));
+        const stats = { ...(cmp.stats || {}) };
+        const distribution = distributeGain(points, ['str', 'dex', 'con', 'wil', 'spi']);
+        Object.entries(distribution).forEach(([stat, value]) => {
+            stats[stat] = (stats[stat] || 0) + value;
+        });
+        cmp.stats = stats;
+        cmp.zenkaiPending = null;
+        text += `\n✨ **${cmp.name}** (companion) triggered a **ZENKAI**! **+${points}** stat points!`;
+    });
+    return text;
 }
 
 function takeZenkaiNotice(userId) {
@@ -221,18 +428,61 @@ function loadCreationCooldowns() {
     }
 }
 
+// PERF: debounced, non-blocking persistence (was a blocking fs.writeFileSync per mutation).
+const creationCooldownSaver = createSaver(creationCooldownFile, () => creationCooldowns, { label: 'creationCooldowns.json' });
+
 function saveCreationCooldowns() {
-    try {
-        fs.writeFileSync(creationCooldownFile, JSON.stringify(creationCooldowns, null, 2));
-    } catch (error) {
-        console.error('Error saving creation cooldowns:', error);
-    }
+    creationCooldownSaver.save();
 }
 
 function getCreationCooldownRemaining(userId) {
     const last = creationCooldowns[userId];
     if (!last) return 0;
     return Math.max(0, CHARACTER_CREATE_COOLDOWN_MS - (Date.now() - Date.parse(last)));
+}
+
+// ---------- Cave state (daily 5% chance per slot; a terrain marker) ----------
+// Chance tunable via config.json `caveChance` (default 0.05 = 5%).
+let caveChance = 0.05;
+try { const cfg = require('./config/config.json'); if (typeof cfg.caveChance === 'number') caveChance = cfg.caveChance; } catch (e) { /* config optional */ }
+const CAVE_CHANCE = caveChance;
+const CAVE_EMOJI = '🕳️';
+// +roll bonus when mining inside a cave (pushes the ore roll toward rarer minerals).
+// Tunable via config.json `caveMineBonus` (default 6).
+let caveMineBonus = 6;
+try { const cfg = require('./config/config.json'); if (typeof cfg.caveMineBonus === 'number') caveMineBonus = cfg.caveMineBonus; } catch (e) { /* config optional */ }
+const CAVE_MINE_BONUS = caveMineBonus;
+const caveState = { date: '', caves: {} };
+// No caves in empty space or the afterlife — only walkable planets get caves.
+const CAVE_EXCLUDED_PLANETS = new Set(['Space', 'Otherworld', 'Hell']);
+
+// Regenerate cave placement once per real-world day (lazy on first access).
+function ensureCavesForToday() {
+    const today = centralDateString();
+    if (caveState.date === today) return;
+    caveState.date = today;
+    caveState.caves = {};
+    // Every walkable planet gets caves (PLANET_SPACES, not the /space-travel destination list —
+    // King Kai's Planet is unreachable by space travel but still has ground).
+    for (const planet of Object.keys(PLANET_SPACES)) {
+        if (CAVE_EXCLUDED_PLANETS.has(planet)) continue;
+        const maxSpace = PLANET_SPACES[planet] || 100;
+        for (let s = 1; s <= maxSpace; s++) {
+            if (Math.random() < CAVE_CHANCE) caveState.caves[`${planet}-${s}`] = true;
+        }
+    }
+    saveGlobalSaga();
+}
+
+// Does the given slot currently have a cave?
+function getCaveAt(planet, space) {
+    ensureCavesForToday();
+    return !!(planet && caveState.caves[`${planet}-${space}`]);
+}
+
+// Marker to append after a space label (🕳️ if there's a cave, else '').
+function caveMarker(planet, space) {
+    return getCaveAt(planet, space) ? ` ${CAVE_EMOJI}` : '';
 }
 
 // ---------- Global saga number (world state, admin-only changes, base = 1) ----------
@@ -245,6 +495,32 @@ function loadGlobalSaga() {
         // Restore dragon-ball positions + find state so they survive restarts.
         if (Array.isArray(world.dragonBalls) && world.dragonBalls.length > 0) {
             dragonBallState = world.dragonBalls.map(b => ({ key: b.key || 'Earth-7', foundBy: b.foundBy || null }));
+            // A Dragon Ball set is always exactly DRAGON_BALL_COUNT spheres. If /create-dragon-ball
+            // inflated the count in the past, trim back to the standard set (keep the first N).
+            if (dragonBallState.length > DRAGON_BALL_COUNT) {
+                dragonBallState = dragonBallState.slice(0, DRAGON_BALL_COUNT);
+            }
+        }
+        // Restore the Namekian (Porunga) dragon-ball set.
+        if (Array.isArray(world.namekianDragonBalls) && world.namekianDragonBalls.length > 0) {
+            namekianDragonBallState = world.namekianDragonBalls.map(b => ({ key: b.key || 'Namek-3', foundBy: b.foundBy || null }));
+            if (namekianDragonBallState.length > DRAGON_BALL_COUNT) {
+                namekianDragonBallState = namekianDragonBallState.slice(0, DRAGON_BALL_COUNT);
+            }
+        }
+        if (world.caves && world.caves.date) {
+            caveState.date = world.caves.date;
+            caveState.caves = world.caves.caves || {};
+        }
+        if (world.destroyedPlanets) {
+            Object.keys(world.destroyedPlanets).forEach(planet => {
+                destroyedPlanets.set(planet, { until: Infinity });
+            });
+        }
+        if (world.destroyedLocations) {
+            Object.entries(world.destroyedLocations).forEach(([key, until]) => {
+                if (until > Date.now()) destroyedLocations.set(key, { until });
+            });
         }
         return Math.max(1, world.saga || 1);
     } catch (error) {
@@ -252,12 +528,27 @@ function loadGlobalSaga() {
     }
 }
 
+// Build the world-state snapshot (kept in a function so the debounced saver always serializes
+// the LATEST state at flush time, not the state at save()-call time).
+function buildWorldState() {
+    const destroyedPlanetsObj = {};
+    destroyedPlanets.forEach((d, planet) => { destroyedPlanetsObj[planet] = 1; });
+    const destroyedLocationsObj = {};
+    destroyedLocations.forEach((d, key) => { if (d.until > Date.now()) destroyedLocationsObj[key] = d.until; });
+    return { saga: globalSaga, dragonBalls: dragonBallState, namekianDragonBalls: namekianDragonBallState, caves: { date: caveState.date, caves: caveState.caves }, destroyedPlanets: destroyedPlanetsObj, destroyedLocations: destroyedLocationsObj };
+}
+
+// PERF: debounced, non-blocking persistence (was a blocking fs.writeFileSync per mutation —
+// cave refreshes, dragon-ball finds and saga changes all stalled the event loop).
+const worldSaver = createSaver(worldFile, buildWorldState, { label: 'world.json' });
+
 function saveGlobalSaga() {
-    try {
-        fs.writeFileSync(worldFile, JSON.stringify({ saga: globalSaga, dragonBalls: dragonBallState }, null, 2));
-    } catch (error) {
-        console.error('Error saving world state:', error);
-    }
+    worldSaver.save();
+}
+
+// Immediate (still coalesced) variant for critical admin changes like /set-saga.
+function saveGlobalSagaNow() {
+    worldSaver.saveNow();
 }
 
 // ---------- Battle UI helpers (buttons) ----------
@@ -329,13 +620,18 @@ async function maybeShowReactionPrompt(interaction, battle, logText) {
 
 // Reply-based variant used when a brand-new battle message is being created (the interaction
 // hasn't been edited yet). Returns true if a reaction prompt consumed the reply.
-async function maybeShowReactionReply(interaction, battle, logText) {
+async function maybeShowReactionReply(interaction, battle, logText, useEdit = false) {
     const data = buildReactionPromptData(battle, logText);
     if (!data) return false;
     try {
-        const cb = await interaction.reply({ content: data.content, components: data.components, withResponse: true });
-        const reply = cb && cb.resource ? cb.resource.message : null;
-        if (reply) battleMessages.set(battle.id, reply.id);
+        // If the interaction was deferred (e.g. a raid ambush), edit the deferred reply;
+        // otherwise reply as normal.
+        const send = useEdit ? interaction.editReply.bind(interaction) : interaction.reply.bind(interaction);
+        const opts = { content: data.content, components: data.components };
+        if (!useEdit) opts.withResponse = true;
+        const cb = await send(opts);
+        const reply = cb && (cb.resource ? cb.resource.message : cb);
+        if (reply && reply.id) battleMessages.set(battle.id, reply.id);
         return true;
     } catch (e) {
         // The reply failed (e.g. the 3s window elapsed) — don't claim we showed the prompt,
@@ -351,17 +647,39 @@ function ensureBattleUI(battle) {
     return battle.ui;
 }
 
+// ----- Canon-intervene battle team helpers -----
+// A canon-intervene battle is the one time BOTH sides include real players: the villain (who can
+// act manually) fights the intervening players, backed by allied (NPC) helpers. `isAlly` alone
+// can't express this (it means "on the players' team"), so the villain carries `isCanonVillain`,
+// and the helpers below keep targeting/team checks correct for that battle.
+function isCanonInterveneBattle(battle) {
+    return !!(battle && battle.canonInterveneBattle);
+}
+function isVillainSide(p) {
+    return !!(p && p.isCanonVillain);
+}
+
 function getAliveTargets(battle, forUserId) {
-    return battle.turnOrder.filter(p => p.userId !== forUserId && !p.isDead && !p.isIncapacitated && !p.isAlly);
+    // Joined players share the host's team, so they must never appear as targets for each other.
+    const allied = battle.alliedPlayerIds || new Set();
+    // The villain stands alone on the opposing side, so THEIR targets include the allied helpers
+    // (a normal player never targets their own allies/companions).
+    const self = battle.turnOrder.find(p => p.userId === forUserId);
+    if (isVillainSide(self)) {
+        return battle.turnOrder.filter(p => p.userId !== forUserId && !p.isDead && !p.isIncapacitated);
+    }
+    return battle.turnOrder.filter(p => p.userId !== forUserId && !p.isDead && !p.isIncapacitated && !p.isAlly && !allied.has(p.userId));
 }
 
 function getPlayerTargets(battle) {
     return battle.turnOrder.filter(p => !isNPC(p) && !p.isDead && !p.isIncapacitated);
 }
 
-// Enemies still on the opposing team (excludes allies/companions).
+// Enemies still on the opposing team (excludes allies/companions). In a canon-intervene battle the
+// villain is a real, player-controlled participant who fights the heroes, so they count as an
+// enemy target too (this is what the allied helpers aim at).
 function getEnemyTargets(battle) {
-    return battle.turnOrder.filter(p => isNPC(p) && !p.isAlly && !p.isDead && !p.isIncapacitated);
+    return battle.turnOrder.filter(p => (isNPC(p) || isVillainSide(p)) && !p.isAlly && !p.isDead && !p.isIncapacitated);
 }
 
 // Saga missions: story enemies can NEVER be allied with.
@@ -433,6 +751,14 @@ function isSunOut() {
     // Sun is out (deadly to a pending vampirism) from 7am–7pm Central.
     // Night (7pm–7am) is safe, so infected characters can travel then.
     return hour >= 7 && hour < 19;
+}
+
+// Eastern Time (ET, UTC-5) "day" string — daily resets (rest/midnight, per-area limits, sales)
+// follow EST rather than the server's local/UTC clock.
+function centralDateString() {
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    return new Date(utc - 5 * 60 * 60000).toDateString();
 }
 
 // Vampire blood bar max = 100 + (CON mod*3).
@@ -508,6 +834,12 @@ function isVampireForbiddenConsumable(character, name) {
     return /capsule/i.test(n) || /Senzu Bean/i.test(n);
 }
 
+// Wise Old One "Pacifist" grants +7 with advantage to all persuasion checks and a special
+// combat persuade that forces a WIL save.
+function isWiseOldOne(character) {
+    return !!(character && character.mutation === 'Wise Old One');
+}
+
 // Persuade chance for recruiting an enemy (Trello ally/companion spec):
 // base 50%; matching-polarity alignment difference adds ±0.05%/point (cap ±30%);
 // power level adds up to ±40%; total clamped to 1%..100%. Saga enemies: 0% (never allied).
@@ -515,7 +847,10 @@ function getPersuadeChance(playerChar, enemy) {
     if (!playerChar || !enemy) return 0;
     if (enemy.saga === true || isSagaBattleForEnemy(enemy)) return 0;
 
-    let chance = 0.5;
+     let chance = 0.5;
+    // Wise Old One "Pacifist": enemies sense no hostility from them, so talking one into joining
+    // is easier (+10% flat, before the alignment/power-level adjustments).
+    if (isWiseOldOne(playerChar)) chance += 0.10;
 
     const playerVal = getPlayerAlignmentValue(playerChar);
     const enemyVal = Number(enemy.alignmentValue) || 0;
@@ -523,6 +858,8 @@ function getPersuadeChance(playerChar, enemy) {
         const diff = Math.abs(playerVal) - Math.abs(enemyVal);
         chance += Math.max(-0.30, Math.min(0.30, diff * 0.0005));
     }
+    // Opposite alignment makes persuasion MUCH harder.
+    chance -= getOppositeAlignmentPenalty(playerVal, enemyVal);
 
     const playerPL = playerChar.powerLevel || 0;
     const enemyPL = Number(enemy.powerLevel) || 0;
@@ -551,6 +888,33 @@ function buildTalkTargetComponents(battle, viewer) {
                 .setCustomId(`bt_talk_tgt_${t.userId}`)
                 .setLabel(`🗨️ ${t.username} (${t.currentHP})`)
                 .setStyle(ButtonStyle.Secondary)
+        );
+    });
+    if (row.components.length > 0) components.push(row);
+    const backRow = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('bt_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+        );
+    components.push(backRow);
+    armBattleTurnTimer(battle);
+    return components;
+}
+
+// Build the "choose an enemy to persuade" target rows for the Pacifist (Wise Old One) button.
+function buildPersuadeTargetComponents(battle, viewer) {
+    const components = [];
+    const enemies = getEnemyTargets(battle).slice(0, 20);
+    let row = new ActionRowBuilder();
+    enemies.forEach(t => {
+        if (row.components.length >= 5) {
+            components.push(row);
+            row = new ActionRowBuilder();
+        }
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`bt_persuade_tgt_${t.userId}`)
+                .setLabel(`🗝️ ${t.username} (${t.currentHP})`)
+                .setStyle(ButtonStyle.Success)
         );
     });
     if (row.components.length > 0) components.push(row);
@@ -645,10 +1009,13 @@ function createCompanion(p, ownerChar) {
         name: p.companionName || rollCompanionName(p.gender, p.race),
         race: p.race || null,
         gender: p.gender || null,
+        // Beauty (1d5) influences how fast this companion's companionship grows.
+        beauty: Number(p.beauty) || getRandomInt(5),
         // Hidden alignment persists with the companion (never shown to the player).
         alignment: p.alignment || 'Positive',
         alignmentValue: Number(p.alignmentValue) || 0,
         stats: base,
+        statMultipliers: p.statMultipliers || rollRandomStatMultipliers(p.race || null),
         bonusStats: { str: 0, dex: 0, con: 0, wil: 0, spi: 0 },
         companionship: 0,
         fatigue: 0,
@@ -659,6 +1026,8 @@ function createCompanion(p, ownerChar) {
         fightingStyle: p.fightingStyle || null,
         weapon: p.weapon || null,
         weaponAttackMod: p.weaponAttackMod || 0,
+        weaponAtkPct: p.weaponAtkPct || 0,
+        weaponDexPct: p.weaponDexPct || 0,
         weaponDamageMode: p.weaponDamageMode || null,
         weaponBypass: p.weaponBypass || false,
         weaponDexPenalty: p.weaponDexPenalty || 0,
@@ -706,13 +1075,26 @@ function getCompanionTechniques(companion) {
     if ((companion.race === 'Cerealian' || companion.mutation === 'Hunter of Legend') && !techniques.includes('Vital Strike')) {
         techniques.push('Vital Strike');
     }
+    // Innate racial techniques (e.g. a Konatsian companion's Hero's Flute + Ki Sharpening).
+    getRacialTechniques(companion.race).forEach(t => {
+        if (!techniques.includes(t)) techniques.push(t);
+    });
     return techniques;
+}
+
+// Innate racial techniques every character of a race always knows. These are never pruned by
+// a fighting-style change: Cerealians know Vital Strike; Konatsians know Hero's Flute and
+// Ki Sharpening (innate sword affinity).
+function getRacialTechniques(race) {
+    if (race === 'Cerealian') return ['Vital Strike'];
+    if (race === 'Konatsian') return ["Hero's Flute", 'Ki Sharpening'];
+    return [];
 }
 
 // Remove any technique that belongs to a fighting style other than `fightingStyle`, so a
 // character can't keep moves from styles they no longer use. Non-style abilities (Fly, Ki Sense,
 // Ki Efficiency, Ki Application, etc.) are kept.
-function pruneOffStyleTechniques(techniques, fightingStyle) {
+function pruneOffStyleTechniques(techniques, fightingStyle, race) {
     const others = new Set();
     Object.keys(MENTOR_STYLES).forEach(style => {
         if (style !== fightingStyle) {
@@ -724,6 +1106,8 @@ function pruneOffStyleTechniques(techniques, fightingStyle) {
     // Techniques a mentor can teach individually (e.g. Turtle's Pump Up) are kept even if the
     // character isn't currently that fighting style — they were learned, not style-granted.
     const keep = new Set(['Pump Up']);
+    // Innate racial techniques survive style changes too (e.g. Konatsian Ki Sharpening).
+    getRacialTechniques(race).forEach(t => keep.add(t));
     return (techniques || []).filter(t => {
         const name = String(typeof t === 'string' ? t : (t.name || t));
         return !others.has(name) || keep.has(name);
@@ -775,14 +1159,14 @@ function pruneAllOffStyleTechniques() {
     users.forEach(userId => {
         (characterManager.characters[userId] || []).forEach(character => {
             let changed = false;
-            const pruned = pruneOffStyleTechniques(character.techniques, character.fightingStyle);
+            const pruned = pruneOffStyleTechniques(character.techniques, character.fightingStyle, character.race);
             if (pruned.length !== (character.techniques || []).length) {
                 character.techniques = pruned;
                 changed = true;
             }
             if (Array.isArray(character.companions)) {
                 character.companions.forEach(cmp => {
-                    const p = pruneOffStyleTechniques(cmp.techniques, cmp.fightingStyle);
+                    const p = pruneOffStyleTechniques(cmp.techniques, cmp.fightingStyle, cmp.race);
                     if (p.length !== (cmp.techniques || []).length) {
                         cmp.techniques = p;
                         changed = true;
@@ -815,7 +1199,7 @@ function maybeUnlockShogun(battle, actor) {
     if (character.fightingStyle !== 'Swordsman') return '';
     const roll = battle.rollDice(100) + battle.rollDice(100) + battle.rollDice(100);
     if (roll >= 257) {
-        const techniques = pruneOffStyleTechniques(getKnownTechniqueNames(character), 'Shogun');
+        const techniques = pruneOffStyleTechniques(getKnownTechniqueNames(character), 'Shogun', character.race);
         (MENTOR_STYLES['Shogun'].moves || []).forEach(m => { if (!techniques.includes(m)) techniques.push(m); });
         characterManager.updateCharacter(actor.userId, character.id, { fightingStyle: 'Shogun', techniques });
         return `\n\n🏯 **SHOGUN UNLOCKED!** (3d100 = **${roll}** vs 257) — **${character.name}** has mastered the **Shogun** style!`;
@@ -835,12 +1219,23 @@ function hasEnhancedPumpUp(entity) {
 function buildCompanionRoster(ownerId, ownerChar) {
     const roster = [];
     // Companions with `inBattle === false` are benched and don't follow into battle.
-    const companions = getFightCompanions(ownerChar).slice(0, MAX_COMPANIONS);
+    // A companion at 0 HP is downed and can't fight until healed (rest / food).
+    const companions = getFightCompanions(ownerChar)
+        .filter(c => !(c.currentHP != null && c.currentHP <= 0))
+        .slice(0, MAX_COMPANIONS);
     companions.forEach((cmp, index) => {
         const isChild = !!cmp.isChild;
         const cStats = isChild ? getChildBattleStats(cmp) : getCompanionBattleStats(cmp, ownerChar);
-        const maxHP = calculateHP(cStats.con, cmp.race || null);
-        const maxKi = calculateKi(cStats.spi, cmp.race || null);
+        const cMult = cmp.statMultipliers || {};
+        const maxHP = calculateHP(cStats.con, cmp.race || null, cMult, cmp);
+        const maxKi = calculateKi(cStats.spi, cmp.race || null, cMult, cmp);
+        // Companions keep their HP/Ki between fights — they must rest or eat to heal.
+        const currentHP = cmp.currentHP != null ? Math.max(0, Math.min(cmp.currentHP, maxHP)) : maxHP;
+        const currentKi = cmp.currentKi != null ? Math.max(0, Math.min(cmp.currentKi, maxKi)) : maxKi;
+        // Companions keep their racial stat mods in combat too (they're built by hand, so unlike
+        // players they don't pick them up from applyFormToStats).
+        const cmpModBonus = getRacialCombatMods(cmp.race || null, cmp);
+        cmpModBonus.dex = (cmpModBonus.dex || 0) - applyWeaponProficiencyReduction(cmp.race, cmp.fightingStyle, parseWeaponType(cmp.weapon || ''), Number(cmp.weaponDexPenalty) || 0);
         roster.push({
             userId: `companion_${ownerId}_${cmp.id}`,
             username: cmp.name,
@@ -858,9 +1253,12 @@ function buildCompanionRoster(ownerId, ownerChar) {
             }),
             hp: maxHP,
             ki: maxKi,
-            fatigue: 0,
+            currentHP,
+            currentKi,
+            fatigue: (cmp.fatigue || 0),
             stats: cStats,
-            modBonus: applyPregnancyModPenalty({ dex: -applyWeaponProficiencyReduction(cmp.race, cmp.fightingStyle, parseWeaponType(cmp.weapon || ''), Number(cmp.weaponDexPenalty) || 0) }, cmp, ownerChar),
+            statMultipliers: cMult,
+            modBonus: applyPregnancyModPenalty(cmpModBonus, cmp, ownerChar),
             kiAppDamage: cmp.kiAppDamage || 0,
             kiEfficiency: false,
             kiApplicationLearned: cmp.race === 'Cerealian' || cmp.mutation === 'Hunter of Legend',
@@ -870,6 +1268,8 @@ function buildCompanionRoster(ownerId, ownerChar) {
             weapon: cmp.weapon || null,
             weaponType: parseWeaponType(cmp.weapon || ''),
             weaponAttackMod: cmp.weaponAttackMod || 0,
+            weaponAtkPct: cmp.weaponAtkPct || 0,
+            weaponDexPct: cmp.weaponDexPct || 0,
             weaponDamageMode: cmp.weaponDamageMode || null,
             weaponBypass: cmp.weaponBypass || false,
             weaponConBonus: cmp.weaponConBonus || 0,
@@ -880,6 +1280,7 @@ function buildCompanionRoster(ownerId, ownerChar) {
             flying: cmp.flying || false,
             kiSense: cmp.kiSense || false,
             pseudoImmortality: cmp.pseudoImmortality === true,
+            porungaPseudo: cmp.porungaPseudo === true,
             zenkaiExhausted: (cmp.zenkaiExhaustedUntil || 0) > Date.now()
         });
     });
@@ -889,6 +1290,8 @@ function buildCompanionRoster(ownerId, ownerChar) {
 // Save a recruited enemy as a companion on the owner's character (max 4).
 function persistRecruitAsCompanion(ownerId, p, ownerChar) {
     if (!ownerChar) return '';
+    // Can't recruit companions while dead or in the afterlife.
+    if (!canAcquireCompanions(ownerChar)) return '';
     const companions = Array.isArray(ownerChar.companions) ? ownerChar.companions : [];
     if (companions.length >= MAX_COMPANIONS) return '';
     const companion = createCompanion(p, ownerChar);
@@ -930,11 +1333,14 @@ function createRivalFromEnemy(ownerChar, enemy) {
         race: enemy.race || 'Earthling',
         gender: enemy.gender || 'Male',
         baseStats,
+        statMultipliers: enemy.statMultipliers || rollRandomStatMultipliers(enemy.race || null),
         techniques: Array.isArray(enemy.techniques) ? [...enemy.techniques] : [],
         fightingStyle: enemy.fightingStyle || enemy.style || null,
         weapon: enemy.weapon || null,
         weaponType: enemy.weaponType || null,
         weaponAttackMod: enemy.weaponAttackMod || 0,
+        weaponAtkPct: enemy.weaponAtkPct || 0,
+        weaponDexPct: enemy.weaponDexPct || 0,
         weaponDamageMode: enemy.weaponDamageMode || null,
         weaponBypass: enemy.weaponBypass || false,
         weaponDexPenalty: enemy.weaponDexPenalty || 0,
@@ -948,6 +1354,9 @@ function createRivalFromEnemy(ownerChar, enemy) {
         defeats: 0,             // rival_defeats (beaten count — lowers the persuasion DC)
         persuasionProgress: 0,  // successful in-battle Talk persuasions (0..RIVAL_RECRUIT_TARGET)
         spares: 0,              // times spared instead of killed (dialogue bonus when persuading)
+        // Alignment of the defeated enemy (drives the opposite-alignment persuasion penalty).
+        alignment: enemy.alignment || 'Neutral',
+        alignmentValue: Number(enemy.alignmentValue) || 0,
         createdAt: Date.now()
     };
 }
@@ -996,11 +1405,17 @@ function upgradeRivalGear(rival) {
         if (mods) {
             rival.weaponType = mods.type;
             rival.weaponAttackMod = mods.attackMod;
+            rival.weaponAtkPct = mods.atkPct || 0;
+            rival.weaponDexPct = mods.dexPct || 0;
             rival.weaponDexPenalty = applyWeaponProficiencyReduction(rival.race, rival.fightingStyle, mods.type, mods.dexPenalty);
             rival.weaponDamageMode = mods.damageMode;
             rival.weaponBypass = mods.bypass;
             rival.weaponConBonus = mods.conBonus || 0;
             rival.weaponWilBonus = mods.wilBonus || 0;
+            rival.weaponUnarmed = mods.unarmedWeapon || false;
+            rival.weaponPunchStrBonus = mods.punchStrBonus || 0;
+            rival.weaponBleedOnHit = mods.bleedOnHit || 0;
+            rival.weaponCritRangeBonus = mods.critRangeBonus || 0;
         }
     }
     if (rank > (rival.armorRank || 0)) {
@@ -1020,8 +1435,17 @@ function upgradeRivalGear(rival) {
 function buildRivalParticipant(ownerId, rival, ownerChar) {
     const stats = getRivalScaledStats(rival);
     const flags = getRivalPassiveFlags(rival);
-    const maxHP = calculateHP(stats.con, rival.race || null);
-    const maxKi = calculateKi(stats.spi, rival.race || null);
+    const rivalMult = rival.statMultipliers || {};
+    const modBonus = getRacialCombatMods(rival.race || null, rival);
+    modBonus.dex = (modBonus.dex || 0) - (rival.weaponDexPenalty || 0);
+    // HP/Ki are computed FIRST: the mastery profile below needs the rival's power level, which is
+    // derived from them. (Referencing them earlier throws "Cannot access 'maxHP' before
+    // initialization" — the `const` declarations are not hoisted.)
+    const maxHP = calculateHP(stats.con, rival.race || null, rivalMult, rival);
+    const maxKi = calculateKi(stats.spi, rival.race || null, rivalMult, rival);
+    const rivalKiFields = buildEnemyKiAbilityFields(
+        getEnemyMasteryProfile(characterManager.calculatePowerLevel({ ...stats, maxHP, maxKi }), rival),
+        { wil: stats.wil || 0 }, modBonus, rival);
     const armor = typeof rival.armor === 'object' && rival.armor
         ? rival.armor
         : { name: rival.armor, armorReduction: rival.armorReduction, armorDexReduction: rival.armorDexReduction, armorDurability: rival.armorDurability };
@@ -1038,16 +1462,17 @@ function buildRivalParticipant(ownerId, rival, ownerChar) {
         ki: maxKi,
         fatigue: 0,
         stats,
+        statMultipliers: rivalMult,
         flying: flags.flying || false,
         kiSense: flags.kiSense || false,
-        kiAppDamage: flags.kiAppDamage || 0,
-        kiEfficiency: false,
-        kiApplicationLearned: false,
+        ...rivalKiFields,
         techniques: Array.isArray(rival.techniques) ? [...rival.techniques] : [],
         fightingStyle: rival.fightingStyle || null,
         weapon: rival.weapon || null,
         weaponType: rival.weaponType || null,
         weaponAttackMod: rival.weaponAttackMod || 0,
+        weaponAtkPct: rival.weaponAtkPct || 0,
+        weaponDexPct: rival.weaponDexPct || 0,
         weaponDamageMode: rival.weaponDamageMode || null,
         weaponBypass: rival.weaponBypass || false,
         weaponConBonus: rival.weaponConBonus || 0,
@@ -1056,7 +1481,7 @@ function buildRivalParticipant(ownerId, rival, ownerChar) {
         armorReduction: Number(armor.armorReduction) || 0,
         armorDexReduction: Number(armor.armorDexReduction) || 0,
         armorDurability: Number(armor.armorDurability) || 0,
-        modBonus: { dex: -(rival.weaponDexPenalty || 0) }
+        modBonus
     };
 }
 
@@ -1064,8 +1489,15 @@ function buildRivalParticipant(ownerId, rival, ownerChar) {
 function buildRivalAllyParticipant(ownerId, rival, ownerChar) {
     const stats = getRivalScaledStats(rival);
     const flags = getRivalPassiveFlags(rival);
-    const maxHP = calculateHP(stats.con, rival.race || null);
-    const maxKi = calculateKi(stats.spi, rival.race || null);
+    const rivalMult = rival.statMultipliers || {};
+    const modBonus = getRacialCombatMods(rival.race || null, rival);
+    modBonus.dex = (modBonus.dex || 0) - (rival.weaponDexPenalty || 0);
+    // Same ordering rule as buildRivalParticipant: vitals before the mastery profile.
+    const maxHP = calculateHP(stats.con, rival.race || null, rivalMult, rival);
+    const maxKi = calculateKi(stats.spi, rival.race || null, rivalMult, rival);
+    const rivalKiFields = buildEnemyKiAbilityFields(
+        getEnemyMasteryProfile(characterManager.calculatePowerLevel({ ...stats, maxHP, maxKi }), rival),
+        { wil: stats.wil || 0 }, modBonus, rival);
     const armor = typeof rival.armor === 'object' && rival.armor
         ? rival.armor
         : { name: rival.armor, armorReduction: rival.armorReduction, armorDexReduction: rival.armorDexReduction, armorDurability: rival.armorDurability };
@@ -1087,16 +1519,17 @@ function buildRivalAllyParticipant(ownerId, rival, ownerChar) {
         currentKi: maxKi,
         fatigue: 0,
         stats,
+        statMultipliers: rivalMult,
         flying: flags.flying || false,
         kiSense: flags.kiSense || false,
-        kiAppDamage: flags.kiAppDamage || 0,
-        kiEfficiency: false,
-        kiApplicationLearned: false,
+        ...rivalKiFields,
         techniques: Array.isArray(rival.techniques) ? [...rival.techniques] : [],
         fightingStyle: rival.fightingStyle || null,
         weapon: rival.weapon || null,
         weaponType: rival.weaponType || null,
         weaponAttackMod: rival.weaponAttackMod || 0,
+        weaponAtkPct: rival.weaponAtkPct || 0,
+        weaponDexPct: rival.weaponDexPct || 0,
         weaponDamageMode: rival.weaponDamageMode || null,
         weaponBypass: rival.weaponBypass || false,
         weaponConBonus: rival.weaponConBonus || 0,
@@ -1105,7 +1538,7 @@ function buildRivalAllyParticipant(ownerId, rival, ownerChar) {
         armorReduction: Number(armor.armorReduction) || 0,
         armorDexReduction: Number(armor.armorDexReduction) || 0,
         armorDurability: Number(armor.armorDurability) || 0,
-        modBonus: { dex: -(rival.weaponDexPenalty || 0) }
+        modBonus
     };
 }
 
@@ -1152,8 +1585,9 @@ function buildCompanionStatus(character, slot) {
     const cmp = companions[slot - 1];
     if (!cmp) return null;
     const stats = getCompanionBattleStats(cmp, character);
-    const maxHP = calculateHP(stats.con, cmp.race || null);
-    const maxKi = calculateKi(stats.spi, cmp.race || null);
+    const cMult = cmp.statMultipliers || {};
+    const maxHP = calculateHP(stats.con, cmp.race || null, cMult, cmp);
+    const maxKi = calculateKi(stats.spi, cmp.race || null, cMult, cmp);
     const pl = characterManager.calculatePowerLevel({
         str: stats.str, dex: stats.dex, con: stats.con, wil: stats.wil, spi: stats.spi,
         maxHP, maxKi
@@ -1162,13 +1596,24 @@ function buildCompanionStatus(character, slot) {
     const techText = Array.isArray(cmp.techniques) && cmp.techniques.length > 0 ? cmp.techniques.join(', ') : '(unarmed)';
     const mastery = (cmp.techniqueMastery || {});
     const masteries = Object.keys(mastery).filter(k => (mastery[k] || 0) > 0)
-        .map(k => `${k} ${mastery[k]}/5`).join(', ');
+        .map(k => `${k} ${Math.min(mastery[k], getTechniqueMaxMastery(k))}/${getTechniqueMaxMastery(k)}`).join(', ');
     const benched = cmp.inBattle === false;
+    const currentHP = cmp.currentHP != null ? Math.max(0, Math.min(cmp.currentHP, maxHP)) : maxHP;
+    const currentKi = cmp.currentKi != null ? Math.max(0, Math.min(cmp.currentKi, maxKi)) : maxKi;
+    // Detailed stat lines: base stat with its base modifier -> effective modifier (after stat multipliers).
+    const statText = ['str', 'dex', 'con', 'wil', 'spi'].map(k => {
+        const base = stats[k] || 0;
+        const bm = calculateModifier(base);
+        const eff = calculateStatModifier(base, cMult[k] || 0);
+        return `${k.toUpperCase()} ${base} (${bm >= 0 ? '+' : ''}${bm}) → **${eff >= 0 ? '+' : ''}${eff}**`;
+    }).join(' | ');
+    const smText = STAT_MULT_STATS.map(s => `${s.toUpperCase()} **${formatStatMultiplier(cMult[s] || 0)}**`).join(' · ');
     const row = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder().setCustomId(`comp_spar_${slot}`).setLabel('🥋 Spar Train').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId(`comp_battle_${slot}`).setLabel(benched ? '⛔ Benched' : '⚔️ In Battle').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId(`comp_rest_${slot}`).setLabel('😴 Rest').setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(`comp_rest_${slot}`).setLabel('😴 Rest').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId(`comp_feed_${slot}`).setLabel('🍖 Feed').setStyle(ButtonStyle.Success)
         );
     const gearRow = new ActionRowBuilder();
     if (cmp.weapon) {
@@ -1181,9 +1626,10 @@ function buildCompanionStatus(character, slot) {
     return {
         content:
             `🤝 **${cmp.name}** — Companion ${slot}/${MAX_COMPANIONS}\n\n` +
-            `👤 ${cmp.race || 'Unknown'} ${genderText}| ⚡ PL **${pl.toLocaleString()}**\n` +
-            `📊 STR ${stats.str} | DEX ${stats.dex} | CON ${stats.con} | WIL ${stats.wil} | SPI ${stats.spi}\n` +
-            `❤️ HP ${maxHP} | 💙 Ki ${maxKi}\n` +
+            `👤 ${cmp.race || 'Unknown'} ${genderText}| ⚡ PL **${formatPL(pl)}**\n` +
+            `📊 Stats: ${statText}\n` +
+            `🎯 Multipliers: ${smText}\n` +
+            `❤️ HP ${currentHP}/${maxHP} | 💙 Ki ${currentKi}/${maxKi}\n` +
             `😓 Fatigue: ${Math.round(cmp.fatigue || 0)}% | 🔋 Rest: ${cmp.restCharges ?? COMPANION_REST_MAX}/${COMPANION_REST_MAX}\n` +
             `🧠 Techniques: ${techText}\n` +
             (masteries ? `⭐ Technique Mastery: ${masteries}\n` : '') +
@@ -1192,7 +1638,7 @@ function buildCompanionStatus(character, slot) {
             (cmp.fightingStyle ? `🥋 Style: ${cmp.fightingStyle}\n` : '') +
             (benched ? `⛔ **Benched** — won't fight in battle.\n` : `⚔️ **Fighting** in battles.\n`) +
             (cmp.sparRefusalThreshold ? `😤 **Upset** — refuses to spar until companionship reaches **${cmp.sparRefusalThreshold}** (currently ${cmp.companionship || 0}).\n` : '') +
-            `\n*Companions share 20% of your stats and follow you into battle (up to 4).*`,
+            `\n*Companions follow you into battle (up to 4).*`,
         components: [row, gearRow]
     };
 }
@@ -1203,13 +1649,17 @@ function childToCompanion(child) {
         ...child,
         id: child.id || `comp_${Date.now().toString(36)}_${Math.floor(Math.random() * 1000)}`,
         age: child.age != null ? child.age : family.getAgeYears(child.birthDate),
+        beauty: child.beauty || getRandomInt(5),
         companionship: child.companionship || 0,
         techniques: child.techniques || [],
         techniqueMastery: child.techniqueMastery || {},
         masteryBonus: child.masteryBonus || {},
+        statMultipliers: child.statMultipliers || rollRandomStatMultipliers(child.race || null),
         fightingStyle: child.fightingStyle || null,
         weapon: child.weapon || null,
         weaponAttackMod: child.weaponAttackMod || 0,
+        weaponAtkPct: child.weaponAtkPct || 0,
+        weaponDexPct: child.weaponDexPct || 0,
         weaponDexPenalty: child.weaponDexPenalty || 0,
         weaponDamageMode: child.weaponDamageMode || null,
         weaponBypass: child.weaponBypass || false,
@@ -1288,8 +1738,8 @@ function buildChildDetail(character, childId, actionMsg = '') {
     const child = children.find(c => c.id === childId);
     if (!child) return { content: '❌ That child no longer exists.', components: [] };
     const stats = getChildBattleStats(child);
-    const maxHP = calculateHP(stats.con, child.race || null);
-    const maxKi = calculateKi(stats.spi, child.race || null);
+    const maxHP = calculateHP(stats.con, child.race || null, {}, child);
+    const maxKi = calculateKi(stats.spi, child.race || null, {}, child);
     const pl = characterManager.calculatePowerLevel({
         str: stats.str, dex: stats.dex, con: stats.con, wil: stats.wil, spi: stats.spi,
         maxHP, maxKi
@@ -1299,7 +1749,7 @@ function buildChildDetail(character, childId, actionMsg = '') {
     const ki = child.currentKi != null ? child.currentKi : maxKi;
     const alreadyComp = (Array.isArray(character.companions) && character.companions.some(c => c.id === child.id));
     let text = `👶 **${child.name}** — ${child.race || 'Unknown'} ${child.gender || ''}\n`;
-    text += `🎂 Age: ${age} yr | ⚡ PL: **${pl.toLocaleString()}**\n`;
+    text += `🎂 Age: ${age} yr | ⚡ PL: **${formatPL(pl)}**\n`;
     text += `📊 STR ${stats.str} | DEX ${stats.dex} | CON ${stats.con} | WIL ${stats.wil} | SPI ${stats.spi}${stats.int != null ? ` | INT ${stats.int}` : ''}\n`;
     text += `❤️ HP ${hp}/${maxHP} | 💙 Ki ${ki}/${maxKi}\n`;
     if (child.racialAbilities && child.racialAbilities.length) text += `🧬 Abilities: ${child.racialAbilities.join(', ')}\n`;
@@ -1322,20 +1772,24 @@ function buildChildDetail(character, childId, actionMsg = '') {
 // chance and +1-on-fail bonus as a player's `/mastery` roll for a technique.
 function rollCompanionMastery(cmp) {
     const mastery = cmp.techniqueMastery || {};
-    // Never roll a technique that has already hit its mastery cap (5).
-    const techniques = getCompanionTechniques(cmp).filter(t => (mastery[t] || 0) < 5);
+    // Never roll a technique that has already hit ITS OWN mastery cap (the number of tiers the
+    // technique defines — see getTechniqueMaxMastery).
+    const techniques = getCompanionTechniques(cmp).filter(t => (mastery[t] || 0) < getTechniqueMaxMastery(t));
     if (techniques.length === 0) return '';
     const target = techniques[Math.floor(Math.random() * techniques.length)];
+    const targetMax = getTechniqueMaxMastery(target);
     cmp.techniqueMastery = cmp.techniqueMastery || {};
     cmp.masteryBonus = cmp.masteryBonus || {};
     const bonus = cmp.masteryBonus[target] || 0;
     const roll = getRandomInt(20);
     const total = roll + bonus;
-    if (total >= 20) {
-        const newLevel = Math.min(5, (cmp.techniqueMastery[target] || 0) + 1);
+    // Konatsian racial affinity: Ki Sharpening mastery requirements are 20% lower (save 16).
+    const save = (target === 'Ki Sharpening' && cmp.race === 'Konatsian') ? Math.floor(20 * 0.8) : 20;
+    if (total >= save) {
+        const newLevel = Math.min(targetMax, (cmp.techniqueMastery[target] || 0) + 1);
         cmp.techniqueMastery[target] = newLevel;
         delete cmp.masteryBonus[target];
-        return `\n🎲 **${cmp.name}** mastered **${target}** (Mastery ${newLevel}/5)!`;
+        return `\n🎲 **${cmp.name}** mastered **${target}** (Mastery ${newLevel}/${targetMax})!`;
     } else {
         cmp.masteryBonus[target] = bonus + 1;
         return `\n🎲 **${cmp.name}** studied **${target}** in the fight — **+1** on their next mastery roll.`;
@@ -1351,12 +1805,13 @@ function applyCompanionXp(ownerId, ownerChar, statPoints) {
     if (party.length === 0) return { ownerPoints: statPoints, text: '' };
 
     const presentCount = party.length;
-    const compGain = family.getCompanionshipGain(presentCount, 1);
     let text = '';
     const childUpdated = [];
     const companionUpdated = [];
     party.forEach((cmp) => {
         const share = Math.max(1, Math.round(statPoints * 0.2)); // each companion takes a 20% cut
+        // Beauty (1d5) tempers how fast each companion's bond grows.
+        const compGain = family.getCompanionshipGain(presentCount, 1, cmp.beauty);
         // Child stat-growth multiplier: 0% (<6), 15% (6-11), 50% (12-17), 100% (18+).
         let gain = distributeGain(share, ['str', 'dex', 'con', 'wil', 'spi']);
         if (cmp.isChild) {
@@ -1395,35 +1850,64 @@ function equipCompanionItem(ownerId, ownerChar, cmp, itemName) {
     if (!ownerChar || !cmp) return '❌ Invalid companion!';
     const inventory = Array.isArray(ownerChar.inventory) ? ownerChar.inventory : [];
     ownerChar.inventory = inventory;
-    const entry = inventory.find(i => parseItemName(i).name.toLowerCase() === itemName.toLowerCase());
+    const entryIdx = inventory.findIndex(i => parseItemName(i).name.toLowerCase() === itemName.toLowerCase());
+    const entry = inventory[entryIdx];
     if (!entry) return `❌ You don't have **${itemName}** in your inventory!`;
     const name = parseItemName(entry).name;
 
     // Weapons: retain/roll their ATK mod, inhibiting DEX, damage mode, and bypass.
     const weaponType = (typeof entry === 'object' && entry.weaponType) ? entry.weaponType : parseWeaponType(name);
     if (weaponType) {
+        // Object gear (crafted / previously-rolled) carries its own rolled stats — including its
+        // damage multiplier (atkPct) and DEX inhibition %, which must survive re-equipping.
         const mods = (typeof entry === 'object' && entry.weaponAttackMod != null)
-            ? { attackMod: entry.weaponAttackMod, dexPenalty: entry.weaponDexPenalty || 0, damageMode: entry.weaponDamageMode || 'str', bypass: !!entry.weaponBypass, conBonus: entry.weaponConBonus || 0, wilBonus: entry.weaponWilBonus || 0, type: weaponType }
+            ? { attackMod: entry.weaponAttackMod, atkPct: entry.weaponAtkPct || 0, dexPct: entry.weaponDexPct || 0, dexPenalty: entry.weaponDexPenalty || 0, damageMode: entry.weaponDamageMode || 'str', bypass: !!entry.weaponBypass, conBonus: entry.weaponConBonus || 0, wilBonus: entry.weaponWilBonus || 0, type: weaponType, unarmedWeapon: !!entry.weaponUnarmed, punchStrBonus: entry.weaponPunchStrBonus || 0, bleedOnHit: entry.weaponBleedOnHit || 0, critRangeBonus: entry.weaponCritRangeBonus || 0 }
             : getWeaponMods(name);
         if (!mods) return `❌ Couldn't compute stats for **${name}**!`;
         let swapNote = '';
         if (cmp.weapon) {
             const oldName = parseItemName(cmp.weapon).name;
-            pushStackedItem(inventory, oldName, 1);
+            // Return the old weapon as an object carrying its OWN rolled stats (same as the
+            // unequip handler). Pushing a bare name would collapse it into a plain stack,
+            // destroying its rolled stats — and with a same-named item, every re-equip would
+            // then re-roll fresh stats forever (infinite stat re-roll exploit).
+            inventory.push({
+                name: oldName,
+                quantity: 1,
+                weaponType: cmp.weaponType,
+                weaponAttackMod: cmp.weaponAttackMod || 0,
+                weaponAtkPct: cmp.weaponAtkPct || 0,
+                weaponDexPct: cmp.weaponDexPct || 0,
+                weaponDexPenalty: cmp.weaponDexPenalty || 0,
+                weaponDamageMode: cmp.weaponDamageMode || null,
+                weaponBypass: !!cmp.weaponBypass,
+                weaponConBonus: cmp.weaponConBonus || 0,
+                weaponWilBonus: cmp.weaponWilBonus || 0,
+                weaponUnarmed: !!cmp.weaponUnarmed,
+                weaponPunchStrBonus: cmp.weaponPunchStrBonus || 0,
+                weaponBleedOnHit: cmp.weaponBleedOnHit || 0,
+                weaponCritRangeBonus: cmp.weaponCritRangeBonus || 0
+            });
             swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
         }
-        removeInventoryItems(inventory, name, 1);
+        consumeInventorySlot(inventory, entryIdx);
         cmp.weapon = name;
         cmp.weaponType = mods.type || weaponType;
         cmp.weaponAttackMod = mods.attackMod;
+        cmp.weaponAtkPct = mods.atkPct || 0;
+        cmp.weaponDexPct = mods.dexPct || 0;
         cmp.weaponDexPenalty = mods.dexPenalty;
         cmp.weaponDamageMode = mods.damageMode || null;
         cmp.weaponBypass = !!mods.bypass;
         cmp.weaponConBonus = mods.conBonus || 0;
         cmp.weaponWilBonus = mods.wilBonus || 0;
+        cmp.weaponUnarmed = !!mods.unarmedWeapon;
+        cmp.weaponPunchStrBonus = mods.punchStrBonus || 0;
+        cmp.weaponBleedOnHit = mods.bleedOnHit || 0;
+        cmp.weaponCritRangeBonus = mods.critRangeBonus || 0;
         const buffs = (mods.conBonus || mods.wilBonus) ? `\n💪 While wielded: **+${mods.conBonus || 0} CON** / **+${mods.wilBonus || 0} WIL**` : '';
         persistCompanionEquipment(ownerId, ownerChar, cmp, inventory);
-        return `⚔️ Gave **${name}** to **${cmp.name}**!\n\n🎯 Attack mod: **+${mods.attackMod}**\n😅 Inhibiting DEX: **-${mods.dexPenalty}**\n${mods.bypass ? '💥 Bypasses armor!\n' : ''}${mods.damageMode && mods.damageMode !== 'str' ? `📐 Damage mode: ${mods.damageMode}\n` : ''}${buffs}${swapNote}`;
+        return `⚔️ Gave **${name}** to **${cmp.name}**!\n\n🎯 Attack mod: **+${mods.attackMod}** (multiplies total damage by **×${(1 + (mods.atkPct || 0) / 100).toFixed(2)}**)\n😅 Inhibiting DEX: **-${mods.dexPenalty}** (and **-${mods.dexPct || 0}%** of DEX mod)\n${mods.bypass ? '💥 Bypasses armor!\n' : ''}${mods.bleedOnHit ? '🩸 Causes bleed on hit!\n' : ''}${mods.critRangeBonus ? '🎯 +1 crit range (NAT 19-20)!\n' : ''}${mods.damageMode && mods.damageMode !== 'str' ? `📐 Damage mode: ${mods.damageMode}\n` : ''}${buffs}${swapNote}`;
     }
 
     // Armor: retain/roll its damage reduction, defending-DEX reduction, and durability.
@@ -1446,10 +1930,18 @@ function equipCompanionItem(ownerId, ownerChar, cmp, itemName) {
         let swapNote = '';
         if (cmp.armor) {
             const oldName = parseItemName(cmp.armor).name;
-            pushStackedItem(inventory, oldName, 1);
+            // Return the old armor as an object carrying its OWN rolled stats (same as the
+            // unequip handler) — see the weapon swap note above.
+            inventory.push({
+                name: oldName,
+                quantity: 1,
+                armorReduction: cmp.armorReduction || 0,
+                armorDexReduction: cmp.armorDexReduction || 0,
+                armorDurability: cmp.armorDurability || 0
+            });
             swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
         }
-        removeInventoryItems(inventory, name, 1);
+        consumeInventorySlot(inventory, entryIdx);
         cmp.armor = name;
         cmp.armorReduction = damageReduction;
         cmp.armorDexReduction = dexReduction;
@@ -1544,6 +2036,24 @@ function getProcreationEligibility(type, entity) {
     return { ok: true };
 }
 
+// Crushing Physicality: a Wrestler deals PHYSICAL damage with CON (body mass) instead of STR.
+// Ki attacks still use WIL. Used by the generic skill.attack damage blocks (Clothesline/Suplex
+// etc.), alongside `battleSystem.getDamageMod` for the basic attack pipeline.
+function getSkillDamageMod(battle, participant, statModName) {
+    // Crushing Physicality applies only when the Wrestler fights in-style (unarmed/gloves). If
+    // they're wielding a weapon their style doesn't allow, they lose the CON-for-STR damage.
+    const wrestlerConv = participant.fightingStyle === 'Wrestler'
+        && (!participant.weaponType || participant.weaponUnarmed);
+    if (statModName === 'str') {
+        return wrestlerConv
+            ? battle.getEffectiveModifier(participant, 'con')
+            : battle.getEffectiveModifier(participant, 'str');
+    }
+    if (statModName === 'wil') return battle.getEffectiveModifier(participant, 'wil');
+    if (statModName === 'dex') return battle.getEffectiveModifier(participant, 'dex');
+    return battle.getEffectiveModifier(participant, 'str');
+}
+
 // Effective stats of a parent (player, companion, or child) used for the baby's initial stats.
 function entityStatsForProcreation(entity, ownerChar) {
     if (!entity) return {};
@@ -1571,6 +2081,69 @@ function applyPregnancyModPenalty(modBonus, entity, ownerChar) {
     ['str', 'dex', 'con', 'wil', 'spi', 'int'].forEach(s => { modBonus[s] = (modBonus[s] || 0) - 5; });
     return modBonus;
 }
+
+// Normalized chance (0-100) of a miscarriage when a pregnant fighter takes battle damage.
+// Tunable via config.json `miscarriageChance` (default 10).
+const MISCARRIAGE_CHANCE = miscarriageChance !== undefined ? miscarriageChance : 10;
+
+// Maximum persuade-chance penalty (as a fraction) when the persuader and a target enemy have
+// OPPOSITE alignment polarities. Tunable via config.json `persuadeOppositeAlignmentPenalty`.
+const PERSUADE_OPPOSITE_ALIGNMENT_PENALTY = persuadeOppositeAlignmentPenalty !== undefined ? persuadeOppositeAlignmentPenalty : 0.40;
+
+// Returns a 0..PERSUADE_OPPOSITE_ALIGNMENT_PENALTY penalty when the persuader and target have
+// opposite alignment polarities (0 for same polarity or when either is neutral).
+function getOppositeAlignmentPenalty(playerVal, enemyVal) {
+    const pv = Number(playerVal) || 0;
+    const ev = Number(enemyVal) || 0;
+    if (pv === 0 || ev === 0) return 0;
+    if (Math.sign(pv) === Math.sign(ev)) return 0;
+    const strength = Math.min(1, (Math.abs(pv) + Math.abs(ev)) / 100);
+    return Math.max(0.15, strength * PERSUADE_OPPOSITE_ALIGNMENT_PENALTY);
+}
+
+// Namekian "Create Dragon Ball" ability (Trello 135 / Magic Materialization 140).
+// Creating a Dragon Ball costs this much Ki and requires a Dragon Ball Stone.
+// Tunable via config.json `createDragonBallKiCost` (default 250).
+const CREATE_DRAGON_BALL_KI_COST = createDragonBallKiCost !== undefined ? createDragonBallKiCost : 250;
+// Wise Old One "Maker": creating a Dragon Ball only costs this much Ki.
+// Tunable via config.json `wiseOldOneMakerKiCost` (default 100).
+const WISE_OLD_ONE_MAKER_KI_COST = wiseOldOneMakerKiCost !== undefined ? wiseOldOneMakerKiCost : 100;
+
+// Magic Materialization: heavier weight tiers cost extra flat Ki on top of the 1d10% base.
+// Tunable via config.json `materializeWeightMedKiDiff` / `materializeWeightHeavyKiDiff`.
+const MATERIALIZE_MED_KI_DIFF = materializeWeightMedKiDiff !== undefined ? materializeWeightMedKiDiff : 20;
+const MATERIALIZE_HEAVY_KI_DIFF = materializeWeightHeavyKiDiff !== undefined ? materializeWeightHeavyKiDiff : 30;
+
+// Human-readable Beauty label (1=hideous, 2=ugly, 3=normal, 4=pretty/good-looking, 5=beautiful/handsome).
+function getBeautyLabel(beauty) {
+    const b = Number(beauty);
+    return ['', 'hideous', 'ugly', 'normal', 'pretty/good-looking', 'beautiful/handsome'][b] || 'normal';
+}
+
+// Roll for a miscarriage when a pregnant player/companion takes battle damage. Returns a text line
+// to append to the battle log ('' if no miscarriage). Persists the pregnancy as resolved/removed.
+function maybeMiscarry(participant) {
+    if (!participant) return '';
+    const { character, companion } = getParticipantEntity(participant);
+    // Companion pregnancy lives on the owner's companionPregnancies array.
+    if (companion && character) {
+        const pregs = Array.isArray(character.companionPregnancies) ? character.companionPregnancies : [];
+        const idx = pregs.findIndex(p => !p.resolved && String(p.companionId) === String(companion.id));
+        if (idx === -1) return '';
+        if (getRandomInt(100) > MISCARRIAGE_CHANCE) return '';
+        pregs[idx].resolved = true;
+        characterManager.updateCharacter(participant.ownerUserId, character.id, { companionPregnancies: pregs });
+        return `💔 **${companion.name}** takes a blow to the stomach and **miscarries**!`;
+    }
+    // Player character pregnancy.
+    if (character && character.pregnancy && !character.pregnancy.resolved) {
+        if (getRandomInt(100) > MISCARRIAGE_CHANCE) return '';
+        character.pregnancy.resolved = true;
+        characterManager.updateCharacter(participant.userId, character.id, { pregnancy: character.pregnancy });
+        return `💔 **${character.name}** takes a blow to the stomach and **miscarries**!`;
+    }
+    return '';
+}
 function isCompanionProcreationReady(companion) {
     return family.isCompanionshipEligibleForProcreation(companion.companionship);
 }
@@ -1583,17 +2156,18 @@ function isIncestuousPair(a, b) {
     return aParents.includes(b.id) || bParents.includes(a.id);
 }
 
-// Determine which parent becomes the mother: prefer a known female, never a known male.
+// Determine which parent becomes the mother. ONLY a known female can get pregnant: the female
+// side is chosen when the pair is female+male; for two males, two females, or any pair without
+// exactly one known female, nobody gets pregnant (the procreation itself still goes through).
 // Returns 'a' (first parent), 'b' (second parent), or 'none' (no eligible mother).
 function resolveMotherGender(aGender, bGender) {
     const ga = String(aGender || '').toLowerCase();
     const gb = String(bGender || '').toLowerCase();
-    if (ga === 'female') return 'a';
-    if (gb === 'female') return 'b';
-    // Neither is known-female. Avoid making a known-male the mother.
-    if (ga === 'male' && gb !== 'male') return 'b';
-    if (gb === 'male' && ga !== 'male') return 'a';
-    if (ga !== 'male' && gb !== 'male') return 'a';
+    const aFemale = ga === 'female';
+    const bFemale = gb === 'female';
+    if (aFemale && !bFemale) return 'a';
+    if (bFemale && !aFemale) return 'b';
+    // Two males, two females, or unknown/missing genders → no pregnancy can result.
     return 'none';
 }
 
@@ -1606,6 +2180,8 @@ function getChildRace(motherRace, fatherRace) {
     // Saibamen release a seed/hatchling of themselves (Trello "Ruler of Many") — takes priority.
     if (pair.some(isSaibamenRace)) return 'Saibamen';
     if (pair.includes('Earthling') && pair.includes('Saiyan')) return 'Half-Saiyan';
+    // Namekians lay an egg asexually — a Namekian parent produces a Namekian offspring.
+    if (motherRace === 'Namekian' && fatherRace === 'Namekian') return 'Namekian';
     return 'Hybrid';
 }
 function getChildRacialAbilities(childRace, motherRace, fatherRace) {
@@ -1622,8 +2198,17 @@ function getChildRacialAbilities(childRace, motherRace, fatherRace) {
 }
 
 // Build a persistent child record.
+// A child's Beauty (1d5) is the average of its parents' Beauty (falling back to a random roll).
+function rollChildBeauty(explicit, mother, father) {
+    if (explicit) return Math.max(1, Math.min(5, Number(explicit)));
+    const m = Number((mother && mother.beauty) || 0);
+    const f = Number((father && father.beauty) || 0);
+    if (m > 0 && f > 0) return Math.max(1, Math.min(5, Math.round((m + f) / 2)));
+    return getRandomInt(5);
+}
+
 function createChildObject(opts) {
-    const { mother, father, race, gender, siblings, incest, racialAbilities, name } = opts;
+    const { mother, father, race, gender, beauty, siblings, incest, racialAbilities, name } = opts;
     const motherStats = mother.stats || {};
     const fatherStats = father.stats || {};
     let stats;
@@ -1684,6 +2269,7 @@ function createChildObject(opts) {
         incest: !!incest,
         // Half-Saiyans roll 1d2 for a tail at birth (Trello "To Tail or to Not": 1 = no tail, 2 = tail).
         hasTail: race === 'Half-Saiyan' ? (family.randInt(2) === 2) : null,
+        beauty: rollChildBeauty(beauty, mother, father),
         alignment: incest ? 'Negative' : 'Neutral',
         alignmentValue: incest ? -family.FAMILY_CONFIG.incestAlignmentDrop : 0,
         nextFeedAt: Date.now() + family.FAMILY_CONFIG.babyFeedingIntervalMs,
@@ -1937,8 +2523,17 @@ function findChildOnCharacter(character, nameOrId) {
 function buildAttackEventSteps(attackerName, defender, result) {
     const steps = [];
     steps.push(`🎲 **${attackerName}** attacks **${defender.username}**!\n`);
+    if (result.intangible) {
+        steps.push(`👻 **${defender.username}**'s **Ghastly Structure** makes their form intangible — the attack passes straight through!\n`);
+        steps.push('(No damage taken.)\n');
+        return steps;
+    }
     steps.push(`Attack Roll: **${result.attackRoll}** + DEX mod = **${result.attackTotal}**\n`);
     steps.push(`Defense Roll: **${result.defenseRoll}** + DEX mod = **${result.defenseTotal}**\n`);
+    // Everything the engine did to this attack that the player must know about — Ki spent on the
+    // roll (Cerealian Evolved Right Eye, Precision Strikes) and roll modifiers that were
+    // previously only pushed to `battle.battleLog`, which nothing ever renders.
+    (result.notices || []).forEach(n => steps.push(n));
     if (result.steadyBase) {
         steps.push('🦩 **Steady Base!** The Taekwondo stays grounded and **negates the Off-Balance**!\n');
     }
@@ -1987,11 +2582,11 @@ function buildAttackEventSteps(attackerName, defender, result) {
             steps.push(`🐯 **Fearless Strikes!** A **crit** lets **${attackerName}** act again and imposes **disadvantage** on **${defender.username}**!\n`);
         }
 
-        if (result.limbBreakAttempt) {
+        // Injuries are rolled on EVERY landed hit now (see attemptLimbBreak), so only report the
+        // ones that actually land — a "resisted" line per hit would drown the battle log.
+        if (result.limbBreakAttempt && result.limbBreakAttempt.success) {
             const lb = result.limbBreakAttempt;
-            steps.push(lb.success
-                ? `🦴 **${lb.type.toUpperCase()}!** (${lb.limb})${lb.effects ? ` — ${lb.effects}` : ''}\n`
-                : lb.message ? `🛡️ ${lb.message}\n` : '🛡️ Limb break resisted!\n');
+            steps.push(`🦴 **${lb.type.toUpperCase()}!** (${lb.limb})${lb.effects ? ` — ${lb.effects}` : ''}\n`);
         }
 
         if (result.combatAddicted) {
@@ -2063,12 +2658,10 @@ function formatAttackEvent(attackerName, defender, result) {
 async function animateAttackEvent(text, attackerName, defender, result, onProgress) {
     const steps = buildAttackEventSteps(attackerName, defender, result);
     const MOMENT_MARKERS = ['**CRITICAL HIT!**', '**HIT LANDS!**', '**BLOCKED!**'];
-    const MOMENT_PAUSE = 750; // ~0.75s
-    const NORMAL_PAUSE = 200; // ~0.2s
     for (const step of steps) {
         text += step;
         if (onProgress) await onProgress(text);
-        await sleep(MOMENT_MARKERS.some(m => step.includes(m)) ? MOMENT_PAUSE : NORMAL_PAUSE);
+        await sleep(MOMENT_MARKERS.some(m => step.includes(m)) ? BATTLE_MOMENT_PAUSE_MS : BATTLE_STEP_PAUSE_MS);
     }
     return text;
 }
@@ -2124,6 +2717,17 @@ function formatLssjRampEvent(entry) {
     return `📈 **${entry.username}** (Legendary Super Saiyan) ramps up on turn ${entry.turn}: +**${entry.modGain} ALL MODS**!\n🔋 +${entry.kiGain} Ki (d80) − ${entry.drain} drain\n\n`;
 }
 
+// False Super Saiyan burns 20 Ki every turn it is held. These two events existed in the engine but
+// had no formatter, so `appendBattleLog` silently dropped them: the form's user lost Ki every turn
+// with nothing in the battle log to explain it.
+function formatFssjDrainEvent(entry) {
+    return `😡🔥 **${entry.username}** (False Super Saiyan) burns **${entry.drain} Ki** to hold the form!\n\n`;
+}
+
+function formatFssjDropEvent(entry) {
+    return `😡💨 **${entry.username}**'s **False Super Saiyan** runs out of Ki — the form drops and **+5 ALL MODS** are lost!\n\n`;
+}
+
 function formatHopfDrainEvent(entry) {
     return `🌟💫 **${entry.username}** (Hope of the Universe) loses **${entry.damage} HP** to **Give Me Everything**!\n\n`;
 }
@@ -2134,10 +2738,11 @@ function formatPassiveDrainEvent(entry) {
     return `🌀 ${emoji} **${entry.username}**'s **${entry.passive}** drains **${entry.drain} Ki**${off}!\n\n`;
 }
 
-// Once a Saiyan has unlocked a Super Saiyan form, they can no longer awaken False Super Saiyan.
+// Once a Saiyan has unlocked a Super Saiyan form (including Legendary), they can no longer awaken
+// False Super Saiyan.
 function hasSuperSaiyanForm(entity) {
     const forms = Array.isArray((entity || {}).forms) ? entity.forms : [];
-    return forms.includes('Super Saiyan') || forms.includes('Super Saiyan 2') || forms.includes('Super Saiyan 3');
+    return forms.includes('Super Saiyan') || forms.includes('Super Saiyan 2') || forms.includes('Super Saiyan 3') || forms.includes('Legendary Super Saiyan');
 }
 
 // False Super Saiyan: Saiyan fury when under 50% HP (1d100 + WIL mod/2 vs 95, once per battle, no action).
@@ -2209,9 +2814,16 @@ function tryIntenseAnger(battle, participant) {
     const roll = battle.rollDice(critDie);
     const entity = isCompanion(participant) ? companion : character;
     if (roll === critDie) {
-        const chain = ['Super Saiyan', 'Super Saiyan 2', 'Super Saiyan 3'];
         const forms = Array.isArray((entity || {}).forms) ? entity.forms : [];
-        const next = chain.find(f => !forms.includes(f));
+        // A Saiyan with the Legendary Super Saiyan mutation unlocks Legendary INSTEAD of the SSJ chain.
+        const isLssj = !!(entity && entity.mutation === 'Legendary Super Saiyan');
+        let next = null;
+        if (isLssj) {
+            if (!forms.includes('Legendary Super Saiyan')) next = 'Legendary Super Saiyan';
+        } else {
+            const chain = ['Super Saiyan', 'Super Saiyan 2', 'Super Saiyan 3'];
+            next = chain.find(f => !forms.includes(f));
+        }
         if (next) {
             forms.push(next);
             if (isCompanion(participant) && companion) {
@@ -2295,25 +2907,17 @@ function tryUltimatePowerAwakening(battle, participant) {
     if ((participant.currentHP || 0) > (participant.hp || 1) * 0.4) return ''; // trauma = knocked under 40% HP
 
     participant.ultimatePowerAwakened = true;
-    const form = FORMS['Ultimate Power'];
     const mastery = (character.formMastery || {})['Ultimate Power'] || 0;
-    const bonusMultiplier = 1 + mastery * 0.1;
+    const fb = applyFormStatsAndMods(participant.stats, 'Ultimate Power', mastery);
+    Object.assign(participant.stats, fb.stats);
     participant.modBonus = participant.modBonus || {};
-    const formMods = {};
-    Object.entries(form.modBonus || {}).forEach(([s, m]) => {
-        const mm = Math.round(m * bonusMultiplier);
-        participant.modBonus[s] = (participant.modBonus[s] || 0) + mm;
-        formMods[s] = mm;
-    });
-    const mmods = (form.masteryMods || {})[mastery] || {};
-    Object.entries(mmods).forEach(([s, m]) => {
+    Object.entries(fb.formMods).forEach(([s, m]) => {
         participant.modBonus[s] = (participant.modBonus[s] || 0) + m;
-        formMods[s] = (formMods[s] || 0) + m;
     });
     participant.formName = 'Ultimate Power';
     participant.formDrain = getFormDrain('Ultimate Power', mastery);
-    participant.formMods = formMods;
-    return `🔥 **${participant.username}** suffers a **traumatic flashback** — **ULTIMATE POWER** awakens! (+15 ALL MODS, x75 PL, no action used, drains ${participant.formDrain} Ki/turn)\n`;
+    participant.formMods = fb.formMods;
+    return `🔥 **${participant.username}** suffers a **traumatic flashback** — **ULTIMATE POWER** awakens! (×1.8 stats, x75 PL, no action used, drains ${participant.formDrain} Ki/turn)\n`;
 }
 
 // Saiyans automatically unlock Super Saiyan when they hit 3,000,000 PL
@@ -2321,14 +2925,17 @@ function checkSaiyanSuperSaiyanUnlock(userId, character) {
     if (!character) return '';
     const fresh = characterManager.getCharacter(userId, character.id) || character;
     let text = '';
-    // Saiyan: auto-unlock Super Saiyan at 3,000,000 PL.
+    // Saiyan: auto-unlock Super Saiyan at 3,000,000 PL (a Saiyan with the Legendary Super Saiyan
+    // mutation unlocks Legendary Super Saiyan instead — it replaces the Super Saiyan roll).
     if (fresh.race === 'Saiyan' && (fresh.powerLevel || 0) >= 3000000) {
         const forms = Array.isArray(fresh.forms) ? fresh.forms : [];
-        if (!forms.includes('Super Saiyan')) {
-            forms.push('Super Saiyan');
+        const isLssj = fresh.mutation === 'Legendary Super Saiyan';
+        const formName = isLssj ? 'Legendary Super Saiyan' : 'Super Saiyan';
+        if (!forms.includes(formName)) {
+            forms.push(formName);
             fresh.forms = forms;
             characterManager.updateCharacter(userId, fresh.id, { forms });
-            text += `⚡🌟 **${fresh.name}** crossed **3,000,000 PL** and automatically unlocked **SUPER SAIYAN**!\n\n`;
+            text += `⚡🌟 **${fresh.name}** crossed **3,000,000 PL** and automatically unlocked **${formName.toUpperCase()}**${isLssj ? ' (Legendary reincarnation of the Super Saiyan roll)' : ''}!\n\n`;
         }
     }
     // Hera: auto-unlock Ultra Power (10k PL) and Ultimate Power (60k PL).
@@ -2358,6 +2965,73 @@ function clampMessage(str, max = 2000) {
     if (typeof str !== 'string' || str.length <= max) return str;
     return str.slice(0, max - 3) + '...';
 }
+
+// ---------- Battle "Examine" (scout a combatant's stats mid-fight) ----------
+// Pick a living combatant (allies + enemies) to examine.
+function buildExamineTargetComponents(battle, viewer) {
+    const components = [];
+    const targets = battle.turnOrder
+        .filter(p => !p.isDead && !p.isIncapacitated && p.userId !== viewer.id)
+        .slice(0, 20);
+    let row = new ActionRowBuilder();
+    targets.forEach(t => {
+        if (row.components.length >= 5) { components.push(row); row = new ActionRowBuilder(); }
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`bt_examine_tgt_${t.userId}`)
+                .setLabel(`🔍 ${t.username} (${t.currentHP ?? t.hp ?? 0})`)
+                .setStyle(ButtonStyle.Secondary)
+        );
+    });
+    if (row.components.length > 0) components.push(row);
+    components.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('bt_examine_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    ));
+    armBattleTurnTimer(battle);
+    return components;
+}
+
+// Detailed mid-battle "character view" for a combatant (stats, mods, multipliers, gear, status).
+function buildExamineView(battle, p) {
+    const stats = p.stats || {};
+    const sm = p.statMultipliers || {};
+    const statuses = [];
+    if (p.isDead) statuses.push('💀 Dead');
+    else if (p.isIncapacitated) statuses.push('😵 Incapacitated');
+    if (p.stunned) statuses.push('⚡ Stunned');
+    if (p.flying) statuses.push('🕊️ Flying');
+    if (p.grappledBy) statuses.push('🤼 Grappled');
+    if (p.bleedTurns > 0) statuses.push(`🩸 Bleed (${p.bleedTurns})`);
+    if (p.poisonTurns > 0) statuses.push(`☠️ Poison (${p.poisonTurns})`);
+    if (p.frightenedTurns > 0) statuses.push(`😨 Frightened (${p.frightenedTurns})`);
+
+    let content = `🔍 **${p.username}**\n`;
+    content += `${p.race ? `🧬 ${p.race}` : '🐾 Unknown race'}${p.gender ? ` | ${p.gender}` : ''}${p.fightingStyle ? ` | 🥋 ${p.fightingStyle}` : ''}${p.alignment ? ` | ${p.alignment}` : ''}\n`;
+    if (p.mutation) content += `🌟 **Mutation:** ${p.mutation}\n`;
+    content += `\n`;
+    content += `⚡ **PL:** ${formatPL(p.powerLevel || 0)}\n`;
+    content += `❤️ **HP:** ${p.currentHP ?? p.hp ?? 0}/${p.hp ?? p.currentHP ?? 0} | 💙 **Ki:** ${p.currentKi ?? p.ki ?? 0}/${p.ki ?? p.currentKi ?? 0}\n\n`;
+    content += `📊 **Stats:**\n`;
+    ['str', 'dex', 'con', 'wil', 'spi', 'int'].forEach(key => {
+        const base = stats[key] || 0;
+        const bm = battle.getModifier(base);
+        const eff = battle.getEffectiveModifier(p, key);
+        content += `**${key.toUpperCase()}** ${base} (${bm >= 0 ? '+' : ''}${bm}) → **${eff >= 0 ? '+' : ''}${eff}**\n`;
+    });
+    content += `\n🎯 **Stat Multipliers:** `;
+    content += STAT_MULT_STATS.map(s => `${s.toUpperCase()} **${formatStatMultiplier(sm[s] || 0)}**`).join(' · ');
+    const techs = (p.techniques || []).join(', ') || '—';
+    content += `\n🧠 **Techniques:** ${techs}\n`;
+    if (p.weapon) content += `⚔️ **Weapon:** ${p.weapon}\n`;
+    if (p.armor) content += `🛡️ **Armor:** ${p.armor}\n`;
+    if (statuses.length) content += `\n📌 **Status:** ${statuses.join(', ')}\n`;
+
+    const backRow = new ActionRowBuilder()
+        .addComponents(new ButtonBuilder().setCustomId('bt_examine_back').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary));
+    armBattleTurnTimer(battle);
+    return { content: clampMessage(content), components: [backRow] };
+}
+
 
 // Show a combatant's base → mod/boost → effective modifier for each stat (used in battle UI).
 function formatFightModBreakdown(battle, p) {
@@ -2395,12 +3069,14 @@ function buildBattleContent(battle, logText = '') {
         if (p.fightingStyle === 'Maniac' && p.sadism != null) status += ` 😈${p.sadism}/${p.sadistMax}`;
         // Companions/enemies have a viewable INT stat.
         const intDisplay = (isCompanion(p) || isNPC(p)) ? ` | INT: ${(p.stats && p.stats.int) ?? '?'}` : '';
+        // Show a combatant's race so you can identify enemies and remember your own mid-fight.
+        const raceDisplay = p.race ? ` | 🧬 ${p.race}` : '';
         // Show a combatant's fighting style so you can see what an enemy/reinforcement uses.
         const styleDisplay = p.fightingStyle ? ` | 🥋 ${p.fightingStyle}` : '';
-        message += `${marker}${index + 1}. ${p.username}${p.weapon ? ` (${p.weapon})` : ''}${p.armor ? ` 🛡️ ${p.armor}` : ''} — HP: ${p.currentHP}${intDisplay}${styleDisplay}${status}\n`;
+        message += `${marker}${index + 1}. ${p.username}${p.weapon ? ` (${p.weapon})` : ''}${p.armor ? ` 🛡️ ${p.armor}` : ''} — HP: ${p.currentHP}${intDisplay}${raceDisplay}${styleDisplay}${status}\n`;
     });
 
-    message += `\n**Current:** ${current.username}${current.weapon ? ` (${current.weapon})` : ''}${current.armor ? ` 🛡️ ${current.armor}` : ''}${current.fightingStyle ? ` | 🥋 ${current.fightingStyle}` : ''}\n`;
+    message += `\n**Current:** ${current.username}${current.weapon ? ` (${current.weapon})` : ''}${current.armor ? ` 🛡️ ${current.armor}` : ''}${current.race ? ` | 🧬 ${current.race}` : ''}${current.fightingStyle ? ` | 🥋 ${current.fightingStyle}` : ''}\n`;
     message += `HP: ${current.currentHP} | Ki: ${current.currentKi}`;
     if (current.fightingStyle === 'Maniac' && current.sadism != null) {
         message += ` | 😈 Sadism: ${current.sadism}/${current.sadistMax}`;
@@ -2452,6 +3128,8 @@ function appendBattleLog(logText, log) {
         else if (entry.type === 'stun') logText += formatStunEvent(entry);
         else if (entry.type === 'kiRegen') logText += formatKiRegenEvent(entry);
         else if (entry.type === 'lssjRamp') logText += formatLssjRampEvent(entry);
+        else if (entry.type === 'fssjDrain') logText += formatFssjDrainEvent(entry);
+        else if (entry.type === 'fssjDrop') logText += formatFssjDropEvent(entry);
         else if (entry.type === 'bleed') logText += formatBleedEvent(entry);
         else if (entry.type === 'rupture') logText += formatRuptureEvent(entry);
         else if (entry.type === 'poison') logText += formatPoisonEvent(entry);
@@ -2476,6 +3154,87 @@ async function editBattleMessage(battle, content, components, messageIdOverride)
     } catch (e) {}
 }
 
+// ----- Admin battle termination (/battle-end + the admin "End Battle" button) -----
+
+// Mark a combatant as out of the fight. `isDead` (rather than just incapacitated) keeps them out
+// of every "still fighting" check and makes checkBattleOver() skip them when it persists HP —
+// an admin removal must never maim or kill the character it removes. `adminRemoved` exempts them
+// from the post-battle kill/execute/limit-break paths for the same reason.
+function markParticipantOut(battle, participant) {
+    participant.isDead = true;
+    participant.currentHP = 0;
+    participant.isIncapacitated = true;
+    participant.adminRemoved = true;
+    // Release any grapple they were part of — a ghost hold would lock their victim in place, and
+    // battleSystem.advance()'s stale-link cleanup only runs when the turn changes.
+    battle.turnOrder.forEach(p => {
+        if (p.grappling === participant.userId) p.grappling = null;
+        if (p.grappledBy === participant.userId) p.grappledBy = null;
+    });
+    participant.grappling = null;
+    participant.grappledBy = null;
+}
+
+// Tear a battle down completely: unregister its players, clear its turn timer, drop every
+// per-battle registry (mission / mentor / hunt / raid / canon), and undo battle-only state
+// (transformations) so nobody is left stuck in a form with no fight to use it in.
+// checkBattleOver() does the same cleanup for battles that end on their own; this is the
+// "admin aborted it" path, so it grants no rewards and applies no damage or deaths.
+function abortBattle(battle) {
+    battle.active = false;
+    clearBattleTurnTimer(battle);
+    battleManager.endBattle(battle.id);
+    battleMessages.delete(battle.id);
+    activeMissions.delete(battle.id);
+    activeMentorFights.delete(battle.id);
+    activeHunts.delete(battle.id);
+    activeRaidBattles.delete(battle.id);
+    pendingCanonBattles.delete(battle.id);
+    battle.turnOrder.forEach(p => {
+        const { character, companion } = getParticipantEntity(p);
+        if (companion) {
+            if (!companion.activeForm) return;
+            companion.activeForm = null;
+            if (character) characterManager.updateCharacter(p.ownerUserId, character.id, { companions: character.companions });
+        } else if (character && character.activeForm) {
+            characterManager.updateCharacter(p.userId, character.id, { activeForm: null });
+        }
+    });
+}
+
+// Carry a battle on after an admin removed a combatant from it. `msgId` must be captured BEFORE
+// the removal because checkBattleOver() clears battleMessages when the battle ends. Returns
+// `{ over, content }` — content is the battle-over summary, or the log of what happened next.
+async function continueAfterAdminRemoval(battle, msgId, removedWasCurrent) {
+    let logText = '';
+    if (removedWasCurrent) {
+        // Their turn left with them — always advance (dead combatants are skipped), never leave the
+        // turn pointer sitting on the participant we just took out of the fight.
+        const { log } = battle.advance();
+        logText = appendBattleLog(logText, log);
+    }
+    // Enemies held over from the removed combatant's turn still need to act, otherwise the battle
+    // stalls with nobody able to click anything.
+    logText = await resolveNPCTurns(battle, logText);
+    logText += maybeUnlockShogun(battle, null);
+    logText += maybeCallReinforcements(battle);
+    let over = checkBattleOver(battle);
+    if (!over) {
+        // Removing the last minion can spawn a waiting raid boss — let it take the field.
+        logText = await resumeNpcTurnsAfterBoss(battle, logText);
+        over = checkBattleOver(battle);
+    }
+    if (over) {
+        await editBattleMessage(battle, clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`), over.components || [], msgId);
+        return { over: true, content: over.content };
+    }
+    await editBattleMessage(battle, buildBattleContent(battle, logText), buildTurnComponents(battle, null), msgId);
+    // Re-arm the 10s timer: the battle is still running and the new current player must not be
+    // left on a frozen message (armBattleTurnTimer no-ops for NPC/companion/dead turns).
+    armBattleTurnTimer(battle);
+    return { over: false, content: logText };
+}
+
 // Auto-resolve a player's turn after the 10s timer fires: if they haven't acted, auto-attack
 // a random target, then advance the turn and re-render the battle.
 async function resolveBattleTurnAuto(battle) {
@@ -2490,6 +3249,9 @@ async function resolveBattleTurnAuto(battle) {
     // Capture the message id BEFORE checkBattleOver clears it, so an ended battle can
     // still render its "battle over" state (and not leave stale, non-working buttons).
     const msgId = battleMessages.get(battle.id);
+    // If we can't update the battle message, don't silently advance the turn — that would
+    // leave the visible message out of sync with the real turn order (stale "not your turn").
+    if (!msgId) return;
 
     const current = battle.getCurrentTurn();
     let logText = '';
@@ -2503,6 +3265,8 @@ async function resolveBattleTurnAuto(battle) {
                 if (result.success && result.hit) logText += `\n${current.username} hits for **${result.damage} damage**!`;
                 else if (result.success) logText += `\nThe attack misses!`;
                 else logText += `\n(${result.message || 'no attack'})`;
+                (result.notices || []).forEach(n => { logText += `\n${n}`; });
+                if (result.success && result.hit) logText += maybeMiscarry(target);
             } else {
                 logText += `⏱️ **${current.username}** took too long (no targets left).`;
             }
@@ -2525,7 +3289,12 @@ async function resolveBattleTurnAuto(battle) {
         await editBattleMessage(battle, rp.content, rp.components);
         return;
     }
-    const over = checkBattleOver(battle);
+    let over = checkBattleOver(battle);
+    // A raid boss can spawn on a companion/NPC's pending turn — resume their auto-resolution.
+    if (!over) {
+        logText = await resumeNpcTurnsAfterBoss(battle, logText);
+        over = checkBattleOver(battle);
+    }
     if (over) {
         await editBattleMessage(battle, clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`), over.components || [], msgId);
         return;
@@ -2578,7 +3347,26 @@ function buildTurnComponents(battle, viewer) {
                     .setDisabled(current.hasActed)
             );
         }
+        // Pacifist (Wise Old One): persuade an enemy to force a WIL save (17+SPI mod).
+        if (current.mutation === 'Wise Old One') {
+            skillRow.addComponents(
+                new ButtonBuilder().setCustomId('bt_persuade')
+                    .setLabel(current.hasActed ? '🗝️ Persuade (used)' : '🗝️ Persuade (WIL save)')
+                    .setStyle(ButtonStyle.Success)
+                    .setDisabled(current.hasActed || getEnemyTargets(battle).length === 0)
+            );
+        }
         components.push(skillRow);
+
+        // Bansho Fan: once every 3 turns, hit up to 3 enemies whose turns are right after yours.
+        if (current.weaponType === 'Bansho Fan') {
+            const fanReady = !current.hasActed && !(battle.banshoLastRound && (battle.round - battle.banshoLastRound) < 3);
+            components.push(
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('bt_bansho').setLabel('🌪️ Fan Barrage (3 enemies)').setStyle(ButtonStyle.Primary).setDisabled(!fanReady)
+                )
+            );
+        }
 
         // Saibamen "PTSD": self-implode, dealing current HP + current Ki to all enemies (ends your life).
         // A grappled Saibamen can still blow up as a last resort.
@@ -2590,14 +3378,40 @@ function buildTurnComponents(battle, viewer) {
             );
         }
 
-        // Namekian Regeneration: spend 10 Ki to restore 10 HP (uses your action + bonus action).
+        // Namekian Regeneration: spend 20% max Ki to restore 25% max HP (uses your action + bonus action).
         if (current.race === 'Namekian') {
+            const regenCost = Math.max(1, Math.round((current.ki || 0) * 0.20));
             components.push(
                 new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('bt_regen')
-                        .setLabel(current.hasActed ? '🩹 Regenerate (used)' : '🩹 Regenerate (10 Ki → 10 HP)')
+                        .setLabel(current.hasActed ? '🩹 Regenerate (used)' : `🩹 Regenerate (${regenCost} Ki → 25% HP)`)
                         .setStyle(ButtonStyle.Success)
-                        .setDisabled(current.hasActed || (current.currentKi || 0) < 10)
+                        .setDisabled(current.hasActed || (current.currentKi || 0) < regenCost)
+                )
+            );
+        }
+
+        // Yokai (Ghastly Structure): reform the intangible ghostly form (15% max Ki, 1-turn cooldown).
+        if (current.race === 'Yokai') {
+            const ghostCost = Math.max(1, Math.round((current.ki || 0) * 0.15));
+            const ghostReady = !current.ghastlyActive && (current.ghastlyCooldown || 0) <= 0 && !current.hasActed;
+            components.push(
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('bt_yokai_ghost')
+                        .setLabel(current.ghastlyActive && !current.ghastlyExposed ? '👻 Ghostly Form (intangible)' : `👻 Ghostly Form (${ghostCost} Ki)`)
+                        .setStyle(current.ghastlyExposed ? ButtonStyle.Danger : ButtonStyle.Success)
+                        .setDisabled(!ghostReady || (current.currentKi || 0) < ghostCost)
+                )
+            );
+        }
+        // Yokai (Kitsune) Shapeshift: assume a form so enemies won't attack you for 2 turns.
+        if (current.race === 'Yokai' && current.yokaiVariant === 1) {
+            components.push(
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('bt_yokai_shape')
+                        .setLabel((current.shapeshiftTurns || 0) > 0 ? `🦊 Shapeshift (${current.shapeshiftTurns} turns left)` : '🦊 Shapeshift (untargetable 2 turns)')
+                        .setStyle(ButtonStyle.Success)
+                        .setDisabled(current.hasActed || (current.shapeshiftTurns || 0) > 0)
                 )
             );
         }
@@ -2619,6 +3433,13 @@ function buildTurnComponents(battle, viewer) {
         );
         components.push(row);
     }
+
+    // Examine: any player in the battle can scout a combatant's detailed stats mid-fight.
+    components.push(
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('bt_examine').setLabel('🔍 Examine').setStyle(ButtonStyle.Secondary)
+        )
+    );
 
     armBattleTurnTimer(battle);
     return components;
@@ -2771,8 +3592,42 @@ function afterlifeLocationName(character) {
 }
 
 // Kill a character: flag them dead and send them to the afterlife (Hell or Otherworld).
-function killCharacter(userId) {
-    const character = characterManager.getCharacter(userId);
+// Is this character dead or currently in the afterlife (Otherworld/Hell)?
+function isInAfterlife(character) {
+    if (!character) return false;
+    return !!character.dead || ['Otherworld', 'Hell'].includes(character.location);
+}
+
+// Can this character currently recruit/acquire companions? Blocked while dead/afterlife.
+function canAcquireCompanions(character) {
+    return !isInAfterlife(character);
+}
+
+// Move a character's active companions into the "lost" pool (called on death). Lost companions
+// are restored when they return to the world of the living.
+function loseCompanionsOnDeath(character) {
+    const active = Array.isArray(character.companions) ? character.companions : [];
+    if (active.length === 0) return {};
+    const lost = Array.isArray(character.lostCompanions) ? character.lostCompanions : [];
+    return {
+        lostCompanions: [...lost, ...active],
+        companions: []
+    };
+}
+
+// Restore any lost companions when a character returns to the world of the living.
+function restoreLostCompanions(character) {
+    const lost = Array.isArray(character.lostCompanions) ? character.lostCompanions : [];
+    if (lost.length === 0) return {};
+    const active = Array.isArray(character.companions) ? character.companions : [];
+    return {
+        companions: [...active, ...lost],
+        lostCompanions: []
+    };
+}
+
+function killCharacter(userId, characterId = null, opts = {}) {
+    const character = characterManager.getCharacter(userId, characterId);
     if (!character) return null;
     // Ancient Wuxia Talisman: otherworldly entities cannot interact with you.
     if (hasActiveTalisman(character)) {
@@ -2780,19 +3635,40 @@ function killCharacter(userId) {
         return { name: character.name, protected: true };
     }
 
+    // If the character was caught in a destroyed planet, they can't survive in space (which a
+    // Namekian egg rebirth would otherwise let them). Only races with space-breathing escape it.
+    const planetDestroyed = opts.planetDestroyed === true || isPlanetDestroyed(character.location);
+    const survivesSpace = canSurviveSpace(character);
+
+    // A Space Pod lets a character escape a destroyed planet instead of dying (to a random new
+    // planet that is never Frieza Planet).
+    if (planetDestroyed && hasSpacePod(character)) {
+        const dest = getSpacePodEscapePlanet(character);
+        characterManager.updateCharacter(userId, character.id, { location: dest, space: getRandomInt(PLANET_SPACES[dest] || 100), currentHP: Math.max(1, character.currentHP || 1) });
+        return { name: character.name, escaped: true };
+    }
+
+    // Space-breathing races survive a planetary blast by drifting to another planet.
+    if (planetDestroyed && survivesSpace) {
+        const dest = getSpacePodEscapePlanet(character);
+        characterManager.updateCharacter(userId, character.id, { location: dest, space: getRandomInt(PLANET_SPACES[dest] || 100), currentHP: Math.max(1, character.currentHP || 1) });
+        return { name: character.name, survived: true };
+    }
+
     // Namekian Rebirth: if the character has an intact egg and isn't on a 5-saga cooldown, they
     // are reborn from the egg instead of dying (100%+1d20% of previous stats on top of fresh rolls).
     if (character.race === 'Namekian' && character.namekianEgg !== false
-        && !(character.rebirthSaga && globalSaga < character.rebirthSaga + 5)) {
+        && !(character.rebirthSaga && globalSaga < character.rebirthSaga + 5)
+        && !(planetDestroyed && !survivesSpace)) {
         const keepPct = 1 + (getRandomInt(20) / 100); // 100% + 1d20%
         const fresh = rollFreshStats(character.race);
         const newStats = {};
         ['str', 'dex', 'con', 'wil', 'spi', 'int'].forEach(s => {
             newStats[s] = Math.max(1, (fresh[s] || 0) + Math.floor(((character.stats || {})[s] || 0) * keepPct));
         });
-        const maxHP = calculateHP(newStats.con, character.race);
-        const maxKi = calculateKi(newStats.spi, character.race);
-        const modifiers = calculateAllModifiers(newStats);
+        const maxHP = calculateHP(newStats.con, character.race, character.statMultipliers, character);
+        const maxKi = calculateKi(newStats.spi, character.race, character.statMultipliers, character);
+        const modifiers = calculateAllModifiers(newStats, character.statMultipliers);
         const powerLevel = characterManager.calculatePowerLevel({ ...newStats, maxHP, maxKi });
         const spawnLocation = getDefaultLocation(character.race);
         const spawnSpace = getRandomInt(PLANET_SPACES[spawnLocation] || 100);
@@ -2812,7 +3688,9 @@ function killCharacter(userId) {
             rebirthSaga: globalSaga,
             deathLocation: null,
             deathSpace: null,
-            deathAlignmentValue: null
+            deathAlignmentValue: null,
+            // Ensure any lost companions come back with the reborn Namekian.
+            ...restoreLostCompanions(character)
         });
         if (client && client.users && userId) {
             client.users.send(userId, `🥚 **${character.name}** was slain, but their **Namekian egg** hatches! They are **reborn** at **${spawnLocation} - Space ${spawnSpace}** (100%+${Math.round((keepPct - 1) * 100)}% of old stats kept).`).catch(() => {});
@@ -2831,10 +3709,15 @@ function killCharacter(userId) {
         deathAlignmentValue: deathAlignValue,
         deathAlignment: character.alignment,
         deathLocation: character.location || 'Earth',
-        deathSpace: character.space || 1
+        deathSpace: character.space || 1,
+        // Your companions are lost while you're in the afterlife — restored on revival.
+        ...loseCompanionsOnDeath(character)
     };
     if (afterlife === 'Hell') updates.hellSaga = globalSaga;
     characterManager.updateCharacter(userId, character.id, updates);
+    // A dead player loses any Dragon Balls they were holding — they scatter to fresh random
+    // tiles so they're searchable again and no longer count toward the 7-ball limit.
+    releaseDragonBallsForDeath(userId);
     // Let the player know where they were sent.
     if (client && client.users && userId) {
         const afterlifeText = afterlife === 'Hell'
@@ -2854,6 +3737,8 @@ function duelExecutionComponents(battleId) {
 }
 
 function checkBattleOver(battle) {
+    // A waiting raid boss appears once every other enemy is down, before the outcome is decided.
+    maybeSpawnRaidBoss(battle);
     if (!battle.isBattleOver()) return null;
 
     battle.active = false;
@@ -2867,6 +3752,18 @@ function checkBattleOver(battle) {
     let unlockText = '';
     // Non-spar battles generate fatigue based on HP lost (max 25%); surfaced in the battle-over message.
     let battleFatigueText = '';
+    // A non-lethal TRAINING bout (PvP spar, companion spar, mentor fight) is HP/Ki-neutral: everyone
+    // leaves at the vitals they walked in with, so training only ever costs fatigue. Real fights
+    // (missions, duels, hunts, raids, canon) still persist whatever you finished with.
+    const isTrainingBout = !!(battle.isSpar || battle.isCompanionSpar || battle.isMentor);
+    const restoreVitals = (p, maxHP, maxKi) => {
+        const hp = p.entryHP != null ? p.entryHP : (p.hp || 1);
+        const ki = p.entryKi != null ? p.entryKi : (p.ki || 0);
+        return {
+            currentHP: Math.max(1, Math.min(Math.floor(hp), maxHP || p.hp || 1)),
+            currentKi: Math.max(0, Math.min(Math.floor(ki), maxKi || p.ki || 1))
+        };
+    };
 
     // Conscious participants can roll for mastery after the fight;
     // Zenkai mutations trigger for survivors under 10% HP
@@ -2876,6 +3773,14 @@ function checkBattleOver(battle) {
             if (isCompanion(p)) {
                 const { companion } = getParticipantEntity(p);
                 if (companion) {
+                    // Companions keep their leftover HP/Ki — they must rest or eat to heal (training
+                    // bouts excepted: a spar hands back exactly what they walked in with).
+                    const cmpVitals = isTrainingBout ? getCompanionVitals(companion, characterManager.getCharacter(p.ownerUserId)) : null;
+                    const restoredCmp = isTrainingBout ? restoreVitals(p, cmpVitals.maxHP, cmpVitals.maxKi) : null;
+                    companion.currentHP = restoredCmp ? restoredCmp.currentHP : Math.max(0, p.currentHP || 0);
+                    companion.currentKi = restoredCmp ? restoredCmp.currentKi : Math.max(0, p.currentKi || 0);
+                    const ownerP = characterManager.getCharacter(p.ownerUserId);
+                    if (ownerP) characterManager.updateCharacter(p.ownerUserId, ownerP.id, { companions: ownerP.companions });
                     if (companion.activeForm) {
                         companion.activeForm = null;
                         const owner0 = characterManager.getCharacter(p.ownerUserId);
@@ -2967,7 +3872,12 @@ function checkBattleOver(battle) {
             // the knocked-out wake with 1 HP).
             const finalChar = characterManager.getCharacter(p.userId);
             if (finalChar) {
-                const savedHP = p.isIncapacitated ? 1 : Math.max(0, Math.floor(p.currentHP || 0));
+                const savedHP = isTrainingBout
+                    ? restoreVitals(p, finalChar.maxHP, finalChar.maxKi).currentHP
+                    : (p.isIncapacitated ? 1 : Math.max(0, Math.floor(p.currentHP || 0)));
+                const savedKi = isTrainingBout
+                    ? restoreVitals(p, finalChar.maxHP, finalChar.maxKi).currentKi
+                    : Math.max(0, Math.floor(p.currentKi || 0));
                 // Battles (not spars) generate fatigue based on how much HP you lost, capped at 25%.
                 let battleFatigueGain = 0;
                 if (!battle.isSpar && !battle.isCompanionSpar) {
@@ -2978,7 +3888,7 @@ function checkBattleOver(battle) {
                 const newBattleFatigue = Math.min(100, (finalChar.fatigue || 0) + battleFatigueGain);
                 characterManager.updateCharacter(p.userId, finalChar.id, {
                     currentHP: Math.min(savedHP, finalChar.maxHP || p.hp || 1),
-                    currentKi: Math.min(Math.max(0, Math.floor(p.currentKi || 0)), finalChar.maxKi || 1),
+                    currentKi: Math.min(savedKi, finalChar.maxKi || 1),
                     fatigue: newBattleFatigue,
                     peakFatigue: Math.max(finalChar.peakFatigue || 0, newBattleFatigue)
                 });
@@ -2993,11 +3903,14 @@ function checkBattleOver(battle) {
     let rewardText = unlockText + battleFatigueText;
 
     // Limit break reward: entities that broke their limits this battle get d20 + 10% PL stat
-    // points. Once broken, the next break needs 150% of the PL they last broke from.
-    if (Array.isArray(battle.limitBreakers) && battle.limitBreakers.length > 0) {
+    // points. Once broken, the next break needs 165% of the PL they last broke from.
+    // Only real fights with a death chance limit break — spars and mentor training never do.
+    if (!battle.isSpar && !battle.isCompanionSpar && !battle.isMentor
+        && Array.isArray(battle.limitBreakers) && battle.limitBreakers.length > 0) {
         battle.limitBreakers.forEach(uid => {
             const p = battle.turnOrder.find(x => x.userId === uid);
-            if (!p || isNPC(p)) return; // enemies are transient — no persistent reward
+            // Enemies are transient (no persistent reward); so is a combatant an admin removed mid-fight.
+            if (!p || isNPC(p) || p.adminRemoved) return;
             const { character, companion } = getParticipantEntity(p);
             if (companion) {
                 const cmpPL = getCompanionPowerLevel(companion, character);
@@ -3022,6 +3935,12 @@ function checkBattleOver(battle) {
                     points *= 2;
                     nextReq = LIMIT_BREAK_PL_REQ * 2;
                     character.doublePotential = false;
+                }
+                // Porunga's "Double My Potential" stacks on top of Shenron's — ×4 total.
+                if (character.porungaDouble) {
+                    points *= 2;
+                    nextReq *= 2;
+                    character.porungaDouble = false;
                 }
                 characterManager.updateCharacter(p.userId, character.id, {
                     unspentPoints: (character.unspentPoints || 0) + points,
@@ -3069,7 +3988,12 @@ function checkBattleOver(battle) {
                 // The mentor fight counts as spar training
                 const tier = getGravityTier(getTrainingGravity(winnerChar), winnerChar.powerLevel || 0);
                 const sparSpec = (winnerChar.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-                const sparPoints = Math.floor(rollDiceString(sparSpec) * globalSaga * 3 * getLimitBreakGainMult(winnerChar));
+                let sparPoints = getProgressionReward(winnerChar.powerLevel || 0, 1.2, null, globalSaga);
+                sparPoints += Math.min(Math.round(sparPoints * 0.3), Math.round(rollDiceString(sparSpec) / 4));
+                sparPoints = Math.floor(sparPoints * getLimitBreakGainMult(winnerChar));
+                const sparB = applySparBonus(sparPoints, winnerChar);
+                sparPoints = sparB.points;
+                if (sparB.notes.length) rewardText += `\n${sparB.notes.join('\n')}`;
                 const sparGains = distributeGain(sparPoints, ['str', 'dex', 'con', 'wil', 'spi']);
                 const sparStats = { ...(winnerChar.stats || {}) };
                 Object.entries(sparGains).forEach(([stat, pts]) => {
@@ -3078,7 +4002,7 @@ function checkBattleOver(battle) {
                 const sparVitals = recalcVitals(winnerChar, sparStats);
                 characterManager.updateCharacter(winner.userId, winnerChar.id, {
                     stats: sparStats,
-                    modifiers: calculateAllModifiers(sparStats),
+                    modifiers: calculateAllModifiers(sparStats, winnerChar.statMultipliers),
                     ...sparVitals,
                     powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi })
                 });
@@ -3092,7 +4016,12 @@ function checkBattleOver(battle) {
             if (loserChar) {
                 const tier = getGravityTier(getTrainingGravity(loserChar), loserChar.powerLevel || 0);
                 const sparSpec = (loserChar.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-                const sparPoints = Math.max(1, Math.floor(rollDiceString(sparSpec) * globalSaga * 0.5 * 3 * getLimitBreakGainMult(loserChar)));
+                let sparPoints = getProgressionReward(loserChar.powerLevel || 0, 0.6, null, globalSaga);
+                sparPoints += Math.min(Math.round(sparPoints * 0.3), Math.round(rollDiceString(sparSpec) / 4));
+                sparPoints = Math.max(1, Math.floor(sparPoints * getLimitBreakGainMult(loserChar)));
+                const sparB = applySparBonus(sparPoints, loserChar);
+                sparPoints = sparB.points;
+                if (sparB.notes.length) rewardText += `\n${sparB.notes.join('\n')}`;
                 const sparGains = distributeGain(sparPoints, ['str', 'dex', 'con', 'wil', 'spi']);
                 const sparStats = { ...(loserChar.stats || {}) };
                 Object.entries(sparGains).forEach(([stat, pts]) => {
@@ -3101,7 +4030,7 @@ function checkBattleOver(battle) {
                 const sparVitals = recalcVitals(loserChar, sparStats);
                 characterManager.updateCharacter(mentorFight.userId, loserChar.id, {
                     stats: sparStats,
-                    modifiers: calculateAllModifiers(sparStats),
+                    modifiers: calculateAllModifiers(sparStats, loserChar.statMultipliers),
                     ...sparVitals,
                     powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi })
                 });
@@ -3136,11 +4065,23 @@ function checkBattleOver(battle) {
             if (!winnerChar) return;
             const qty = hunt.animal.meatQty();
             const inv = Array.isArray(winnerChar.inventory) ? winnerChar.inventory : [];
+            // If the hunter owns a Hunting Bag, meat goes there (up to 250); otherwise into inventory.
+            const ownsHuntingBag = ownsItem(winnerChar, 'Hunting Bag');
+            const bag = ownsHuntingBag ? getHuntingBag(winnerChar) : null;
+            let bagged = 0;
             // Hunted meat is raw — it must be cooked before eating.
-            for (let k = 0; k < qty; k++) inv.push(makeRawMeat(hunt.animal.meat));
+            for (let k = 0; k < qty; k++) {
+                if (bag && bag.length < HUNTING_BAG_CAPACITY) {
+                    bag.push(makeRawMeat(hunt.animal.meat));
+                    bagged++;
+                } else {
+                    inv.push(makeRawMeat(hunt.animal.meat));
+                }
+            }
             const statPoints = (hunt.reward && hunt.reward.statPoints) || 0;
             const zeni = (hunt.reward && hunt.reward.zeni) || 0;
             const updates = { inventory: inv };
+            if (bag && bagged > 0) updates.huntingBag = bag;
             if (statPoints || zeni) {
                 updates.unspentPoints = (winnerChar.unspentPoints || 0) + statPoints;
                 updates.zeni = (winnerChar.zeni || 0) + zeni;
@@ -3153,21 +4094,70 @@ function checkBattleOver(battle) {
         });
     }
 
-    // Raid ambush: repelling a raid grants 2× stat gain.
+    // Raid ambush: repelling a raid grants 8× stat gain.
     if (raidBattle) {
         winners.forEach(winner => {
             if (winner.userId !== raidBattle.userId) return;
             const winnerChar = characterManager.getCharacter(winner.userId);
             if (!winnerChar) return;
-            const sp = getMissionStatReward(winnerChar.powerLevel || 0, 'casual', globalSaga) * 2;
+            const sp = getMissionStatReward(winnerChar.powerLevel || 0, 'casual', getEffectiveSaga()) * 8;
             characterManager.updateCharacter(winner.userId, winnerChar.id, { unspentPoints: (winnerChar.unspentPoints || 0) + sp });
-            rewardText += `\n🐉 **${winnerChar.name}** repelled the **RAID**! **+${sp} stat points** (2× raid bonus)!`;
+            rewardText += `\n🐉 **${winnerChar.name}** repelled the **RAID**! **+${sp} stat points** (8× raid bonus)!`;
         });
+    }
+
+    // Bounty canon event: defeating an opposite-alignment player during the window grants the
+    // winner stat points, scaled by the defeated player's power level.
+    if (bountyEvent.active && Date.now() < bountyEvent.expiresAt) {
+        const losers = battle.turnOrder.filter(p => !isNPC(p) && !p.isAlly && (p.isDead || p.isIncapacitated));
+        winners.forEach(winner => {
+            const winnerChar = characterManager.getCharacter(winner.userId);
+            if (!winnerChar) return;
+            const wVal = getPlayerAlignmentValue(winnerChar);
+            if (wVal === 0) return;
+            losers.forEach(loser => {
+                if (loser.userId === winner.userId) return;
+                const loserChar = characterManager.getCharacter(loser.userId);
+                if (!loserChar) return;
+                const lVal = getPlayerAlignmentValue(loserChar);
+                if (lVal === 0 || Math.sign(wVal) === Math.sign(lVal)) return;
+                const sp = getMissionStatReward(loserChar.powerLevel || 0, 'casual', getEffectiveSaga());
+                characterManager.updateCharacter(winner.userId, winnerChar.id, { unspentPoints: (winnerChar.unspentPoints || 0) + sp });
+                rewardText += `\n💰 **${winnerChar.name}** collected a **BOUNTY** (defeated opposite-alignment **${loserChar.name}**) — **+${sp} stat points**!`;
+            });
+        });
+    }
+
+    // Tree of Might: if the planter is beaten by a player while the tree grows, the tree is
+    // destroyed (the planet is saved), the seed is lost, and the winner gets save-the-planet rewards.
+    if (treeOfMight.status === 'growing') {
+        const planterDefeated = battle.turnOrder.some(p => !isNPC(p) && p.userId === treeOfMight.plantedBy && (p.isDead || p.isIncapacitated));
+        const allied = battle.alliedPlayerIds || new Set();
+        const saver = planterDefeated ? winners.find(w => w.userId !== treeOfMight.plantedBy && !allied.has(w.userId)) : null;
+        if (saver) {
+            const saverChar = characterManager.getCharacter(saver.userId);
+            const planterChar = characterManager.getCharacter(treeOfMight.plantedBy);
+            const planet = treeOfMight.planet;
+            treeOfMight.status = 'destroyed';
+            treeOfMight.planet = null;
+            treeOfMight.earthDestroyed = false;
+            if (saverChar) {
+                const sp = getMissionStatReward(saverChar.powerLevel || 0, 'casual', getEffectiveSaga());
+                const alignVal = changePlayerAlignment(saver.userId, saverChar, TREE_SAVE_ALIGNMENT);
+                characterManager.updateCharacter(saver.userId, saverChar.id, { unspentPoints: (saverChar.unspentPoints || 0) + sp });
+                rewardText += `\n💚 **${saverChar.name}** destroyed the **Tree of Might** on **${planet}** (saving **${planterChar ? planterChar.name : 'a planet'}**'s planet) — **+${sp} stat points** & alignment **${alignVal}**!`;
+                const nick = awardNickname(saver.userId, saverChar, 'fellTree');
+                if (nick) rewardText += `\n🏷️ **${saverChar.name}** is now known as **${nick.emoji} ${nick.text}**!`;
+            }
+            if (planterChar) {
+                rewardText += `\n🌱 **${planterChar.name}**'s **Seed of Might** was destroyed with the tree.`;
+            }
+        }
     }
 
     // Quest completed: reward every surviving player (co-op missions share the win)
     if (mission) {
-        const saga = globalSaga;
+        const saga = getEffectiveSaga();
         winners.forEach(winner => {
             const winnerChar = characterManager.getCharacter(winner.userId);
             if (!winnerChar) return;
@@ -3178,12 +4168,23 @@ function checkBattleOver(battle) {
             // Enemies called in as reinforcements grant +11% more stats each.
             const reinforcements = mission.reinforcementsCalled || 0;
             if (reinforcements > 0) statPoints = Math.floor(statPoints * (1 + 0.11 * reinforcements));
-            if (mission.missionType === 'casual') zeni = 5000;
-            else if (mission.missionType === 'hard') zeni = 10000;
-            else if (mission.missionType === 'very hard') zeni = 15000;
-            else if (mission.missionType === 'saga') {
+            if (mission.missionType === 'saga') {
                 for (let i = 0; i < 500; i++) zeni += getRandomInt(100); // 500d100 zeni
+            } else if (MISSION_ZENI_REWARDS[mission.missionType]) {
+                zeni = MISSION_ZENI_REWARDS[mission.missionType];
             }
+
+            // Negative-alignment missions yield more zeni (and better item loot below).
+            const isNegMission = mission.alignment === 'negative';
+            if (isNegMission) zeni = Math.floor(zeni * MISSION_NEGATIVE_ZENI_MULT);
+
+            // Roll mission item loot (normal + legendary, independent — a quest can drop both).
+            const loot = rollMissionItemLoot(mission.missionType, mission.alignment || 'positive', winnerChar.location, winnerChar.space);
+            zeni += loot.zeniBonus;
+            let resources = (winnerChar.resources || 0) + loot.resourceBonus;
+            loot.items.forEach(itemName => {
+                characterManager.addItem(winner.userId, winnerChar.id, itemName);
+            });
 
             // Winning by talking (recruiting everyone) gives no alignment and only 50% stat rewards.
             const wonByTalk = battle.wonByTalk === true;
@@ -3196,7 +4197,13 @@ function checkBattleOver(battle) {
                 rewardText += compResult.text;
             }
 
-            const ownedPoints = compResult.ownerPoints;
+            let ownedPoints = compResult.ownerPoints;
+            // Sphinxian "Spoiled": quest rewards are increased by 10%.
+            if (winnerChar.race === 'Sphinxian') {
+                ownedPoints = Math.floor(ownedPoints * 1.10);
+                zeni = Math.floor(zeni * 1.10);
+                rewardText += '\n😼 Sphinxian **Spoiled**: quest reward **+10%**!';
+            }
             const unspent = (winnerChar.unspentPoints || 0) + ownedPoints;
             // Revert the mission-start alignment gain for a talk-win (host only).
             const alignRestore = (wonByTalk && winner.userId === mission.userId)
@@ -3205,10 +4212,11 @@ function checkBattleOver(battle) {
             characterManager.updateCharacter(winner.userId, winnerChar.id, {
                 unspentPoints: unspent,
                 zeni: (winnerChar.zeni || 0) + zeni,
+                resources,
                 ...alignRestore
             });
             rewardText += checkSaiyanSuperSaiyanUnlock(winner.userId, winnerChar);
-            rewardText += `\n🎁 Quest complete for **${winnerChar.name}**: **+${ownedPoints} stat points** (spend them with \`/allocate\`) and **${zeni.toLocaleString()} zeni**!${wonByTalk ? '\n🗨️ *Won by talking — no alignment gain and reduced rewards.*' : ''}`;
+            rewardText += `\n🎁 Quest complete for **${winnerChar.name}**: **+${ownedPoints} stat points** (spend them with \`/allocate\`) and **${zeni.toLocaleString()} zeni**!${loot.text}${isNegMission ? '\n😈 Negative-mission bonus: **+50% zeni** and better loot!' : ''}${wonByTalk ? '\n🗨️ *Won by talking — no alignment gain and reduced rewards.*' : ''}`;
         });
     }
 
@@ -3225,16 +4233,23 @@ function checkBattleOver(battle) {
                 const won = alive.some(a => a.userId === uid);
                 const tier = getGravityTier(getTrainingGravity(char), char.powerLevel || 0);
                 const sparSpec = (char.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-                let sparPoints = rollDiceString(sparSpec) * globalSaga * 3;
+                const opponentUid = (battle.sparUsers || []).find(u => u !== uid);
+                const opponentChar = opponentUid ? characterManager.getCharacter(opponentUid) : null;
+                let sparPoints = getProgressionReward(char.powerLevel || 0, 1.0, opponentChar ? (opponentChar.powerLevel || 0) : null, globalSaga);
+                sparPoints += Math.min(Math.round(sparPoints * 0.3), Math.round(rollDiceString(sparSpec) / 4));
                 if (!won) sparPoints = Math.max(1, Math.floor(sparPoints * 0.5));
-                // Fatigue reduces spar training gains (like any /train).
-                const fatigueMult = getFatigueGainMultiplier(getTotalFatigue(char));
+                // Fatigue reduces spar training gains (like any /train) — but use the TRAINING fatigue
+                // you carried into the fight. getTotalFatigue() adds missing-Ki fatigue, which is Ki you
+                // spent IN the spar itself, so a clean fighter who used all their Ki was punished with
+                // 0.8x (or worse) despite having no actual fatigue.
+                const fatigueMult = getFatigueGainMultiplier(char.fatigue || 0);
                 sparPoints = Math.floor(sparPoints * fatigueMult * getLimitBreakGainMult(char));
+                const sparB = applySparBonus(sparPoints, char);
+                sparPoints = sparB.points;
+                if (sparB.notes.length) rewardText += `\n${sparB.notes.join('\n')}`;
                 const sparGains = distributeGain(sparPoints, ['str', 'dex', 'con', 'wil', 'spi']);
                 // Leech: if the sparring opponent is 250%+ of you, absorb 15% of their stats.
                 // Kept separate from the base gains so it isn't double-counted in the result text.
-                const opponentUid = (battle.sparUsers || []).find(u => u !== uid);
-                const opponentChar = opponentUid ? characterManager.getCharacter(opponentUid) : null;
                 const leechStats = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
                 let leechParts = [];
                 if (opponentChar && opponentChar.stats) {
@@ -3256,7 +4271,7 @@ function checkBattleOver(battle) {
                 const sparVitals = recalcVitals(char, sparStats);
                 // Sparring is training: both fighters gain +10% fatigue.
                 const newFatigue = Math.min(100, (char.fatigue || 0) + 10);
-                characterManager.updateCharacter(uid, char.id, { stats: sparStats, modifiers: calculateAllModifiers(sparStats), ...sparVitals, powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi }), fatigue: newFatigue, peakFatigue: Math.max(char.peakFatigue || 0, newFatigue) });
+                characterManager.updateCharacter(uid, char.id, { stats: sparStats, modifiers: calculateAllModifiers(sparStats, char.statMultipliers), ...sparVitals, powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi }), fatigue: newFatigue, peakFatigue: Math.max(char.peakFatigue || 0, newFatigue) });
                 const gainParts = Object.entries(sparGains).map(([s, p]) => `${s.toUpperCase()} +${p}`).join(' | ');
                 rewardText += `\n🏋️ **${char.name}** spar trained (${won ? 'win' : 'loss'}): **${gainParts}**${fatigueMult < 1 ? ` (fatigue ×${fatigueMult})` : ''}\n😓 Fatigue: **+10%**`;
                 if (leechParts.length) rewardText += `\n🩸 Leeched from **${opponentChar.name}**: **${leechParts.join(' | ')}**`;
@@ -3269,48 +4284,64 @@ function checkBattleOver(battle) {
         battle.companionSparRewarded = true;
         const ownerId = battle.companionOwnerId;
         const ownerChar = characterManager.getCharacter(ownerId);
+        // Resolve the sparring companion up front: the OWNER's reward needs the companion's power
+        // level (passing null made every companion spar pay like an even match, so stomping a much
+        // weaker companion paid the same as a hard fight), and the companion block below reuses these.
+        const cmp = (ownerChar && Array.isArray(ownerChar.companions)) ? ownerChar.companions[(battle.companionSlot || 1) - 1] : null;
+        let cmpPL = 0;
+        let cmpFatigueMult = 1;
+        if (cmp) {
+            const cStats = getCompanionBattleStats(cmp, ownerChar);
+            const cmaxHP = calculateHP(cStats.con, cmp.race || null, {}, cmp);
+            const cmaxKi = calculateKi(cStats.spi, cmp.race || null, {}, cmp);
+            cmpPL = characterManager.calculatePowerLevel({ str: cStats.str, dex: cStats.dex, con: cStats.con, wil: cStats.wil, spi: cStats.spi, maxHP: cmaxHP, maxKi: cmaxKi });
+            cmpFatigueMult = getFatigueGainMultiplier(cmp.fatigue || 0);
+        }
         if (ownerChar) {
             const won = alive.some(a => a.userId === ownerId);
             const tier = getGravityTier(getTrainingGravity(ownerChar), ownerChar.powerLevel || 0);
             const sparSpec = (ownerChar.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-            let sparPoints = rollDiceString(sparSpec) * globalSaga * 3;
+            let sparPoints = getProgressionReward(ownerChar.powerLevel || 0, 1.0, cmpPL || null, globalSaga);
+            sparPoints += Math.min(Math.round(sparPoints * 0.3), Math.round(rollDiceString(sparSpec) / 4));
             if (!won) sparPoints = Math.max(1, Math.floor(sparPoints * 0.5));
-            // Fatigue reduces spar training gains (like any /train).
-            const fatigueMult = getFatigueGainMultiplier(getTotalFatigue(ownerChar));
+            // Training fatigue only — see the PvP spar note above (missing-Ki fatigue is Ki spent here).
+            const fatigueMult = getFatigueGainMultiplier(ownerChar.fatigue || 0);
             sparPoints = Math.floor(sparPoints * fatigueMult * getLimitBreakGainMult(ownerChar));
+            const sparB = applySparBonus(sparPoints, ownerChar);
+            sparPoints = sparB.points;
+            if (sparB.notes.length) rewardText += `\n${sparB.notes.join('\n')}`;
             const sparGains = distributeGain(sparPoints, ['str', 'dex', 'con', 'wil', 'spi']);
             const sparStats = { ...(ownerChar.stats || {}) };
             Object.entries(sparGains).forEach(([stat, pts]) => { sparStats[stat] = (sparStats[stat] || 0) + pts; });
             const sparVitals = recalcVitals(ownerChar, sparStats);
             // Companion sparring is training: +10% fatigue (like any /train).
             const newFatigue = Math.min(100, (ownerChar.fatigue || 0) + 10);
-            characterManager.updateCharacter(ownerId, ownerChar.id, { stats: sparStats, modifiers: calculateAllModifiers(sparStats), ...sparVitals, powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi }), fatigue: newFatigue, peakFatigue: Math.max(ownerChar.peakFatigue || 0, newFatigue) });
+            characterManager.updateCharacter(ownerId, ownerChar.id, { stats: sparStats, modifiers: calculateAllModifiers(sparStats, ownerChar.statMultipliers), ...sparVitals, powerLevel: characterManager.calculatePowerLevel({ ...sparStats, maxHP: sparVitals.maxHP, maxKi: sparVitals.maxKi }), fatigue: newFatigue, peakFatigue: Math.max(ownerChar.peakFatigue || 0, newFatigue) });
             const gainParts = Object.entries(sparGains).map(([s, p]) => `${s.toUpperCase()} +${p}`).join(' | ');
             rewardText += `\n🏋️ **${ownerChar.name}** spar trained with their companion (${won ? 'win' : 'loss'}): **${gainParts}**${fatigueMult < 1 ? ` (fatigue ×${fatigueMult})` : ''}\n😓 Fatigue: **+10%**`;
             rewardText += checkSaiyanSuperSaiyanUnlock(ownerId, ownerChar);
         }
-        const cmp = (ownerChar && Array.isArray(ownerChar.companions)) ? ownerChar.companions[(battle.companionSlot || 1) - 1] : null;
         if (cmp) {
             const tier = getGravityTier(getTrainingGravity(ownerChar), ownerChar.powerLevel || 0);
-            // Companions suffer fatigue like players: their spar gains fall at higher fatigue.
-            const cmpFatigueMult = getFatigueGainMultiplier(cmp.fatigue || 0);
             const sparSpec = (cmp.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-            let sparPoints = Math.floor(rollDiceString(sparSpec) * globalSaga * 3 * cmpFatigueMult * getLimitBreakGainMult(cmp));
+            let sparPoints = getProgressionReward(cmpPL, 1.0, ownerChar.powerLevel || 0, globalSaga);
+            sparPoints += Math.min(Math.round(sparPoints * 0.3), Math.round(rollDiceString(sparSpec) / 4));
+            // Companions suffer fatigue like players, and a limit break multiplies their gains — the
+            // fatigue multiplier used to be computed, SHOWN in the message, and never applied.
+            sparPoints = Math.floor(sparPoints * cmpFatigueMult * getLimitBreakGainMult(cmp));
             // When the owner is 250%+ the companion's PL, the companion trains against a far
-            // stronger opponent: its spar gains are boosted ×2.5, and it leeches 15% of the
-            // owner's current stats as a reward on top.
+            // stronger opponent: its spar gains are boosted and it leeches 15% of the owner's
+            // current stats as a reward on top.
             let leechText = '';
             let leechGains = [];
-            const cStats = getCompanionBattleStats(cmp, ownerChar);
-            const cmaxHP = calculateHP(cStats.con, cmp.race || null);
-            const cmaxKi = calculateKi(cStats.spi, cmp.race || null);
-            const cmpPL = characterManager.calculatePowerLevel({ str: cStats.str, dex: cStats.dex, con: cStats.con, wil: cStats.wil, spi: cStats.spi, maxHP: cmaxHP, maxKi: cmaxKi });
             const gapRatio = (ownerChar.powerLevel || 0) / Math.max(1, cmpPL);
             const leeching = gapRatio >= 2.5;
             if (leeching) {
-                sparPoints = Math.floor(sparPoints * 2.5);
-                leechText = ' 🏆 (owner 250%+ stronger: gains ×2.5)';
+                leechText = ' 🏆 (owner 250%+ stronger: a harder spar)';
             }
+            const sparB = applySparBonus(sparPoints, cmp);
+            sparPoints = sparB.points;
+            if (sparB.notes.length) rewardText += `\n${sparB.notes.join('\n')}`;
             let gain = distributeGain(sparPoints, ['str', 'dex', 'con', 'wil', 'spi']);
             // Child stat-growth multiplier (0% <6, 15% 6-11, 50% 12-17, 100% 18+).
             if (cmp.isChild) {
@@ -3330,11 +4361,11 @@ function checkBattleOver(battle) {
                 });
             }
             cmp.bonusStats = bonusStats;
-            // Direct 1v1 spar builds the strongest bond.
-            cmp.companionship = (cmp.companionship || 0) + family.getCompanionshipGain(1, 1);
+            // Direct 1v1 spar builds the strongest bond (Beauty tempers the gain).
+            cmp.companionship = (cmp.companionship || 0) + family.getCompanionshipGain(1, 1, cmp.beauty);
             // Sparring is training: the companion gains +10% fatigue too, and rests if too tired.
             cmp.fatigue = Math.min(100, (cmp.fatigue || 0) + 10);
-            const cmpRestText = companionRestIfNeeded(cmp);
+            const cmpRestText = companionRestIfNeeded(cmp, ownerChar);
             // Roll for technique mastery after the spar (same chances as a player).
             const masteryText = rollCompanionMastery(cmp);
             const comps = [...(ownerChar.companions || [])];
@@ -3359,7 +4390,8 @@ function checkBattleOver(battle) {
     let deathText = '';
     if (mission && winners.length === 0) {
         const alignment = mission.alignment || 'positive';
-        battle.turnOrder.filter(p => !isNPC(p) && !isCompanion(p)).forEach(p => {
+        // An admin-removed combatant was taken out of the fight, not killed by the enemies.
+        battle.turnOrder.filter(p => !isNPC(p) && !isCompanion(p) && !p.adminRemoved).forEach(p => {
             if (enemiesKillPlayer(mission.missionType, alignment)) {
                 const deadChar = killCharacter(p.userId);
                 if (deadChar) {
@@ -3378,7 +4410,7 @@ function checkBattleOver(battle) {
     // Post-duel execution: after a legitimate duel, the winner may execute the defeated player.
     if (battle.isDuel && !duelExecutions.has(battle.id)) {
         const winner = winners.find(w => !isNPC(w) && !isCompanion(w));
-        const losers = battle.turnOrder.filter(p => !isNPC(p) && !isCompanion(p)
+        const losers = battle.turnOrder.filter(p => !isNPC(p) && !isCompanion(p) && !p.adminRemoved
             && (p.isDead || p.isIncapacitated) && p.userId !== (winner && winner.userId));
         if (winner && losers.length === 1) {
             const loser = losers[0];
@@ -3444,6 +4476,48 @@ function checkBattleOver(battle) {
         }
     }
 
+    // Canon battles: resolve the planet/location destruction once the fight ends. The villain must
+    // WIN to complete the destruction. Two flavors share this block:
+    //   'defense'   — the unopposed gauntlet vs the planet's 6 NPC defenders.
+    //   'intervene' — the intervening players (+ allied NPC helpers) actually fought the villain.
+    const canonB = pendingCanonBattles.get(battle.id);
+    if (canonB) {
+        pendingCanonBattles.delete(battle.id);
+        const villainP = battle.turnOrder.find(p => p.userId === canonB.villainUserId);
+        const villainAlive = villainP && !villainP.isDead && !villainP.isIncapacitated;
+        const villainChar = characterManager.getCharacter(canonB.villainUserId);
+        if (villainAlive) {
+            rewardText += `\n\n☠️ **${villainP.username}** defeated the defenders — the destruction proceeds!`;
+            rewardText += applyCanonDestruction(villainChar, canonB);
+        } else if (canonB.mode === 'intervene') {
+            // The resistance won the fight. Every intervening player who stood in the battle earns
+            // a reward scaled to their own PL and the villain's (a bigger upset pays more).
+            const villainPL = (villainChar && villainChar.powerLevel) || 0;
+            rewardText += `\n\n🛡️ The **resistance** repelled **${villainP ? villainP.username : 'the villain'}**! The **destruction failed** and **${canonB.planet}** is saved!`;
+            (canonB.heroUserIds || []).forEach(id => {
+                const hp = battle.turnOrder.find(p => p.userId === id);
+                if (!hp) return; // joined too late / couldn't take part
+                const h = characterManager.getCharacter(id);
+                if (!h) return;
+                const per = getCanonReward(h.powerLevel || 0, 'thwart', villainPL);
+                characterManager.updateCharacter(id, h.id, { unspentPoints: (h.unspentPoints || 0) + per });
+                rewardText += `\n🛡️ **${h.name}** earned **+${per}** stat points!`;
+                const nick = awardNickname(id, h, 'savePlanet');
+                if (nick) rewardText += `\n🏷️ **${h.name}** is now known as **${nick.emoji} ${nick.text}**!`;
+            });
+        } else {
+            rewardText += `\n\n🛡️ The planet's **6 defenders** repelled **${villainP ? villainP.username : 'the villain'}**! The **destruction failed** and **${canonB.planet}** is saved!`;
+        }
+    }
+
+    // Yokai quest: a Very Hard mission completed WITHOUT companions counts toward "Prove your worth".
+    if (mission) {
+        winners.forEach(w => {
+            if (isNPC(w) || isCompanion(w)) return;
+            rewardText += countYokaiQuestProgress(w.userId, mission.missionType);
+        });
+    }
+
     let content;
     if (alive.length === 0) {
         content = '💀 **BATTLE OVER!** Everyone is down.' + deathText + rewardText;
@@ -3478,7 +4552,7 @@ function checkPendingZenkai(userId, character) {
     const exhaustedUntil = Date.now() + ZENKAI_EXHAUST_MS;
     characterManager.updateCharacter(userId, character.id, {
         stats: zenkaiStats,
-        modifiers: calculateAllModifiers(zenkaiStats),
+        modifiers: calculateAllModifiers(zenkaiStats, character.statMultipliers),
         ...zenkaiVitals,
         powerLevel: characterManager.calculatePowerLevel({ ...zenkaiStats, maxHP: zenkaiVitals.maxHP, maxKi: zenkaiVitals.maxKi }),
         zenkaiPending: null,
@@ -3527,19 +4601,38 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
         case 'd35pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(35) / 100)); break;
         case 'd40pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(40) / 100)); break;
         case 'd25pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(25) / 100)); break;
-        case 'flat3': kiCost = 3; break;
-        case 'flat5': kiCost = 5; break;
-        case 'flat10': kiCost = 10; break;
-        case 'flat15': kiCost = 15; break;
-        case 'flat20': kiCost = 20; break;
-        case 'flat30': kiCost = 30; break;
-        case 'flat45': kiCost = 45; break;
-        default: kiCost = 0;
+        case 'flat3': kiCost = scaleKiMove(3); break;
+        case 'flat5': kiCost = scaleKiMove(5); break;
+        case 'flat10': kiCost = scaleKiMove(10); break;
+        case 'flat15': kiCost = scaleKiMove(15); break;
+        case 'flat20': kiCost = scaleKiMove(20); break;
+        case 'flat30': kiCost = scaleKiMove(30); break;
+        case 'flat45': kiCost = scaleKiMove(45); break;
+        default: {
+            // Generic parser (custom /create techniques use arbitrary dXX% Ki tiers).
+            const pctMatch = /^d(\d+)pct$/.exec(skill.ki);
+            kiCost = pctMatch ? Math.max(1, Math.round(maxKi * parseInt(pctMatch[1], 10) / 100)) : 0;
+        }
     }
-    // Turning OFF a sustained passive (lowering Ki Sense, landing) is free — conserve Ki / manage fatigue.
-    if ((skillName === 'Ki Sense' && npc.kiSense) || (skillName === 'Fly' && npc.flying) || (skillName === 'Ki Application' && npc.kiApplicationActive)) {
-        kiCost = 0;
+    // Turning OFF a sustained passive (lowering Ki Sense, landing, dropping Ki Sharpening) is free.
+    const togglingOff = (skillName === 'Ki Sense' && npc.kiSense)
+        || (skillName === 'Fly' && npc.flying)
+        || (skillName === 'Ki Application' && npc.kiApplicationActive)
+        || (skillName === 'Ki Sharpening' && npc.kiSharpeningActive)
+        || (skillName === 'Pump Up' && npc.pumpUpActive)
+        || (skillName === 'Kaioken' && npc.kaiokenActive);
+
+    // Technique mastery (see TECHNIQUE_MASTERY_*): an NPC's mastery discounts and empowers its
+    // techniques with the exact same rules a player gets — -20% Ki per level (or the skill's
+    // explicit per-mastery ladder), Ki Efficiency master 3's -5 drain, and Hunter of Legend's
+    // 3-Energy Vital Strike. Deactivating a sustained toggle is free.
+    const skillMastery = getSkillMastery(npc, skillName);
+    if (!togglingOff) {
+        kiCost = applyTechniqueMasteryKiCost(kiCost, skill, skillMastery, npc.ki || 0);
+        if (Number((npc.abilityMastery || {})['Ki Efficiency']) >= 3) kiCost = Math.max(0, kiCost - scaleKiMove(5));
+        if (skill.vitalStrike && npc.mutation === 'Hunter of Legend') kiCost = scaleKiMove(3);
     }
+    if (togglingOff) kiCost = 0;
     if (npc.currentKi < kiCost) return { text, used: false };
     if (skill.cost === 'action' && npc.hasActed) return { text, used: false };
     if (skill.cost === 'bonus' && npc.hasBonusActed) return { text, used: false };
@@ -3554,10 +4647,49 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
 
     let log = `🧠 **${npc.username}** uses **${skill.name}**! (${kiCost} Ki)\n`;
 
-    const dexMod = battle.getEffectiveModifier(npc, 'dex');
-    const strMod = battle.getEffectiveModifier(npc, 'str');
-    const wilMod = battle.getEffectiveModifier(npc, 'wil');
-    const conMod = battle.getEffectiveModifier(npc, 'con');
+    // Technique mastery is FLAT + PCT (see the player path / masteryScaling): the mastery die is the
+    // flat part, and each level also boosts the technique's stat mods by a percentage.
+    const dexMod = masteryScaledMod(battle, npc, 'dex', skillMastery);
+    const strMod = masteryScaledMod(battle, npc, 'str', skillMastery);
+    const wilMod = masteryScaledMod(battle, npc, 'wil', skillMastery);
+    const conMod = masteryScaledMod(battle, npc, 'con', skillMastery);
+
+    // NPC mirror of the player's `skillAttackRoll()` — DEX dice vs the target's defense, with the
+    // same modifiers (weapon, flight, Wolf Fang's DEX bonus) and the Cerealian Evolved Right Eye
+    // reroll. Used by the technique cases below that need a full attack roll.
+    const npcAttackRoll = () => {
+        const atkDice = battle.getDexDice(npc.stats.dex);
+        const defDice = battle.getDexDice(target.stats.dex);
+        let atk = battle.rollDice(atkDice) + dexMod;
+        if (npc.weaponAttackMod) atk += npc.weaponAttackMod;
+        if (npc.flying) atk += 2;
+        if (npc.wolfFang) atk += Math.max(1, Math.round(dexMod * ((npc.wolfFangDexPct || 10) / 100)));
+        let extra = '';
+        if (npc.race === 'Cerealian' && !npc.evolvedRightEyeUsed && (npc.currentKi || 0) > 0) {
+            const eyeCost = npc.mutation === 'Hunter of Legend' ? 5 : 7;
+            if ((npc.currentKi || 0) >= eyeCost) {
+                let eyeReroll = battle.rollDice(atkDice);
+                if (npc.mutation === 'Hunter of Legend') eyeReroll += 2;
+                npc.evolvedRightEyeUsed = true;
+                if (eyeReroll > atk) {
+                    npc.currentKi -= eyeCost;
+                    atk = eyeReroll;
+                    extra = `👁️ **${npc.username}**'s **Evolved Right Eye** rerolls the strike! (${eyeReroll})\n`;
+                }
+            }
+        }
+        let def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex');
+        if (target.flying) def += 2;
+        if (target.kiSense) def += 1;
+        return { atk, def, hit: atk > def, extra };
+    };
+    // Shared "the target takes damage" tail so every case behaves like the rest of the NPC path.
+    const npcDealDamage = (amount) => {
+        const dmg = Math.max(0, amount);
+        target.currentHP -= dmg;
+        if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
+        return dmg;
+    };
 
     if (skillName === 'Fly') {
         npc.flying = !npc.flying;
@@ -3569,16 +4701,37 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             : `👁️ ${npc.username} lowers their **Ki Sense**.\n`;
     } else if (skillName === 'Ki Application') {
         if (npc.kiApplicationActive) {
+            // Keep the original damage so it can be switched back on later.
+            if (!npc.kiApplicationBaseDamage) npc.kiApplicationBaseDamage = npc.kiAppDamage || 0;
             npc.kiApplicationActive = false;
             npc.kiAppDamage = 0;
             log += `💥 ${npc.username} lowers their **Ki Application**.\n`;
         } else {
             npc.kiApplicationActive = true;
+            if (!npc.kiAppDamage && npc.kiApplicationBaseDamage) npc.kiAppDamage = npc.kiApplicationBaseDamage;
             log += `💥 ${npc.username} activates **Ki Application**!\n`;
         }
     } else if (skillName === 'Ki Sharpening') {
-        npc.kiSharpened = true;
-        log += `⚔️ ${npc.username} sharpens their attack! (+1d4 next damage)\n`;
+        // Sustained toggle (same as the player version): +% damage, -% DEX attack rolls, Ki/turn.
+        // Previously this set the legacy one-shot `kiSharpened` (+1d4 next hit) and never marked
+        // the toggle active, so the AI re-bought it every turn — an invisible Ki bleed.
+        if (npc.kiSharpeningActive) {
+            npc.kiSharpeningActive = false;
+            npc.kiSharpeningDamagePct = 0;
+            npc.kiSharpeningDexPenalty = 0;
+            npc.kiSharpeningCost = 0;
+            log += `🔪 ${npc.username} lowered their **Ki Sharpening**.\n`;
+        } else {
+            const mastery = (npc.techniqueMastery && npc.techniqueMastery['Ki Sharpening']) || 0;
+            const dmgPct = [40, 45, 50, 55][Math.min(mastery, 3)] || 40;
+            const dexPenalty = mastery >= 3 ? 10 : 20;
+            const flatCost = [40, 40, 25, 10][Math.min(mastery, 3)] || 40;
+            npc.kiSharpeningActive = true;
+            npc.kiSharpeningDamagePct = dmgPct;
+            npc.kiSharpeningDexPenalty = dexPenalty;
+            npc.kiSharpeningCost = flatCost;
+            log += `🔪 **${npc.username}** activates **Ki Sharpening**! (+${dmgPct}% damage, -${dexPenalty}% DEX attack rolls, drains ${npc.kiSharpeningCost} Ki/turn)\n`;
+        }
     } else if (skillName === 'Pump Up') {
         const enhanced = hasEnhancedPumpUp(npc);
         if (npc.pumpUpActive) {
@@ -3592,9 +4745,11 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             npc.pumpUpMods = null;
             log += `💪 ${npc.username} **relaxes** their **Pump Up**.\n`;
         } else {
-            const pStr = enhanced ? 15 : 10;
-            const pCon = enhanced ? 9 : 5;
-            const pDex = enhanced ? 4 : -5;
+            // Mastery scales the mods exactly like the player's case (10/11/12/12 STR, ...) and adds
+            // the same mastery pct of the user's own STR/CON mods (flat + pct).
+            const pStr = (enhanced ? 15 : masteryStepValue(TECHNIQUE_MASTERY_PUMPUP.str, skillMastery, 10)) + masteryPctBonus(battle.getEffectiveModifier(npc, 'str'), skillMastery);
+            const pCon = (enhanced ? 9 : masteryStepValue(TECHNIQUE_MASTERY_PUMPUP.con, skillMastery, 5)) + masteryPctBonus(battle.getEffectiveModifier(npc, 'con'), skillMastery);
+            const pDex = enhanced ? 4 : masteryStepValue(TECHNIQUE_MASTERY_PUMPUP.dex, skillMastery, -5);
             npc.pumpUpActive = true;
             npc.modBonus = npc.modBonus || {};
             npc.pumpUpMods = { str: pStr, con: pCon, dex: pDex };
@@ -3606,12 +4761,45 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             // Enhanced variant is a free action — it doesn't take their turn.
             if (enhanced) npc.hasActed = false;
         }
+    } else if (skillName === 'Kaioken') {
+        // Same toggle as the player version: multiply effective combat mods, burn Ki each turn.
+        if (npc.kaiokenActive) {
+            const kmods = npc.kaiokenMods || {};
+            npc.modBonus = npc.modBonus || {};
+            KAIOKEN_STATS.forEach(s => { npc.modBonus[s] = Math.max(0, (npc.modBonus[s] || 0) - (kmods[s] || 0)); });
+            npc.kaiokenActive = false;
+            npc.kaiokenCost = 0;
+            npc.kaiokenMods = null;
+            log += `🔴 ${npc.username} **powers down** Kaioken.\n`;
+        } else {
+            // Trello: Kaioken "cannot be used when at or above 50% fatigue".
+            if ((npc.currentFatigue || 0) >= getKaiokenFatigueCap()) {
+                npc.currentKi += kiCost;
+                npc.hasBonusActed = false;
+                log += `🔴 ${npc.username} is too exhausted to enter Kaioken.\n`;
+            } else {
+                const mastery = getSkillMastery(npc, 'Kaioken');
+                const mult = getKaiokenMultiplier(mastery);
+                const mods = {};
+                KAIOKEN_STATS.forEach(s => {
+                    const eff = battle.getEffectiveModifier(npc, s) || 0;
+                    mods[s] = Math.round(Math.max(0, eff) * (mult - 1));
+                });
+                npc.modBonus = npc.modBonus || {};
+                Object.entries(mods).forEach(([s, v]) => { npc.modBonus[s] = (npc.modBonus[s] || 0) + v; });
+                npc.kaiokenActive = true;
+                npc.kaiokenMods = mods;
+                npc.kaiokenCost = getKaiokenDrainKi(mastery);
+                npc.kaiokenStrain = getKaiokenStrainPct(mastery);
+                log += `🔴 **${npc.username}** roars — **KAIOKEN ×${mult}**! (drains ${npc.kaiokenCost} Ki/turn and ${npc.kaiokenStrain}% fatigue)\n`;
+            }
+        }
     } else if (skillName === 'Shove') {
         // Shove (Wrestler): target makes a DEX save vs DC d20+CON mod, or they're Off-Balance (-50% DEX defense).
         // Success gives the shover their action back (extra action), like the player version.
-        // Crushing Physicality: a Wrestler substitutes STR for CON in the shove's attack roll.
-        const dc = battle.rollDice(20) + battle.getEffectiveModifier(npc, npc.fightingStyle === 'Wrestler' ? 'str' : 'con');
-        const save = battle.rollDice(20) + battle.getEffectiveModifier(target, 'dex');
+        // Crushing Physicality: a Wrestler substitutes CON for STR in the shove's attack roll.
+        const dc = battle.modRoll(battle.getEffectiveModifier(npc, npc.fightingStyle === 'Wrestler' ? 'con' : 'str'));
+        const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
         if (save >= dc) {
             log += `🛡️ **${target.username}** resists the shove (${save} vs ${dc})!`;
         } else {
@@ -3621,11 +4809,13 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
         }
     } else if (skillName === 'Wolf Fang Fist') {
         // Wolf Fang Fist: gain an extra action and +10% DEX mod on attack rolls this turn.
+        // Mastery raises the DEX bonus (10/15/15/25%), same as the player's case.
+        const wffPct = masteryStepValue(TECHNIQUE_MASTERY_PCT['Wolf Fang Fist'], skillMastery, 10);
         npc.hasActed = false; // grant the extra action
         npc.wolfFang = true;
-        npc.wolfFangDexPct = 10;
+        npc.wolfFangDexPct = wffPct;
         npc.wolfFangExtraUsed = false;
-        log += `🐺 ${npc.username} gains an extra action and **+10% DEX mod** on attack rolls this turn!\n`;
+        log += `🐺 ${npc.username} gains an extra action and **+${wffPct}% DEX mod** on attack rolls this turn!\n`;
     } else if (skillName === 'Neo Wolf Fang Fist') {
         // Neo Wolf Fang Fist: gain an extra action, +30% DEX mod and +25% STR mod to damage.
         npc.hasActed = false;
@@ -3643,12 +4833,13 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
         const def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex') + (target.flying ? 2 : 0) + (target.kiSense ? 1 : 0);
         log += `💨 Attack Roll: **${atk}** vs Defense Roll: **${def}**\n`;
         if (atk > def) {
-            const dmg = battle.rollDice(9) + strMod + (npc.neoWolfFang ? Math.round(strMod * 0.25) : 0);
+            const dmg = battle.rollDice(techniqueMasteryDice('Whirlwind Kick', skillMastery, 9)) + strMod + (npc.neoWolfFang ? Math.round(strMod * 0.25) : 0);
             target.currentHP -= dmg;
             if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
             log += `💥 Hit for **${dmg} damage**!\n`;
-            const dc = battle.rollDice(20) + battle.getEffectiveModifier(npc, 'str');
-            const save = battle.rollDice(20) + battle.getEffectiveModifier(target, 'con');
+            log += maybeMiscarry(target);
+            const dc = battle.modRoll(battle.getEffectiveModifier(npc, 'str'));
+            const save = battle.modRoll(battle.getEffectiveModifier(target, 'con'));
             if (save < dc) { target.turnDisadvantage = true; log += `🌀 **${target.username}** is knocked OFF-BALANCE!\n`; }
             else { log += `🛡️ ${target.username} keeps their balance.\n`; }
         } else {
@@ -3659,7 +4850,8 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
         const atkDice = battle.getDexDice(npc.stats.dex);
         const defDice = battle.getDexDice(target.stats.dex);
         const atkPenalty = 8 + Math.round(dexMod * 0.10);
-        const dmgSides = 5;
+        // Mastery widens the strikes' dice (2d5 -> 2d9) and upgrades the crit follow-up at 5.
+        const dmgSides = techniqueMasteryDice('Thrusting Strikes', skillMastery, 5);
         let hits = 0, total = 0, critBonus = false;
         for (let i = 0; i < 2; i++) {
             const rawAtk = battle.rollDice(atkDice);
@@ -3669,13 +4861,15 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             if (atk > def) {
                 hits++;
                 total += rollXdY(2, dmgSides) + strMod;
-                if (rawAtk === atkDice) critBonus = true;
+                if (rawAtk > atkDice - battle.natBand(atkDice)) critBonus = true;
             } else {
                 log += `💨 A thrust misses!\n`;
             }
         }
         if (critBonus && hits > 0) {
-            const extra = battle.rollDice(5) + Math.round(strMod / 4);
+            const extraSides = skillMastery >= 5 ? 10 : 5;
+            const extraMod = skillMastery >= 5 ? Math.round(strMod / 2) : Math.round(strMod / 4);
+            const extra = battle.rollDice(extraSides) + extraMod;
             total += extra; hits++;
             log += `⚡ **Critical thrust!** An extra strike lands for **${extra} damage**!\n`;
         }
@@ -3685,18 +4879,20 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             target.currentHP -= total;
             if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
             log += `🔱 **${hits}** thrust${hits === 1 ? '' : 's'} hit **${target.username}** for **${total} damage**!\n`;
+            log += maybeMiscarry(target);
         }
     } else if (skillName === 'Lacerating Slash') {
         // Legionary: d30+(DEX+CON mod) save vs d20+2×STR; on fail d20+½ STR and Bleed 1 turn.
-        const dc = battle.rollDice(20) + (2 * strMod);
-        const save = battle.rollDice(30) + dexMod + conMod;
+        const dc = battle.modRoll(2 * strMod);
+        const save = battle.modRoll(dexMod + conMod, 30);
         if (save >= dc) {
             log += `🛡️ **${target.username}** braces against the slash! (${save} vs ${dc})\n`;
         } else {
-            const dmg = battle.rollDice(20) + Math.round(strMod / 2);
+            const dmg = battle.rollDice(techniqueMasteryDice('Lacerating Slash', skillMastery, 20)) + Math.round(strMod / 2);
             target.currentHP -= dmg;
             if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
             log += `💥 Hit for **${dmg} damage**!\n`;
+            log += maybeMiscarry(target);
             target.bleedTurns = (target.bleedTurns || 0) + 1;
             log += `🩸 **${target.username}** starts BLEEDING for **1 turn**!\n`;
         }
@@ -3708,12 +4904,13 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             let atk = battle.rollDice(atkDice) + dexMod + (npc.flying ? 2 : 0);
             if (npc.weaponAttackMod) atk += npc.weaponAttackMod;
             const def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex') + (target.flying ? 2 : 0) + (target.kiSense ? 1 : 0);
-            const chargeBonus = (npc.kamehamehaCharge || 0) * 2;
+            const chargeBonus = (npc.kamehamehaCharge || 0) * KH_CHARGE_BONUS_PER_CHARGE;
             if (atk > def) {
-                const dmg = battle.rollDice(10) + wilMod + chargeBonus;
+                const dmg = battle.rollDice(techniqueMasteryDice('Kamehameha', skillMastery, 10)) + wilMod + chargeBonus;
                 target.currentHP -= dmg;
                 if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
                 log += `💥 **Kamehameha!** ${npc.username} releases the charge for **${dmg} damage**!\n`;
+                log += maybeMiscarry(target);
             } else {
                 log += `💨 The charged Kamehameha misses!\n`;
             }
@@ -3723,6 +4920,413 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             npc.kamehamehaCharging = true;
             npc.kamehamehaCharge = 1;
             log += `🔵 **${npc.username}** begins charging a **Kamehameha**!\n`;
+        }
+    } else if (skillName === 'Spirit Ball') {
+        // Spirit Ball: a ki ball attack (d20+DEX vs d20+DEX). On hit deal 1d7+WIL damage;
+        // on a miss, if the user still has 6+ Ki it can redirect the ball once for 6 Ki.
+        const defDex = battle.getEffectiveModifier(target, 'dex');
+        const atk = battle.modRoll(dexMod);
+        const def = battle.modRoll(defDex);
+        if (atk > def) {
+            const dmg = battle.rollDice(7) + wilMod;
+            target.currentHP = Math.max(0, target.currentHP - dmg);
+            if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
+            log += `\n✅ The **Spirit Ball** hits **${target.username}** for **${Math.max(1, dmg)} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+        } else if ((npc.currentKi || 0) >= 6) {
+            npc.currentKi -= 6;
+            const atk2 = battle.modRoll(dexMod);
+            const def2 = battle.modRoll(defDex);
+            if (atk2 > def2) {
+                const dmg = battle.rollDice(7) + wilMod;
+                target.currentHP = Math.max(0, target.currentHP - dmg);
+                if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
+                log += `\n💨 Missed! **${npc.username}** spends 6 Ki to redirect it... ✅ hits **${target.username}** for **${Math.max(1, dmg)} damage**! (HP: ${target.currentHP})`;
+                log += maybeMiscarry(target);
+            } else {
+                log += `\n💨 Missed! **${npc.username}** spends 6 Ki to redirect it... and it misses again!`;
+            }
+        } else {
+            log += `\n💨 The **Spirit Ball** misses!`;
+        }
+    } else if (skillName === 'Dodon Ray') {
+        // Dodon Ray: a beam the target must dodge (DEX save vs the caster's WIL DC).
+        const dc = battle.modRoll(wilMod);
+        const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        if (save >= dc) {
+            log += `\n💨 **${target.username}** dodges the ray! (${save} vs ${dc})`;
+        } else {
+            const dmg = battle.rollDice(techniqueMasteryDice('Dodon Ray', skillMastery, 7)) + wilMod;
+            target.currentHP = Math.max(0, target.currentHP - dmg);
+            if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
+            log += `\n✅ **${target.username}** takes **${Math.max(1, dmg)} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+        }
+    } else if (skillName === 'Destructo Disc') {
+        // Destructo Disc: a razor disc that ignores guard bonuses; 2d8+WIL, and a DEX save
+        // (advantage) or it cuts off a limb (decapitates if it hits the head). Mastery widens the
+        // dice (2d8 -> 2d12) and, at mastery 2+, lets a miss be redirected with the bonus action.
+        const discSides = techniqueMasteryDice('Destructo Disc', skillMastery, 8);
+        let atk = battle.modRoll(dexMod);
+        let def = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        if (atk <= def && skillMastery >= 2 && !npc.hasBonusActed) {
+            npc.hasBonusActed = true;
+            log += `\n🎯 **Redirect!** (bonus action)\n`;
+            atk = battle.modRoll(dexMod);
+            def = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        }
+        if (atk <= def) {
+            log += `\n💨 The disc misses! (${atk} vs ${def})`;
+        } else {
+            const dmg = battle.rollDice(discSides) + battle.rollDice(discSides) + wilMod;
+            const conMod = battle.getEffectiveModifier(target, 'con');
+            if (dmg < conMod) {
+                log += `\n🛡️ **${target.username}**'s CON shrugs off the disc (**${dmg}** < ${conMod} CON) — no damage!`;
+            } else {
+                target.currentHP = Math.max(0, target.currentHP - dmg);
+                if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
+                log += `\n🌀 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
+                log += maybeMiscarry(target);
+                // DEX save with advantage (d20+WIL); on fail, it cuts off a limb.
+                const dc = battle.modRoll(wilMod);
+                const s1 = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+                const s2 = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+                const save = Math.max(s1, s2);
+                if (save < dc) {
+                    const cut = battle.rollDice(5);
+                    const limb = cut <= 2 ? 'arm' : (cut <= 4 ? 'leg' : 'head');
+                    if (limb === 'head') {
+                        if (target.race !== 'Bio-Android') {
+                            // Player targets get the real death flow (afterlife, companion loss, etc.),
+                            // mirroring other lethal battle effects.
+                            if (!battle.isSpar && !isNPC(target) && !isCompanion(target)) {
+                                const deathRes = killCharacter(target.userId);
+                                if (deathRes && deathRes.protected) {
+                                    target.currentHP = 1;
+                                    log += `\n🧿 **${target.username}** was protected by the **Ancient Wuxia Talisman** and survived the disc!`;
+                                } else if (deathRes && deathRes.reborn) {
+                                    target.isDead = true;
+                                    target.isIncapacitated = true;
+                                    target.currentHP = 0;
+                                    log += `\n🥚 **${target.username}** lost their head, but their **Namekian egg** hatches — they are reborn!`;
+                                } else {
+                                    target.isDead = true;
+                                    target.isIncapacitated = true;
+                                    target.currentHP = 0;
+                                    log += `\n💀 The disc **CUTS OFF** **${target.username}**'s head — they're sent to **${afterlifeLocationName(deathRes || target)}**!`;
+                                }
+                            } else {
+                                target.isDead = true;
+                                target.isIncapacitated = true;
+                                target.currentHP = 0;
+                                log += `\n💀 The disc **CUTS OFF** **${target.username}**'s head!`;
+                            }
+                        } else {
+                            log += `\n🛡️ **${target.username}**'s head withstands the disc!`;
+                        }
+                    } else {
+                        if (!Array.isArray(target.brokenLimbs)) target.brokenLimbs = [];
+                        target.brokenLimbs.push({ limb, type: 'sliced off' });
+                        log += `\n🩸 The disc **CUTS OFF** **${target.username}**'s ${limb}!`;
+                    }
+                }
+            }
+        }
+    } else if (skillName === 'Kamehameha Surge') {
+        // Turtle full-power beam. Mastery raises the dice (1d10 -> 1d25), adds a +5/+10 flat, and
+        // at mastery 3 the blast can DISINTEGRATE the target — identical to the player's case.
+        const res = npcAttackRoll();
+        if (res.extra) log += res.extra;
+        if (!res.hit) {
+            log += `\n💨 The beam misses! (${res.atk} vs ${res.def})`;
+        } else {
+            const dmgDice = techniqueMasteryDice('Kamehameha Surge', skillMastery, 10);
+            const flat = skillMastery >= 3 ? 10 : 5;
+            const dmg = npcDealDamage(battle.rollDice(dmgDice) + flat + wilMod);
+            log += `\n🌊 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+            if (skillMastery >= 3 && !target.isIncapacitated) {
+                const saveDc = battle.rollDice(battle.modDice(wilMod, 25)) + wilMod + Math.floor(dmg / 3);
+                const save = battle.modRoll(battle.getEffectiveModifier(target, 'con')) + Math.max(0, Math.floor(target.currentHP || 0));
+                if (save < saveDc) {
+                    // Player targets go through the real death flow (afterlife, companion loss,
+                    // Namekian egg / talisman) — same pattern as Destructo Disc's head-cut.
+                    if (!battle.isSpar && !isNPC(target) && !isCompanion(target)) {
+                        const deathRes = killCharacter(target.userId);
+                        target.isDead = true;
+                        target.isIncapacitated = true;
+                        target.currentHP = 0;
+                        if (deathRes && deathRes.protected) {
+                            target.currentHP = 1;
+                            log += `\n🧿 **${target.username}** was protected by the **Ancient Wuxia Talisman**!`;
+                        } else if (deathRes && deathRes.reborn) {
+                            log += `\n🥚 **${target.username}** is **DISINTEGRATED** — but their **Namekian egg** hatches and they are reborn!`;
+                        } else {
+                            log += `\n💀 **${target.username}** is **DISINTEGRATED** — sent to **${afterlifeLocationName(deathRes || target)}**!`;
+                        }
+                    } else {
+                        target.isDead = true;
+                        target.isIncapacitated = true;
+                        target.currentHP = 0;
+                        log += `\n💀 **${target.username}** is DISINTEGRATED!`;
+                    }
+                }
+            }
+        }
+    } else if (skillName === 'Tiger Teep') {
+        // Tiger teep: DEX save (caster's DEX) or 1d17+STR — mastery raises the dice, and mastery 3
+        // adds Rupture, exactly like the player's case.
+        const dc = battle.modRoll(dexMod);
+        const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        if (save >= dc) {
+            log += `\n🛡️ **${target.username}** sidesteps the teep! (${save} vs ${dc})`;
+        } else {
+            const dmgDice = techniqueMasteryDice('Tiger Teep', skillMastery, 17);
+            const dmg = npcDealDamage(battle.rollDice(dmgDice) + strMod);
+            log += `\n🦵 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+            if (skillMastery >= 3) {
+                const rTurns = battle.rollDice(3);
+                target.ruptureTurns = (target.ruptureTurns || 0) + rTurns;
+                log += `\n🩸 **${target.username}** is afflicted with **Rupture** for **${rTurns} turn${rTurns === 1 ? '' : 's'}**!`;
+            }
+        }
+    } else if (skillName === 'Machine Gun Punches') {
+        // Boxing flurry: DEX save (caster's DEX) or 6 strikes (7 at mastery 3) of 1d4+STR
+        // (d5 at mastery 2, d6 at 3) and disadvantage on the target's next attack.
+        const dc = battle.modRoll(dexMod);
+        const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        if (save >= dc) {
+            log += `\n💨 **${target.username}** dodges the flurry! (${save} vs ${dc})`;
+        } else {
+            const strikes = skillMastery >= 3 ? 7 : 6;
+            const punchDice = techniqueMasteryDice('Machine Gun Punches', skillMastery, 4);
+            let total = 0;
+            for (let i = 0; i < strikes; i++) total += battle.rollDice(punchDice) + strMod;
+            npcDealDamage(total);
+            target.nextAttackDisadvantage = true;
+            log += `\n🥊 ${strikes} punches land for **${total} damage**! (HP: ${target.currentHP})\n⚠️ ${target.username} has disadvantage on their next attack!`;
+            log += maybeMiscarry(target);
+        }
+    } else if (skillName === 'One-Two') {
+        // Boxing jab-cross: the jab lands for 1d8+DEX (1d9 at mastery 1), then a DEX save decides
+        // the 1d15+STR cross (1d18 at mastery 2) — and at mastery 3 the target is left with
+        // disadvantage instead of the user gaining advantage.
+        const res = npcAttackRoll();
+        if (res.extra) log += res.extra;
+        if (!res.hit) {
+            log += `\n💨 The jab misses! (${res.atk} vs ${res.def})`;
+        } else {
+            const jabDice = skillMastery >= 1 ? 9 : 8;
+            const jabDmg = npcDealDamage(battle.rollDice(jabDice) + dexMod);
+            log += `\n🥊 The first jab hits for **${jabDmg} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+            const dc = battle.modRoll(dexMod);
+            const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+            if (save >= dc) {
+                log += `\n🛡️ The cross is resisted! (${save} vs ${dc})`;
+            } else {
+                const crossDice = skillMastery >= 2 ? 18 : 15;
+                const crossDmg = npcDealDamage(battle.rollDice(crossDice) + strMod);
+                log += `\n💥 The cross lands! **${target.username}** takes **${crossDmg} damage**! (HP: ${target.currentHP})`;
+                log += maybeMiscarry(target);
+                if (skillMastery >= 3) {
+                    target.nextAttackDisadvantage = true;
+                    log += `\n⚠️ **${target.username}** has disadvantage on the next attack!`;
+                } else {
+                    npc.nextAttackAdvantage = true;
+                    log += `\n🎯 **${npc.username}** gains **advantage on their next attack**!`;
+                }
+            }
+        }
+    } else if (skillName === 'Dodon Barrage') {
+        // Crane School barrage: 5 beams +1 per mastery (max 7), each a DEX save vs the caster's WIL
+        // DC; a miss deals nothing, a hit deals d3+(WIL/2) — d4 at mastery 3.
+        const numShots = 5 + Math.min(skillMastery, 2);
+        const beamDice = skillMastery >= 3 ? 4 : 3;
+        let hits = 0, total = 0;
+        for (let i = 0; i < numShots; i++) {
+            const dc = battle.modRoll(wilMod);
+            const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+            if (save < dc) {
+                hits++;
+                total += battle.rollDice(beamDice) + Math.floor(wilMod / 2);
+            }
+        }
+        if (hits === 0) {
+            log += `\n💨 All **${numShots}** beams miss **${target.username}**!`;
+        } else {
+            npcDealDamage(total);
+            log += `\n🔆 **${hits}/${numShots}** beams hit **${target.username}** for **${total} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+        }
+    } else if (skillName === 'Feral Fury Knee') {
+        // Flying knee (action+bonus): hit = 1d8+STR (1d12 at mastery 3) and a DEX save or a 1-turn
+        // stun; a miss costs the rest of the turn and leaves the user Off-Balance.
+        const res = npcAttackRoll();
+        if (res.extra) log += res.extra;
+        if (!res.hit) {
+            npc.hasBonusActed = true;
+            npc.turnDisadvantage = true;
+            log += `\n💨 The knee misses! **${npc.username}** loses the rest of their turn and is OFF-BALANCE!`;
+        } else {
+            const kneeDmg = npcDealDamage(battle.rollDice(techniqueMasteryDice('Feral Fury Knee', skillMastery, 8)) + strMod);
+            log += `\n🦵 **${target.username}** takes **${kneeDmg} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+            const kneeDc = battle.modRoll(dexMod);
+            const kneeSave = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+            if (kneeSave < kneeDc) {
+                target.stunned = true;
+                // Grapple Mastery: Wrestler stuns last 1 turn longer.
+                target.stunnedTurns = npc.fightingStyle === 'Wrestler' ? 2 : 1;
+                log += `\n⚡ **${target.username}** is STUNNED and loses their next turn!`;
+            }
+        }
+    } else if (skillName === 'Incognito') {
+        // Assassin: force a DEX save (d20+DEX) — on a failure the user slips out of sight.
+        const dc = battle.modRoll(dexMod);
+        const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+        if (save >= dc) {
+            log += `\n🛡️ **${target.username}** spots **${npc.username}**! (${save} vs ${dc})`;
+        } else {
+            npc.invisible = true;
+            log += `\n👻 **${npc.username}** vanishes — **INVISIBLE**!`;
+            if (skillMastery >= 3) {
+                npc.nextAttackAdvantage = true;
+                log += `\n🎯 **+5 DEX** to their next attack roll!`;
+            }
+        }
+    } else if (skillName === 'Secret Poison') {
+        // Assassin: poison a foe (once per encounter). CON save at mastery 1+, none at all at mastery 0.
+        if (npc.secretPoisonUsed) {
+            log += `\n❌ **${npc.username}** already used **Secret Poison** this encounter!`;
+        } else {
+            npc.secretPoisonUsed = true;
+            const poisonTurns = battle.rollDice(5) + 3;
+            const conDc = [17, 17, 19, 20][Math.min(skillMastery, 3)] || 17;
+            const conSave = battle.modRoll(battle.getEffectiveModifier(target, 'con'));
+            if (skillMastery === 0 || conSave < conDc) {
+                target.poisonTurns = (target.poisonTurns || 0) + poisonTurns;
+                log += `\n☠️ **${target.username}** is POISONED for **${poisonTurns} turns**!`;
+            } else {
+                log += `\n🛡️ **${target.username}** resists the poison! (${conSave} vs ${conDc})`;
+            }
+        }
+    } else if (skillName === 'Early Morning') {
+        // Shogun stance: block-only, counters on a block, +DEX to attacks, drains Ki per turn.
+        if (npc.earlyMorningActive) {
+            npc.earlyMorningActive = false;
+            npc.earlyMorningCost = 0;
+            log += `\n🌅 ${npc.username} lowers their **Early Morning** stance.\n`;
+        } else {
+            npc.earlyMorningActive = true;
+            npc.earlyMorningDex = [1, 2, 3, 3][Math.min(skillMastery, 3)] || 1;
+            npc.earlyMorningCost = [20, 18, 15, 12][Math.min(skillMastery, 3)] || 20;
+            log += `\n🌅 **${npc.username}** enters **Early Morning** stance! (+${npc.earlyMorningDex} DEX attack, block-only + counter, ${npc.earlyMorningCost} Ki/turn)\n`;
+        }
+    } else if (skillName === 'Crimson Sky Flurry') {
+        // Shogun: 3 slashes (each a DEX save) for 1d8+weapon/2; landing all three forces a CON save
+        // or bleed and applies Shogun Mark.
+        const weaponHalf = Math.floor((npc.weaponAttackMod || 0) / 2);
+        const slashes = 3;
+        let slashesHit = 0, slashTotal = 0;
+        for (let i = 0; i < slashes; i++) {
+            const dc = battle.modRoll(dexMod);
+            const save = battle.modRoll(battle.getEffectiveModifier(target, 'dex'));
+            if (save < dc) {
+                slashesHit++;
+                slashTotal += battle.rollDice(8) + weaponHalf;
+            }
+        }
+        if (slashesHit === 0) {
+            log += `\n💨 All slashes miss!`;
+        } else {
+            npcDealDamage(slashTotal);
+            log += `\n🌪️ **${slashesHit}/${slashes}** slashes hit **${target.username}** for **${slashTotal} damage**! (HP: ${target.currentHP})`;
+            log += maybeMiscarry(target);
+            if (slashesHit === slashes) {
+                const bleedDc = Math.floor(slashTotal / 2);
+                const bleedSave = battle.modRoll(battle.getEffectiveModifier(target, 'con'));
+                if (bleedSave < bleedDc) {
+                    const bleed = battle.rollDice(3);
+                    target.bleedTurns = (target.bleedTurns || 0) + bleed;
+                    log += `\n🩸 **${target.username}** bleeds for **${bleed} turns**!`;
+                }
+                target.shogunMarkTurns = (target.shogunMarkTurns || 0) + 1;
+                log += `\n🔺 **${target.username}** is SHOGUN-MARKED!`;
+            }
+        }
+    } else if (skillName === 'Solar Flare') {
+        // A blinding flash: EVERY enemy makes a WIL save or is blinded (disadvantage this turn and
+        // on their next attack). No damage.
+        const flareTargets = getAliveTargets(battle, npc.userId);
+        if (flareTargets.length === 0) {
+            log += `\n☀️ **${npc.username}** flashes a **Solar Flare**, but there's no one around!`;
+        } else {
+            const flareDc = battle.modRoll(wilMod);
+            let blinded = 0;
+            for (const enemy of flareTargets) {
+                const save = battle.modRoll(battle.getEffectiveModifier(enemy, 'wil'));
+                if (save < flareDc) {
+                    enemy.nextAttackDisadvantage = true;
+                    enemy.turnDisadvantage = true;
+                    blinded++;
+                    log += `\n☀️ **${enemy.username}** is BLINDED! (WIL ${save} vs ${flareDc})`;
+                } else {
+                    log += `\n🛡️ **${enemy.username}** shields their eyes! (WIL ${save} vs ${flareDc})`;
+                }
+            }
+            if (blinded === 0) log += `\n☀️ Everyone averts their eyes!`;
+        }
+    } else if (skillName === 'Supernova') {
+        // Frieza Force ultimate (action+bonus): a miniature sun dropped on EVERY enemy.
+        const novaTargets = getAliveTargets(battle, npc.userId);
+        if (novaTargets.length === 0) {
+            log += `\n💨 There's no one left to hit!`;
+        } else {
+            const atkDice = battle.getDexDice(npc.stats.dex);
+            const diceMatch = /^(\d+)d(\d+)$/i.exec(skill.attack.dice);
+            const count = diceMatch ? parseInt(diceMatch[1], 10) : 1;
+            const sides = diceMatch ? parseInt(diceMatch[2], 10) : 8;
+            let novaHits = 0, novaTotal = 0;
+            for (const enemy of novaTargets) {
+                const atk = battle.rollDice(atkDice) + dexMod;
+                const def = battle.rollDice(battle.getDexDice(enemy.stats.dex)) + battle.getEffectiveModifier(enemy, 'dex');
+                if (atk > def) {
+                    let dmg = 0;
+                    for (let i = 0; i < count; i++) dmg += battle.rollDice(sides);
+                    dmg += getSkillDamageMod(battle, npc, skill.attack.mod || 'wil');
+                    if (npc.kiAppDamage) dmg += npc.kiAppDamage;
+                    enemy.currentHP -= dmg;
+                    if (enemy.currentHP <= 0 && !enemy.isIncapacitated) enemy.isIncapacitated = true;
+                    novaHits++;
+                    novaTotal += dmg;
+                    log += `\n✅ **${enemy.username}** takes **${dmg} damage**! (HP: ${enemy.currentHP})`;
+                    log += maybeMiscarry(enemy);
+                } else {
+                    log += `\n💨 **${skill.name}** misses **${enemy.username}**! (${atk} vs ${def})`;
+                }
+            }
+            if (novaHits > 0) log += `\n🌊 **${skill.name}** hits **${novaHits}/${novaTargets.length}** enemies for **${novaTotal} total damage**!`;
+        }
+    } else if (skillName === "Hero's Flute") {
+        // Konatsian: a d20 roll of 16+ clears the user's own mental statuses; the shrill note also
+        // hurts Namekian hearing (-7 DEX for a few turns).
+        const fluteRoll = battle.rollDice(20);
+        if (fluteRoll > 15) {
+            npc.frightenedTurns = 0;
+            npc.hesitantTurns = 0;
+            npc.stunned = false;
+            log += `\n🎵 **${npc.username}** plays **Hero's Flute**! (d20 = **${fluteRoll}**) — 🧘 mental status effects removed!\n`;
+        } else {
+            log += `\n🎵 **${npc.username}** plays **Hero's Flute**! (d20 = **${fluteRoll}**) — the tune fails to lift their spirits.\n`;
+        }
+        const fluteNamekians = battle.turnOrder.filter(p => !p.isDead && !p.isIncapacitated && p.race === 'Namekian');
+        if (fluteNamekians.length > 0) {
+            fluteNamekians.forEach(p => {
+                p.namekianDexPenalty = Math.max(p.namekianDexPenalty || 0, battle.rollDice(5));
+            });
+            log += `👂 The shrill flute pierces Namekian ears — **${fluteNamekians.map(p => p.username).join(', ')}** take **-7 DEX** for a few turns!\n`;
         }
     } else if (skill.attack) {
         const atkDice = battle.getDexDice(npc.stats.dex);
@@ -3747,6 +5351,13 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
         }
         let def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex');
         if (target.flying) def += 2;
+        // Crane's Persistence (KI techniques) + Crane's Mark's -10% DEX, mirroring the basic-attack
+        // path in battleSystem.attack so the style's passives aren't dead on techniques.
+        if (npc.fightingStyle === 'Crane' && battle.isStyleActive(npc) && !isPhysicalSkill(skill)) {
+            atk += (6 + Math.round(battle.getEffectiveModifier(npc, 'spi') * 0.25)) + (4 + Math.round(wilMod * 0.25));
+        }
+        if (npc.craneMarkTurns > 0) atk -= Math.round(dexMod * 0.1);
+        if (target.craneMarkTurns > 0) def -= Math.round(battle.getEffectiveModifier(target, 'dex') * 0.1);
         const hit = atk > def;
         log += `Attack Roll: **${atk}** vs Defense Roll: **${def}**\n`;
         if (hit) {
@@ -3757,11 +5368,15 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             } else {
                 const m = /^(\d+)d(\d+)$/i.exec(skill.attack.dice);
                 const count = m ? parseInt(m[1], 10) : 1;
-                const sides = m ? parseInt(m[2], 10) : 8;
+                // Technique mastery widens the damage die with the exact same numbers a player gets
+                // (`masteryDice` on the skill, else the shared per-technique table).
+                let sides = m ? parseInt(m[2], 10) : 8;
+                if (skill.attack.masteryDice) sides = skill.attack.masteryDice[Math.min(skillMastery, 3)] || sides;
+                else sides = techniqueMasteryDice(skillName, skillMastery, sides);
                 dmg = 0;
                 for (let i = 0; i < count; i++) dmg += battle.rollDice(sides);
                 const statModName = skill.attack.mod || 'str';
-                const statMod = statModName === 'wil' ? wilMod : statModName === 'dex' ? dexMod : strMod;
+                const statMod = getSkillDamageMod(battle, npc, statModName);
                 dmg += statMod;
             }
             if (npc.kiAppDamage) dmg += npc.kiAppDamage;
@@ -3772,15 +5387,16 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
                 log += `🎯 **Vital Strike** drains **${vsDrain} Energy** from **${target.username}**!\n`;
             }
             dmg = Math.max(dmg, 0);
-            // Crane's Mark: an NPC ki attacker deals +1d15 extra damage to a marked entity.
-            if (npc.fightingStyle === 'Crane' && target.craneMarkTurns > 0) {
-                const markBonus = battle.rollDice(15);
+            // Crane's Mark: a KI technique on a marked entity deals extra damage (marker's WIL mod).
+            if (!isPhysicalSkill(skill) && target.craneMarkTurns > 0) {
+                const markBonus = battle.craneMarkDamage(target, npc);
                 dmg += markBonus;
                 log += `🐦 **Crane's Mark** adds **+${markBonus} damage**!\n`;
             }
             target.currentHP -= dmg;
             if (target.currentHP <= 0 && !target.isIncapacitated) target.isIncapacitated = true;
             log += `💥 Hit for **${dmg} damage**!\n`;
+            log += maybeMiscarry(target);
             // Crane's Marking Strike: a Crane's ki technique marks the opponent for 1d5 turns.
             if (npc.fightingStyle === 'Crane' && !target.isIncapacitated) {
                 const markTurns = battle.rollDice(5);
@@ -3793,9 +5409,9 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
             // Technique save effects (e.g. Legionary Sweeping Swing's Prone).
             const saveSpec = skill.attack.save;
             if (saveSpec) {
-                const dc = saveSpec.dc.mod === 'str' ? battle.rollDice(18) + strMod
-                    : battle.rollDice(20) + battle.getEffectiveModifier(npc, saveSpec.dc.mod);
-                const save = battle.rollDice(20) + battle.getEffectiveModifier(target, saveSpec.vs);
+                const dc = saveSpec.dc.mod === 'str' ? battle.modRoll(strMod, 18)
+                    : battle.modRoll(battle.getEffectiveModifier(npc, saveSpec.dc.mod));
+                const save = battle.modRoll(battle.getEffectiveModifier(target, saveSpec.vs));
                 if (save < dc) {
                     if (saveSpec.effect === 'offbalance') { target.turnDisadvantage = true; log += `🌀 **${target.username}** is knocked OFF-BALANCE!\n`; }
                     else if (saveSpec.effect === 'disadvantage') { target.nextAttackDisadvantage = true; log += `⚠️ ${target.username} has disadvantage on their next attack!\n`; }
@@ -3821,7 +5437,7 @@ async function runNPCSkill(battle, npc, target, skillName, onProgress, text) {
 
     text += log;
     if (onProgress) await onProgress(text);
-    await sleep(200);
+    await sleep(BATTLE_STEP_PAUSE_MS);
     return { text, used: true };
 }
 
@@ -3844,6 +5460,21 @@ function npcGrappleOptions(p) {
     return {};
 }
 
+// Which basic attack should this NPC throw — a physical (STR) strike or a ki (WIL) blast?
+//   - An intangible Yokai (Ghastly Structure) can ONLY be touched by a ki attack, so a foe that
+//     knows Ki Application never wastes a physical swing on one.
+//   - Otherwise the odds follow the fighter's own WIL vs STR modifier: a ki user channels whichever
+//     is stronger, so a high-WIL enemy blasts while a high-STR enemy punches.
+// Falls back to physical whenever the fighter hasn't learned Ki Application.
+function pickNpcBasicAttackType(battle, npc, target) {
+    if (!npc || npc.kiApplicationLearned !== true) return 'physical';
+    if (target && target.ghastlyActive && !target.ghastlyExposed) return 'ki';
+    const strMod = Math.max(0, battle.getEffectiveModifier(npc, 'str'));
+    const wilMod = Math.max(0, battle.getEffectiveModifier(npc, 'wil'));
+    if (strMod + wilMod <= 0) return 'physical';
+    return Math.random() < (wilMod / (strMod + wilMod)) ? 'ki' : 'physical';
+}
+
 async function resolveNPCTurns(battle, logText, onProgress = null) {
     let text = logText;
 
@@ -3859,14 +5490,50 @@ async function resolveNPCTurns(battle, logText, onProgress = null) {
             break;
         }
 
+        // Did this combatant actually do something visible this turn? A turn consumed by a grapple
+        // hold or a stun produces no action, and the turn-end log reset must not wipe its message.
+        let actedThisTurn = false;
+
         let target = targets[Math.floor(Math.random() * targets.length)];
         // Assassins strike the weakest foe: pick the lowest-HP target.
         if (current.fightingStyle === 'Assassin' && targets.length > 1) {
             target = targets.reduce((low, t) => (t.currentHP < low.currentHP ? t : low));
         }
+        // Yokai (Kitsune) Shapeshift: enemies refuse to attack a fighter that has shifted away.
+        if ((target.shapeshiftTurns || 0) > 0 && targets.some(t => (t.shapeshiftTurns || 0) <= 0)) {
+            const available = targets.filter(t => (t.shapeshiftTurns || 0) <= 0);
+            target = available[Math.floor(Math.random() * available.length)];
+            text += `🦊 ${target.username} seems unfamiliar — **${current.username}** hesitates to strike a shapeshifted foe!\n`;
+        }
 
         // Enemies (and allies) suffer the same fatigue penalties as players when low on Ki.
         updateNPCFatigue(current);
+
+        // Power-up transformation: any enemy with bossForms (a raid boss OR a canon-action
+        // saga defender) can power up into the next stage gated by its power level, once per round.
+        // Each stage applies the SAME bonuses a player would get from that form (stat multipliers +
+        // flat mod bonuses). Always scaled from the boss's BASE stats so a form grants exactly what
+        // a player would get (players apply their form to base stats, not cumulatively).
+        if ((current.bossForms || []).length > 0) {
+            const nextStage = current.bossStage || 0;
+            if (nextStage < (current.bossForms || []).length && current.bossTransformedRound !== battle.round) {
+                const stage = current.bossForms[nextStage];
+                if (!current.bossBaseStats) {
+                    current.bossBaseStats = { ...(current.stats || {}) };
+                    current.bossBaseModBonus = { ...(current.modBonus || {}) };
+                }
+                const fb = applyFormStatsAndMods(current.bossBaseStats, stage.name, 0);
+                Object.assign(current.stats, fb.stats);
+                const modBonus = { ...current.bossBaseModBonus };
+                Object.entries(fb.formMods).forEach(([stat, mod]) => {
+                    modBonus[stat] = (modBonus[stat] || 0) + mod;
+                });
+                current.modBonus = modBonus;
+                current.bossStage = nextStage + 1;
+                current.bossTransformedRound = battle.round;
+                text += `💢 **${current.username}** transforms into **${stage.name}**!!\n\n`;
+            }
+        }
 
         // Chance to use a technique scales with Ki and falls as fatigue rises.
         const tools = Array.isArray(current.techniques) ? current.techniques : [];
@@ -3874,7 +5541,10 @@ async function resolveNPCTurns(battle, logText, onProgress = null) {
         const bonusTools = tools.filter(t => COMBAT_SKILLS[t] && COMBAT_SKILLS[t].cost === 'bonus'
             && !(t === 'Ki Sense' && current.kiSense)
             && !(t === 'Fly' && current.flying)
-            && !(t === 'Ki Application' && current.kiApplicationActive));
+            && !(t === 'Ki Application' && current.kiApplicationActive)
+            && !(t === 'Ki Sharpening' && current.kiSharpeningActive)
+            && !(t === 'Pump Up' && current.pumpUpActive)
+            && !(t === 'Kaioken' && current.kaiokenActive));
         const offensive = tools.filter(t => COMBAT_SKILLS[t] && (COMBAT_SKILLS[t].cost === 'action' || COMBAT_SKILLS[t].cost === 'action+bonus'));
         const kiRatio = current.currentKi / (current.ki || 1);
         const fatigue = current.currentFatigue || 0;
@@ -3884,6 +5554,34 @@ async function resolveNPCTurns(battle, logText, onProgress = null) {
         if (current.kiSense && conserve < 0.5) {
             current.kiSense = false;
             text += `👁️ ${current.username} lowers their **Ki Sense** to conserve Ki.\n`;
+        }
+
+        // Ki Application is a sustained passive, so it must be dropped while Ki is low (it costs
+        // upkeep and is a damage bonus) and switched back on once Ki recovers. Without this an
+        // enemy that entered the fight with Ki Application kept it running for the entire battle
+        // no matter how little Ki they had left — the AI could never turn it off, because the
+        // bonus-tool picker skips any passive that is already active.
+        const kiAppOn = current.kiApplicationActive || (current.kiAppDamage || 0) > 0;
+        if (kiAppOn && conserve < 0.5) {
+            // Remember the damage so it can be restored when the enemy powers back up.
+            if (!current.kiApplicationBaseDamage) current.kiApplicationBaseDamage = current.kiAppDamage || 0;
+            current.kiApplicationActive = false;
+            current.kiAppDamage = 0;
+            text += `💥 ${current.username} powers down their **Ki Application** to conserve Ki.\n`;
+        } else if (!kiAppOn && (current.kiApplicationBaseDamage || 0) > 0 && conserve >= 1) {
+            current.kiApplicationActive = true;
+            current.kiAppDamage = current.kiApplicationBaseDamage;
+            text += `💥 ${current.username} reignites their **Ki Application**!\n`;
+        }
+
+        // Ki Sharpening is a sustained toggle too: drop it while conserving Ki so an NPC can't
+        // burn its whole pool on a buff it can't afford (it can re-activate once Ki recovers).
+        if (current.kiSharpeningActive && conserve < 0.5) {
+            current.kiSharpeningActive = false;
+            current.kiSharpeningDamagePct = 0;
+            current.kiSharpeningDexPenalty = 0;
+            current.kiSharpeningCost = 0;
+            text += `🔪 ${current.username} lowers their **Ki Sharpening** to conserve Ki.\n`;
         }
 
         // Optional bonus ability first (Fly / Ki Sense).
@@ -3953,18 +5651,25 @@ async function resolveNPCTurns(battle, logText, onProgress = null) {
                 const skillName = offensive[Math.floor(Math.random() * offensive.length)];
                 const r = await runNPCSkill(battle, current, target, skillName, onProgress, text);
                 text = r.text;
+                actedThisTurn = true;
             }
         }
 
         if (!current.hasActed) {
-            const result = await battle.attack(current.userId, target.userId, 'physical', true);
+            // Physical (STR) strike or ki (WIL) blast — see pickNpcBasicAttackType (an intangible
+            // Yokai can only be touched by ki, so a ki user never swings physically at one).
+            const basicAttackType = pickNpcBasicAttackType(battle, current, target);
+            if (basicAttackType === 'ki') text += `💥 **${current.username}** gathers their ki for a blast!\n`;
+            const result = await battle.attack(current.userId, target.userId, basicAttackType, true);
             if (result.success) {
+                actedThisTurn = true;
                 text = await animateAttackEvent(text, current.username, target, result, onProgress);
                 text += `(${current.username} used their action)\n\n`;
                 text += tryFalseSuperSaiyanAwakening(battle, target);
                 text += tryIntenseAnger(battle, target);
                 text += tryHopeOfTheUniverse(battle, target);
                 text += tryUltimatePowerAwakening(battle, target);
+                if (result.hit || result.blocked) text += maybeMiscarry(target);
                 // Fearless Strikes (Tiger): a critical refunds the action, so act again without advancing.
                 if (result.tigerExtraAction) {
                     text += `🐯 **${current.username}** gets **another action** from **Fearless Strikes** and presses the attack!\n\n`;
@@ -3993,39 +5698,88 @@ async function resolveNPCTurns(battle, logText, onProgress = null) {
             continue;
         }
 
-        const advance = battle.advance();
-        advance.log.forEach(entry => {
-            if (entry.type === 'deathSave') text += formatDeathSaveEvent(entry);
-            else if (entry.type === 'stun') text += formatStunEvent(entry);
-            else if (entry.type === 'kiRegen') text += formatKiRegenEvent(entry);
-            else if (entry.type === 'lssjRamp') text += formatLssjRampEvent(entry);
-            else if (entry.type === 'bleed') text += formatBleedEvent(entry);
-            else if (entry.type === 'rupture') text += formatRuptureEvent(entry);
-            else if (entry.type === 'poison') text += formatPoisonEvent(entry);
-            else if (entry.type === 'craneMarkExpire') text += formatCraneMarkExpireEvent(entry);
-            else if (entry.type === 'hopfDrain') text += formatHopfDrainEvent(entry);
-            else if (entry.type === 'passiveDrain') text += formatPassiveDrainEvent(entry);
-            else if (entry.type === 'grappleHold') text += formatGrappleHoldEvent(entry);
-            else if (entry.type === 'grappleEscape') text += formatGrappleEscapeEvent(entry);
-        });
+        // Raid boss: three actions per turn — keep acting until its extra actions run out.
+        if (current.isRaidBoss && current.bossActionsLeft > 0) {
+            current.bossActionsLeft--;
+            current.hasActed = false;
+            text += `💢 **${current.username}** presses the attack! (${current.bossActionsLeft} action${current.bossActionsLeft === 1 ? '' : 's'} left)\n\n`;
+            continue;
+        }
 
-        // Let the player watch each NPC action unfold (~1s per action) only when there's a
-        // message being edited. When resolveNPCTurns runs before the battle's first reply
-        // (e.g. /hunt), sleeping would push the setup past Discord's 3s reply window and
-        // leave the player stuck "in battle" with no visible fight.
+        const advance = battle.advance();
+        // Reset the log to JUST the next combatant's start-of-turn events, so each combatant's
+        // action REPLACES the previous block (a clean single-action message) instead of chaining
+        // the whole round into one huge log. A turn that produced NO action (a grapple hold, a
+        // stun, ...) has nothing to replace its explanation with, so keep that text on screen and
+        // append the next combatant's start-of-turn events to it.
+        text = actedThisTurn ? appendBattleLog('', advance.log) : appendBattleLog(text, advance.log);
+
+        // Let the player watch each NPC action unfold only when there's a message being
+        // edited. When resolveNPCTurns runs before the battle's first reply (e.g. /hunt),
+        // sleeping would push the setup past Discord's 3s reply window and leave the player
+        // stuck "in battle" with no visible fight.
         if (onProgress) {
             await onProgress(text);
-            await sleep(1000);
+            await sleep(BATTLE_ACTION_PAUSE_MS);
         }
     }
+
+    // After every NPC has acted, hold the final result briefly so the player can read it
+    // before control returns to their turn.
+    if (onProgress) await sleep(BATTLE_TURN_END_HOLD_MS);
 
     return text;
 }
 
+// `checkBattleOver` can spawn a raid boss on an NPC/companion's *pending* turn (the moment the last
+// minion falls, a companion whose turn it is next finds no targets, the auto-resolver exits, and the
+// boss appears while the turn is still on that companion). Re-run the auto-resolver once so that
+// combatant acts against the newly-arrived boss, then the caller re-checks the outcome. Returns the
+// updated log (and leaves `battle` resumed, or ends it if the boss was the final foe and lost).
+async function resumeNpcTurnsAfterBoss(battle, logText, onProgress = null) {
+    if (!battle.active || battle.isBattleOver()) return logText;
+    const cur = battle.getCurrentTurn();
+    if (!cur || (!isNPC(cur) && !isCompanion(cur))) return logText;
+    return await resolveNPCTurns(battle, logText, onProgress);
+}
+
+// Defer a component interaction so it can be edited across multiple steps (NPC turns, animations).
+// `deferUpdate()` only marks the interaction answered when its REST call succeeds; if the deferral
+// fails (e.g. the interaction already expired / was acknowledged), the old "swallow and continue"
+// pattern leaves it unanswered, and the next `editReply()` throws InteractionNotReplied. This
+// returns true only when the interaction is still safe to `editReply`, so callers can bail out
+// gracefully instead of crashing on a dead interaction.
+async function deferForEdit(interaction) {
+    if (interaction.deferred || interaction.replied) return true;
+    try {
+        await interaction.deferUpdate();
+        return true;
+    } catch {
+        return !!(interaction.deferred || interaction.replied);
+    }
+}
+
+// PERF: throttle battle progress edits. Attack animations call `onProgress` every ~200-750ms
+// (one edit per animation step); with several concurrent battles these edits can hit Discord's
+// per-channel rate limits and stall the fight UI for everyone. This wrapper lets through at
+// most one edit per `minIntervalMs` — intermediate steps are skipped because the FINAL render
+// after resolveNPCTurns returns always shows the complete log untouched.
+function makeProgressThrottle(editFn, minIntervalMs = BATTLE_PROGRESS_THROTTLE_MS) {
+    let lastEditAt = 0;
+    return async (text) => {
+        const now = Date.now();
+        if (now - lastEditAt < minIntervalMs) return; // skipped — final render covers it
+        lastEditAt = now;
+        try { await editFn(text); } catch (e) { /* dead interaction / rate limit — keep going */ }
+    };
+}
+
 // Advance to the next combatant, auto-run any NPC turns, then re-render the battle message
 async function advanceBattleTurn(interaction, battle, introText) {
-    // Defer so NPC turns (1s each) don't exceed Discord's 3s interaction window
-    await interaction.deferUpdate().catch(() => {});
+    // Defer so NPC turns (1s each) don't exceed Discord's 3s interaction window. Bail out if the
+    // deferral fails (e.g. the interaction expired) — otherwise editReply below would throw
+    // InteractionNotReplied on a dead interaction.
+    if (!(await deferForEdit(interaction))) return;
 
     let logText = introText ? introText + '\n\n' : '';
 
@@ -4033,25 +5787,16 @@ async function advanceBattleTurn(interaction, battle, introText) {
     if (ending) ending.wolfFang = false;
 
     const { log } = battle.advance();
-    log.forEach(entry => {
-        if (entry.type === 'deathSave') logText += formatDeathSaveEvent(entry);
-        else if (entry.type === 'stun') logText += formatStunEvent(entry);
-        else if (entry.type === 'kiRegen') logText += formatKiRegenEvent(entry);
-        else if (entry.type === 'lssjRamp') logText += formatLssjRampEvent(entry);
-        else if (entry.type === 'bleed') logText += formatBleedEvent(entry);
-        else if (entry.type === 'rupture') logText += formatRuptureEvent(entry);
-        else if (entry.type === 'poison') logText += formatPoisonEvent(entry);
-        else if (entry.type === 'craneMarkExpire') logText += formatCraneMarkExpireEvent(entry);
-        else if (entry.type === 'grappleHold') logText += formatGrappleHoldEvent(entry);
-        else if (entry.type === 'grappleEscape') logText += formatGrappleEscapeEvent(entry);
-    });
+    // appendBattleLog covers every event type (limit break, passive drains, Hope of the Universe,
+    // Fake Super Saiyan, ...) — this hand-rolled list silently dropped several of them.
+    logText = appendBattleLog(logText, log);
 
-    logText = await resolveNPCTurns(battle, logText, async (text) => {
-        await interaction.editReply({
+    const progressEdit = makeProgressThrottle((text) =>
+        interaction.editReply({
             content: buildBattleContent(battle, `${text}\n\n⏳ ...`),
             components: []
-        }).catch(() => {});
-    });
+        }));
+    logText = await resolveNPCTurns(battle, logText, progressEdit);
     logText += maybeRivalRescues(battle);
     logText += maybeUnlockShogun(battle, ending);
     logText += maybeCallReinforcements(battle);
@@ -4059,7 +5804,18 @@ async function advanceBattleTurn(interaction, battle, introText) {
     // A player defender dodged and can react — pause for their Yes/No choice.
     if (await maybeShowReactionPrompt(interaction, battle, logText)) return;
 
-    const over = checkBattleOver(battle);
+    let over = checkBattleOver(battle);
+    // A raid boss can spawn on a companion/NPC's pending turn (the last minion just died) — resume
+    // their auto-resolution so they act against it, then re-check the outcome.
+    if (!over) {
+        const bossProgressEdit = makeProgressThrottle((text) =>
+            interaction.editReply({
+                content: buildBattleContent(battle, `${text}\n\n⏳ ...`),
+                components: []
+            }));
+        logText = await resumeNpcTurnsAfterBoss(battle, logText, bossProgressEdit);
+        over = checkBattleOver(battle);
+    }
     if (over) {
         return interaction.editReply({ content: clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`), components: over.components });
     }
@@ -4116,14 +5872,55 @@ async function handleBattleButton(interaction) {
         if (!isAdmin) {
             return interaction.reply({ content: '❌ Only administrators can end the battle this way. Use `/battle-end`.', ephemeral: true });
         }
-        battleManager.endBattle(battle.id);
-        battleMessages.delete(battle.id);
-        return interaction.update({ content: '⚔️ **Battle ended** by an administrator.', components: [] });
+        // Full teardown, not just endBattle(): a bare endBattle() left the 10s turn timer armed,
+        // kept the mission/mentor/hunt registries alive and stranded everyone in their battle form.
+        const released = battle.turnOrder.filter(p => !isNPC(p) && !p.isAlly).map(p => p.username);
+        abortBattle(battle);
+        return interaction.update({
+            content: `⚔️ **Battle ended** by an administrator.`
+                + (released.length > 0 ? `\nReleased: **${released.join('**, **')}**` : '')
+                + `\n*(no rewards, no injuries — the fight was stopped, not won)*`,
+            components: []
+        });
+    }
+
+    // Examine: any player in the battle can scout a combatant's stat sheet (runs before the
+    // turn guard so it works even when it's not the clicking player's turn).
+    if (customId === 'bt_examine') {
+        const cur = battle.getCurrentTurn();
+        if (cur && cur.userId === viewer.id) clearBattleTurnTimer(battle);
+        return interaction.update({
+            content: buildBattleContent(battle, 'Choose a combatant to examine 👇'),
+            components: buildExamineTargetComponents(battle, viewer)
+        });
+    }
+
+    if (customId.startsWith('bt_examine_tgt_')) {
+        const uid = customId.slice('bt_examine_tgt_'.length);
+        const p = battle.turnOrder.find(x => x.userId === uid);
+        if (!p) {
+            return interaction.reply({ content: '❌ That combatant is no longer in the battle!', ephemeral: true });
+        }
+        return interaction.update(buildExamineView(battle, p));
+    }
+
+    if (customId === 'bt_examine_back') {
+        return interaction.update({
+            content: buildBattleContent(battle),
+            components: buildTurnComponents(battle, viewer)
+        });
     }
 
     const current = battle.getCurrentTurn();
 
     if (!current || current.userId !== viewer.id) {
+        // A player can click a button on a battle message that's gone stale (e.g. the 10s
+        // auto-resolve advanced the turn without refreshing the visible message). If the live
+        // turn belongs to an NPC/companion, keep combat moving by auto-advancing it rather than
+        // leaving the player stuck on a dead button that claims the wrong turn.
+        if (current && (isNPC(current) || isCompanion(current))) {
+            return advanceBattleTurn(interaction, battle, `⏭️ It's not your turn! Waiting for ${current.username}.`);
+        }
         return interaction.reply({ content: `It's not your turn! Waiting for ${current ? current.username : 'the battle to end'}.`, ephemeral: true });
     }
 
@@ -4182,6 +5979,16 @@ async function handleBattleButton(interaction) {
                 p.formName = null;
                 p.formDrain = 0;
                 p.formMods = null;
+                // False Super Saiyan awakens automatically and sets `fssjActive` (which drains 20 Ki
+                // per turn and adds +5 ALL MODS to modBonus). Reverting to base form has to clear it,
+                // otherwise the drain — and its mods — keep running with no form to justify them.
+                if (p.fssjActive) {
+                    p.fssjActive = false;
+                    p.modBonus = p.modBonus || {};
+                    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => {
+                        p.modBonus[s] = Math.max(0, (p.modBonus[s] || 0) - 5);
+                    });
+                }
                 p.kiRegen = getBattleKiRegen(fresh);
             }
             ui.mode = 'turn';
@@ -4236,10 +6043,19 @@ async function handleBattleButton(interaction) {
             p.formName = bs.gear ? bs.gear.formName : fresh.activeForm;
             p.formDrain = bs.gear ? bs.gear.formDrain : 0;
             p.formMods = bs.gear ? bs.gear.formMods : null;
+            p.bypassDR = bs.gear ? bs.gear.bypassDR : 0;
+            p.zenithMind = bs.gear ? bs.gear.zenithMind : false;
             // Frost Demon suppression forms (and racial Ki regen) apply once transformed.
             p.kiRegen = getBattleKiRegen(fresh);
             // Ultra Power takes an action to transform (Trello card).
             if (formName === 'Ultra Power') p.hasActed = true;
+            // "Potential Unleashed" activation cost: action (mastery < 2), bonus action (2), free (3+).
+            if (formName === 'Potential Unleashed') {
+                const fm = (fresh.formMastery || {})[formName] || 0;
+                if (fm >= 3) { /* free reaction upon entering combat */ }
+                else if (fm === 2) p.hasBonusActed = true;
+                else p.hasActed = true;
+            }
         }
         ui.mode = 'turn';
         return interaction.update({
@@ -4269,19 +6085,22 @@ async function handleBattleButton(interaction) {
         if (current.hasActed) {
             return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
         }
-        const regenCost = 10;
+        const maxKi = current.ki || 0;
+        const maxHP = current.hp || current.maxHP || 1;
+        const regenCost = Math.max(1, Math.round(maxKi * 0.20));
+        const healAmount = Math.max(1, Math.round(maxHP * 0.25));
         if ((current.currentKi || 0) < regenCost) {
             return interaction.reply({ content: `❌ You need **${regenCost} Ki** to regenerate!`, ephemeral: true });
         }
         current.currentKi -= regenCost;
         const beforeHP = current.currentHP || 0;
-        current.currentHP = Math.min(current.hp || current.maxHP, beforeHP + regenCost);
+        current.currentHP = Math.min(maxHP, beforeHP + healAmount);
         const healed = current.currentHP - beforeHP;
         current.hasActed = true;
         current.hasBonusActed = true;
         ui.mode = 'turn';
         return interaction.update({
-            content: buildBattleContent(battle, `🩹 **${current.username}** regenerates **${healed} HP** (${regenCost} Ki → ${regenCost} HP)!`),
+            content: buildBattleContent(battle, `🩹 **${current.username}** regenerates **${healed} HP** (${regenCost} Ki = 20% max → ${healAmount} HP = 25% max)!`),
             components: buildTurnComponents(battle, viewer)
         });
     }
@@ -4299,6 +6118,54 @@ async function handleBattleButton(interaction) {
         });
     }
 
+    // Yokai (Ghastly Structure): reform the intangible ghostly form.
+    if (customId === 'bt_yokai_ghost') {
+        if (current.race !== 'Yokai') {
+            return interaction.reply({ content: '❌ Only **Yokai** can use **Ghastly Structure**!', ephemeral: true });
+        }
+        if (current.hasActed) {
+            return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
+        }
+        if (current.ghastlyActive && !current.ghastlyExposed) {
+            return interaction.reply({ content: '👻 Your **Ghastly Structure** is already holding you together!', ephemeral: true });
+        }
+        const maxKi = current.ki || 0;
+        const ghostCost = Math.max(1, Math.round(maxKi * 0.15));
+        if ((current.currentKi || 0) < ghostCost) {
+            return interaction.reply({ content: `❌ You need **${ghostCost} Ki** to reform your **Ghastly Structure**!`, ephemeral: true });
+        }
+        current.currentKi -= ghostCost;
+        current.ghastlyActive = true;
+        current.ghastlyExposed = false;
+        current.ghastlyCooldown = 1;
+        current.hasActed = true;
+        ui.mode = 'turn';
+        return interaction.update({
+            content: buildBattleContent(battle, `👻 **${current.username}**'s **Ghastly Structure** reforms — they become **intangible** to physical attacks (${ghostCost} Ki)!`),
+            components: buildTurnComponents(battle, viewer)
+        });
+    }
+
+    // Yokai (Kitsune) Shapeshift: enemies refuse to attack you for 2 turns.
+    if (customId === 'bt_yokai_shape') {
+        if (current.race !== 'Yokai' || current.yokaiVariant !== 1) {
+            return interaction.reply({ content: '❌ Only a **Kitsune Yokai** can **Shapeshift**!', ephemeral: true });
+        }
+        if (current.hasActed) {
+            return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
+        }
+        if ((current.shapeshiftTurns || 0) > 0) {
+            return interaction.reply({ content: '🦊 You are already **Shapeshifted**!', ephemeral: true });
+        }
+        current.shapeshiftTurns = 2;
+        current.hasActed = true;
+        ui.mode = 'turn';
+        return interaction.update({
+            content: buildBattleContent(battle, `🦊 **${current.username}** **Shapeshifts** into a foe's likeness — enemies won't attack for **2 turns**!`),
+            components: buildTurnComponents(battle, viewer)
+        });
+    }
+
     if (customId.startsWith('bt_grappletgt_')) {
         const targetId = customId.slice('bt_grappletgt_'.length);
         const target = battle.turnOrder.find(p => p.userId === targetId);
@@ -4307,13 +6174,31 @@ async function handleBattleButton(interaction) {
             return interaction.reply({ content: '❌ That target is no longer available!', ephemeral: true });
         }
 
-        // Namekian Flexible: spend 8 Ki to gain +4 mod to the grapple attempt.
+        // Namekian Flexible is OPTIONAL each grapple: ask the player whether to spend 8 Ki for +4.
         const grappleOpts = {};
         let flexibleNote = '';
+        let flexPrompted = false;
         if (viewer.race === 'Namekian' && (viewer.currentKi || 0) >= 8) {
-            viewer.currentKi -= 8;
-            grappleOpts.grappleBonus = 4;
-            flexibleNote = ' *(Flexible: -8 Ki, +4 to grapple)*';
+            flexPrompted = true;
+            const promptContent = `${buildBattleContent(battle, `🤼 **${viewer.username}** prepares to grapple **${target.username}**...`)}\n🌀 Use **Flexible** (-8 Ki, +4 to grapple)?`;
+            const yesNo = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('bt_flex_yes').setLabel('✅ Yes').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('bt_flex_no').setLabel('❌ No').setStyle(ButtonStyle.Secondary)
+            );
+            await interaction.update({ content: clampMessage(promptContent), components: [yesNo] });
+            let useFlex = false;
+            try {
+                const choice = await interaction.awaitMessageComponent({ filter: i => i.customId === 'bt_flex_yes' || i.customId === 'bt_flex_no', time: 20000 });
+                useFlex = choice.customId === 'bt_flex_yes';
+                await choice.deferUpdate().catch(() => {});
+            } catch (e) {
+                useFlex = false;
+            }
+            if (useFlex) {
+                viewer.currentKi -= 8;
+                grappleOpts.grappleBonus = 4;
+                flexibleNote = ' *(Flexible: -8 Ki, +4 to grapple)*';
+            }
         }
         const result = battle.grapple(viewer.id, targetId, grappleOpts);
         if (!result.success) {
@@ -4327,10 +6212,12 @@ async function handleBattleButton(interaction) {
                 : `🤼 **${viewer.username}** tries to grapple **${target.username}**... (${result.atk} vs ${result.def}) — they break free!`)
             : `🤼 **${viewer.username}** GRAPPLES **${target.username}**! (${result.atk} vs ${result.def})\n${target.username} is GRAPPLED: -90% DEX defense, escape roll each turn. Attacks against the grappler can break it.`;
 
-        return interaction.update({
-            content: buildBattleContent(battle, logText + flexibleNote),
-            components: buildTurnComponents(battle, viewer)
-        });
+        const content = buildBattleContent(battle, logText + flexibleNote);
+        const components = buildTurnComponents(battle, viewer);
+        if (flexPrompted) {
+            return interaction.editReply({ content, components });
+        }
+        return interaction.update({ content, components });
     }
 
     // Toggle optional dodge reactions (Spirit of the Tiger / Ground Glider) on/off.
@@ -4349,7 +6236,8 @@ async function handleBattleButton(interaction) {
 
     if (customId.startsWith('bt_skill_')) {
         const skillName = customId.slice('bt_skill_'.length);
-        const skill = COMBAT_SKILLS[skillName];
+        const skill = COMBAT_SKILLS[skillName]
+            || getCustomSkill(characterManager.getCharacter(viewer.id), skillName);
         if (!skill) {
             return interaction.reply({ content: '❌ Unknown technique!', ephemeral: true });
         }
@@ -4370,11 +6258,13 @@ async function handleBattleButton(interaction) {
     if (customId.startsWith('bt_skilltgt_')) {
         const targetId = customId.slice('bt_skilltgt_'.length);
         const skillName = ui.pendingSkill;
-        if (!skillName || !COMBAT_SKILLS[skillName]) {
+        const skill = skillName && (COMBAT_SKILLS[skillName]
+            || getCustomSkill(characterManager.getCharacter(viewer.id), skillName));
+        if (!skillName || !skill) {
             return interaction.reply({ content: '❌ No technique selected!', ephemeral: true });
         }
         ui.pendingSkill = null;
-        return await executeCombatSkill(interaction, battle, viewer, COMBAT_SKILLS[skillName], targetId);
+        return await executeCombatSkill(interaction, battle, viewer, skill, targetId);
     }
 
     if (customId === 'bt_type_physical' || customId === 'bt_type_ki') {
@@ -4420,19 +6310,21 @@ async function handleBattleButton(interaction) {
         }
 
         ui.mode = 'turn';
-        const actionNote = `(${isAction ? 'Action' : 'Bonus Action'} used)`;
+        const actionNote = `(${current.username} used their ${isAction ? 'action' : 'bonus action'})`;
         const awake = tryFalseSuperSaiyanAwakening(battle, target) + tryIntenseAnger(battle, target) + tryHopeOfTheUniverse(battle, target) + tryUltimatePowerAwakening(battle, target);
 
-        // Animate the attack line-by-line (0.1s per step) for the same pacing as NPC turns.
-        await interaction.deferUpdate().catch(() => {});
+        // Animate the attack line-by-line at the shared `battlePacing` step rate so the player's
+        // own attack and the enemy auto-resolver play at the same speed.
+        if (!(await deferForEdit(interaction))) return;
         let logText = '';
         const steps = buildAttackEventSteps(current.username, target, result);
         for (const step of steps) {
             logText += step;
             await interaction.editReply({ content: buildBattleContent(battle, logText), components: [] }).catch(() => {});
-            await sleep(100);
+            await sleep(BATTLE_STEP_PAUSE_MS);
         }
         logText += actionNote + awake;
+        if (result.hit || result.blocked) logText += maybeMiscarry(target);
 
         // If the defender is a player who can react to the dodge, pause for their Yes/No choice.
         if (result.reactionPending) {
@@ -4459,6 +6351,72 @@ async function handleBattleButton(interaction) {
             content: buildBattleContent(battle, 'Choose an item to use 👇'),
             components: buildItemComponents(battle, viewer)
         });
+    }
+
+    if (customId === 'bt_bansho') {
+        // Bansho Fan "Fan Barrage": once every 3 turns, hit up to 3 enemies whose turns are
+        // directly after yours, for 10% max Ki + 30 Ki, rolling the same attack dice.
+        const lastRound = battle.banshoLastRound || -100;
+        if ((battle.round - lastRound) < 3) {
+            return interaction.reply({ content: `❌ The Bansho Fan is recharging! Ready again in **${3 - (battle.round - lastRound)}** turn(s).`, ephemeral: true });
+        }
+        if (current.hasActed) {
+            return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
+        }
+        const fanCost = Math.round((current.ki || 1) * 0.10) + 30;
+        if ((current.currentKi || 0) < fanCost) {
+            return interaction.reply({ content: `❌ Fan Barrage costs **${fanCost} Ki** (10% max Ki + 30), but you only have **${current.currentKi || 0}**!`, ephemeral: true });
+        }
+        // Find up to 3 consecutive enemies right after the user in the turn order.
+        const startIdx = battle.turnOrder.findIndex(p => p.userId === viewer.id);
+        const targets = [];
+        for (let i = 1; i <= battle.turnOrder.length && targets.length < 3; i++) {
+            const p = battle.turnOrder[(startIdx + i) % battle.turnOrder.length];
+            if (p.isDead || p.isIncapacitated) continue;
+            if (p.userId === viewer.id) continue;
+            if (p.isAlly || (battle.alliedPlayerIds && battle.alliedPlayerIds.has(p.userId))) continue;
+            targets.push(p);
+        }
+        if (targets.length === 0) {
+            return interaction.reply({ content: '❌ No enemies in line for the Fan Barrage!', ephemeral: true });
+        }
+
+        current.currentKi = Math.max(0, (current.currentKi || 0) - fanCost);
+        battle.banshoLastRound = battle.round;
+
+        // Resolve on the first target via the normal attack (applies the weapon damage mode,
+        // uses your action), then the remaining targets take the SAME rolled hit.
+        const first = await battle.attack(viewer.id, targets[0].userId, 'physical', true);
+        if (!first.success) {
+            return interaction.reply({ content: `❌ ${first.message}`, ephemeral: true });
+        }
+        ui.mode = 'turn';
+        const steps = buildAttackEventSteps(current.username, targets[0], first);
+        const dmg = first.damage;
+        for (let k = 1; k < targets.length; k++) {
+            const t = targets[k];
+            t.currentHP = Math.max(0, (t.currentHP || 0) - dmg);
+            if (t.currentHP <= 0) t.isIncapacitated = true;
+            steps.push(`🌪️ The backlash slams **${t.username}** for **${dmg} damage**!\n`);
+        }
+        steps.push(`(${current.username} used their action — 🌪️ Fan Barrage)\n`);
+
+        const awake = tryFalseSuperSaiyanAwakening(battle, targets[0]) + tryIntenseAnger(battle, targets[0]) + tryHopeOfTheUniverse(battle, targets[0]) + tryUltimatePowerAwakening(battle, targets[0]);
+
+        if (!(await deferForEdit(interaction))) return;
+        let logText = '';
+        for (const step of steps) {
+            logText += step;
+            await interaction.editReply({ content: buildBattleContent(battle, logText), components: [] }).catch(() => {});
+            await sleep(BATTLE_STEP_PAUSE_MS);
+        }
+        logText += awake;
+        if (first.hit || first.blocked) logText += maybeMiscarry(targets[0]);
+        const over = checkBattleOver(battle);
+        if (over) {
+            return interaction.editReply({ content: clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`), components: over.components });
+        }
+        return interaction.editReply({ content: buildBattleContent(battle, logText), components: buildTurnComponents(battle, viewer) });
     }
 
     if (customId.startsWith('bt_item_')) {
@@ -4666,7 +6624,7 @@ async function handleBattleButton(interaction) {
             return interaction.update({ content: clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`), components: over.components || [] });
         }
 
-        await interaction.deferUpdate().catch(() => {});
+        if (!(await deferForEdit(interaction))) return;
         const { log } = battle.advance();
         logText = appendBattleLog(logText + '\n\n', log);
         logText = await resolveNPCTurns(battle, logText, async (text) => {
@@ -4730,6 +6688,72 @@ async function handleBattleButton(interaction) {
         });
     }
 
+    // Pacifist (Wise Old One): a special in-combat persuade that forces a WIL save.
+    if (customId === 'bt_persuade') {
+        const current = battle.getCurrentTurn();
+        if (!current || current.userId !== viewer.id) {
+            return interaction.reply({ content: '❌ It\'s not your turn!', ephemeral: true });
+        }
+        if (current.mutation !== 'Wise Old One') {
+            return interaction.reply({ content: '❌ Only a **Wise Old One** can use this ability!', ephemeral: true });
+        }
+        if (current.hasActed) {
+            return interaction.reply({ content: '❌ You\'ve already used your action!', ephemeral: true });
+        }
+        if (getEnemyTargets(battle).length === 0) {
+            return interaction.reply({ content: '❌ No enemies left to persuade!', ephemeral: true });
+        }
+        ui.mode = 'persuade';
+        return interaction.update({
+            content: buildBattleContent(battle, 'Choose an enemy to persuade 👇'),
+            components: buildPersuadeTargetComponents(battle, viewer)
+        });
+    }
+
+    if (customId.startsWith('bt_persuade_tgt_')) {
+        const enemyId = customId.slice('bt_persuade_tgt_'.length);
+        const enemy = battle.turnOrder.find(p => p.userId === enemyId);
+        if (!enemy || isCompanion(enemy) || enemy.isDead || enemy.isIncapacitated || enemy.isAlly) {
+            return interaction.reply({ content: '❌ That enemy is no longer available!', ephemeral: true });
+        }
+        const current = battle.getCurrentTurn();
+        if (!current || current.userId !== viewer.id) {
+            return interaction.reply({ content: '❌ It\'s not your turn!', ephemeral: true });
+        }
+        if (current.mutation !== 'Wise Old One') {
+            return interaction.reply({ content: '❌ Only a **Wise Old One** can use this ability!', ephemeral: true });
+        }
+        if (current.hasActed) {
+            return interaction.reply({ content: '❌ You\'ve already used your action!', ephemeral: true });
+        }
+
+        const spiMod = battle.getEffectiveModifier(current, 'spi');
+        const dc = 17 + spiMod;
+        const enemySave = battle.rollDice(20) + battle.getEffectiveModifier(enemy, 'wil');
+        const failed = enemySave < dc;
+        if (failed) enemy.retreatChasePenalty = 12;
+        current.hasActed = true;
+        ui.mode = 'turn';
+
+        let logText = `🗝️ **${viewer.username}** (Wise Old One) tries to persuade **${enemy.username}**...\n`;
+        logText += `🎯 WIL save: **${enemySave}** (DC **${dc}**)\n`;
+        logText += failed
+            ? `✅ **Shaken!** **${enemy.username}**'s resolve wavers — they get **-12 to retreat/chase rolls** for the rest of combat!`
+            : `❌ **Resisted!** **${enemy.username}** holds firm.`;
+
+        const over = checkBattleOver(battle);
+        if (over) {
+            return interaction.update({
+                content: clampMessage(`${buildBattleContent(battle, logText)}\n\n${over.content}`),
+                components: over.components
+            });
+        }
+        return interaction.update({
+            content: clampMessage(buildBattleContent(battle, logText)),
+            components: buildTurnComponents(battle, viewer)
+        });
+    }
+
     // Talk: pick an enemy to persuade (3 successful talks recruits them).
     if (customId === 'bt_talk') {
         if (!activeMissions.has(battle.id)) {
@@ -4740,6 +6764,10 @@ async function handleBattleButton(interaction) {
         }
         if (ui.recruited) {
             return interaction.reply({ content: '❌ You have already recruited an ally this battle!', ephemeral: true });
+        }
+        const talkChar = characterManager.getCharacter(viewer.id);
+        if (!canAcquireCompanions(talkChar)) {
+            return interaction.reply({ content: '❌ You cannot make allies while dead or in the afterlife!', ephemeral: true });
         }
         const enemies = getEnemyTargets(battle);
         if (enemies.length === 0) {
@@ -4777,25 +6805,35 @@ async function handleBattleButton(interaction) {
         const playerChar = characterManager.getCharacter(viewer.id);
         const isRivalTalk = enemy.isRival === true;
         const rival = isRivalTalk ? (playerChar && playerChar.rival) : null;
+        if (!canAcquireCompanions(playerChar)) {
+            return interaction.reply({ content: '❌ You cannot make allies while dead or in the afterlife!', ephemeral: true });
+        }
 
         let success;
         let chanceText;
         let progress;
+        const wise = isWiseOldOne(playerChar); // Pacifist: +7 & advantage on persuasion
         if (isRivalTalk && rival) {
             // Rival persuasion uses a dynamic DC that lowers as you beat them more, plus a
             // dialogue bonus from prior successful talks and spares.
-            const dc = getRivalPersuasionDC(rival);
+            const alignPenalty = getOppositeAlignmentPenalty(getPlayerAlignmentValue(playerChar), Number(rival.alignmentValue) || 0);
+            const dc = getRivalPersuasionDC(rival) + Math.round(alignPenalty * 20);
             const wilMod = calculateModifier((playerChar.stats || {}).wil || 0);
             const bonus = (rival.spares || 0) + (rival.persuasionProgress || 0);
-            const roll = getRandomInt(20) + Math.floor(wilMod / 2) + bonus;
+            let roll = getRandomInt(20) + Math.floor(wilMod / 2) + bonus;
+            if (wise) roll = Math.max(roll, getRandomInt(20)) + 7; // advantage +7
             success = roll >= dc;
-            chanceText = `🎯 Persuasion roll: **${roll}** (DC **${dc}**)`;
+            chanceText = `🎯 Persuasion roll: **${roll}** (DC **${dc}**)${wise ? ' *(Pacifist: +7, advantage)*' : ''}`;
             progress = ui.talkProgress[enemyId] = ui.talkProgress[enemyId] || { successes: 0, attempts: 0 };
         } else {
-            const chance = getPersuadeChance(playerChar, enemy);
-            const rolled = Math.random();
+            let chance = getPersuadeChance(playerChar, enemy);
+            let rolled = Math.random();
+            if (wise) {
+                chance = Math.min(1, chance + 0.07);
+                rolled = Math.min(rolled, Math.random()); // advantage: roll twice, keep the better
+            }
             success = rolled < chance;
-            chanceText = `🎯 Persuade chance: **${Math.round(chance * 100)}%** (roll: ${(rolled * 100).toFixed(1)})`;
+            chanceText = `🎯 Persuade chance: **${Math.round(chance * 100)}%** (roll: ${(rolled * 100).toFixed(1)})${wise ? ' *(Pacifist: +7, advantage)*' : ''}`;
             progress = ui.talkProgress[enemyId] = ui.talkProgress[enemyId] || { successes: 0, attempts: 0 };
         }
         progress.attempts++;
@@ -4921,6 +6959,27 @@ function getTrueCapsuleCandidates(character) {
     return candidates;
 }
 
+// Build the True Capsule "store" picker, paginated so a select menu never exceeds Discord's
+// 25-option cap (inventory + home storage can be much larger). Option values are absolute
+// indices so the store selection handler can resolve them directly.
+const TRUECAP_PAGE_SIZE = 25;
+function buildTrueCapStoreComponents(candidates, page) {
+    const totalPages = Math.max(1, Math.ceil(candidates.length / TRUECAP_PAGE_SIZE));
+    const pageCandidates = candidates.slice(page * TRUECAP_PAGE_SIZE, (page + 1) * TRUECAP_PAGE_SIZE);
+    const select = new StringSelectMenuBuilder()
+        .setCustomId('truecap_store_sel')
+        .setPlaceholder(`Choose an item to store... (page ${page + 1}/${totalPages})`);
+    pageCandidates.forEach((c, i) => {
+        select.addOptions(new StringSelectMenuOptionBuilder().setLabel(c.name.slice(0, 100)).setValue(String(page * TRUECAP_PAGE_SIZE + i)));
+    });
+    const components = [new ActionRowBuilder().addComponents(select)];
+    const navRow = new ActionRowBuilder();
+    if (page > 0) navRow.addComponents(new ButtonBuilder().setCustomId('truecap_storeprev').setLabel('◂ Prev').setStyle(ButtonStyle.Secondary));
+    if (page < totalPages - 1) navRow.addComponents(new ButtonBuilder().setCustomId('truecap_storenext').setLabel('Next ▸').setStyle(ButtonStyle.Secondary));
+    if (navRow.components.length > 0) components.push(navRow);
+    return components;
+}
+
 // Remove a candidate from its source (inventory / home storage / placed home) and return a note.
 function removeTrueCapsuleCandidate(character, cand) {
     let note = '';
@@ -5019,12 +7078,12 @@ function applyTeachSelection(interaction) {
         if (studentCmp) {
             const oldStyle = studentCmp.fightingStyle;
             let te = Array.isArray(studentCmp.techniques) ? [...studentCmp.techniques] : [];
-            te = pruneOffStyleTechniques(te, what);
+            te = pruneOffStyleTechniques(te, what, studentCmp.race);
             (MENTOR_STYLES[what].moves || []).forEach(m => { if (!te.includes(m)) te.push(m); });
             studentCmp.techniques = te;
             studentCmp.fightingStyle = what;
             studentCmp.fatigue = (studentCmp.fatigue || 0) + 20;
-            const teachRestText = companionRestIfNeeded(studentCmp);
+            const teachRestText = companionRestIfNeeded(studentCmp, teacher);
             teacher.companions[pending.slot - 1] = studentCmp;
             characterManager.updateCharacter(interaction.user.id, teacher.id, { companions: teacher.companions });
             characterManager.modifyFatigue(interaction.user.id, teacher.id, 20);
@@ -5037,7 +7096,7 @@ function applyTeachSelection(interaction) {
         }
         const oldStyle = studentChar.fightingStyle;
         let techniques = Array.isArray(studentChar.techniques) ? [...studentChar.techniques] : [];
-        techniques = pruneOffStyleTechniques(techniques, what);
+        techniques = pruneOffStyleTechniques(techniques, what, studentChar.race);
         (MENTOR_STYLES[what].moves || []).forEach(m => { if (!techniques.includes(m)) techniques.push(m); });
         characterManager.updateCharacter(studentUserId, studentId, { fightingStyle: what, techniques });
         characterManager.modifyFatigue(interaction.user.id, teacher.id, 20);
@@ -5052,7 +7111,7 @@ function applyTeachSelection(interaction) {
         te.push(what);
         studentCmp.techniques = te;
         studentCmp.fatigue = (studentCmp.fatigue || 0) + 20;
-        const teachRestText = companionRestIfNeeded(studentCmp);
+        const teachRestText = companionRestIfNeeded(studentCmp, teacher);
         teacher.companions[pending.slot - 1] = studentCmp;
         characterManager.updateCharacter(interaction.user.id, teacher.id, { companions: teacher.companions });
         characterManager.modifyFatigue(interaction.user.id, teacher.id, 20);
@@ -5082,13 +7141,13 @@ const SEARCH_ITEMS = [
     'Steel Ore', 'Iron Ore'
 ];
 
-// Legendary item table (NAT 100 only, d22). Location-specific items reroll when they don't apply.
+// Legendary item table (NAT 100 only, d23). Location-specific items reroll when they don't apply.
 const LEGENDARY_ITEMS = [
     'Dragon Ball', 'Huge Treasure (1500000 zeni)', 'Brave Sword', 'Eldritch Rune', 'Ancient Wuxia Talisman',
     'Masterwork Weapon', 'Seed of Might', "One Man's Trash", 'Bansho Fan', 'Adamantine',
     'Katchin', 'Magic Carpet', 'Spear of Longinus', 'Blood Vial', 'Masterwork Armor',
     'True Capsule', 'Dimensional Shard', 'Bag of Senzu (16x)', 'Gravitational Control Chip', "Jeremy Wade's Fishing Rod",
-    'Fountain of Youth', 'Blood Ruby'
+    'Fountain of Youth', 'Blood Ruby', 'Ultra Divine Water'
 ];
 
 // Mentor style table (1d10; Karate added from the board)
@@ -5098,7 +7157,7 @@ const MENTOR_STYLE_ORDER = ['Swordsman', 'Legionary Discipline', 'Turtle', 'Cran
 const MENTOR_STYLES = {
     'Swordsman': { name: 'Swordsman Mentor', moves: ['Cross Slash', 'Ki Sharpening', 'Impaling Thrust'] },
     'Legionary Discipline': { name: 'Legionary Mentor', moves: ['Sweeping Swing', 'Thrusting Strikes', 'Lacerating Slash'] },
-    'Turtle': { name: 'Turtle Hermit Mentor', moves: ['Kamehameha', 'Kamehameha Surge', 'Dashing Kamehameha', 'Destructo Disc', 'Pump Up'] },
+    'Turtle': { name: 'Turtle Hermit Mentor', moves: ['Kamehameha', 'Kamehameha Surge', 'Dashing Kamehameha', 'Destructo Disc'] },
     'Crane': { name: 'Crane Master Mentor', moves: ['Dodon Ray', 'Dodon Barrage', 'Machine Gun Punches'] },
     'Wolf': { name: 'Wolf Master Mentor', moves: ['Wolf Fang Fist', 'Whirlwind Kick', 'Neo Wolf Fang Fist'] },
     'Wrestler': { name: 'Wrestler Mentor', moves: ['Clothesline', 'Arm Crusher', 'Choke Slam', 'Suplex', 'Groundslam', 'Shove'] },
@@ -5110,6 +7169,14 @@ const MENTOR_STYLES = {
     'Shogun': { name: 'Shogun Mentor', moves: ['Rising Sun Technique', 'Sweeping Sunlight', 'Early Morning', 'Crimson Sky Flurry'] },
     // Maniac has no signature techniques — it's a passive-based style (Sadist Limit, etc.), so it grants no moves.
     'Maniac': { name: 'Maniac', moves: [] }
+};
+
+// Techniques a mentor teaches individually that are NOT part of their fighting style (e.g. the
+// Turtle mentor's Pump Up). These can be learned from the mentor directly without adopting the
+// style, and are NOT granted just by adopting the style. Style signature moves (the `moves`
+// arrays above) are the ONLY way to get that style's techniques — they are never taught alone.
+const MENTOR_SPECIFIC_TECHNIQUES = {
+    'Turtle': ['Pump Up']
 };
 
 const MENTOR_GENERAL_TEACHINGS = [
@@ -5160,14 +7227,19 @@ function getKiApplicationMastery(character) {
 
 // Ki Application: an active ability until mastery 3 (then passive, free). Returns per-turn Ki cost,
 // flat attack-damage bonus, DEX bonus while active, and whether it's passive.
-function getKiApplicationEffects(character) {
+// `effectiveWilMod` (optional): the character's EFFECTIVE WIL modifier — the same mod combat rolls
+// use (raw stat curve + stat multipliers + form scaling + wielded/worn gear + modBonus). Mastery 3's
+// passive +1/4 WIL mod bonus must derive from it, not from the raw character WIL stat.
+function getKiApplicationEffects(character, effectiveWilMod = null) {
     if (!hasKiApplication(character)) return { cost: 0, damage: 0, dex: 0, passive: false, wilDamage: 0 };
     const mastery = getKiApplicationMastery(character);
-    const wil = (character.stats && character.stats.wil) || 0;
     // Mastery 3: passive & free, adds 1/4 WIL MOD (not the raw WIL stat) to attack damage.
     if (mastery >= 3) {
-        const wilMod = calculateModifier(wil);
-        return { cost: 0, damage: Math.floor(wilMod / 4), dex: 0, passive: true, wilDamage: Math.floor(wilMod / 4) };
+        const wilMod = (effectiveWilMod != null && Number.isFinite(Number(effectiveWilMod)))
+            ? Number(effectiveWilMod)
+            : calculateModifier((character.stats && character.stats.wil) || 0);
+        const bonus = Math.max(0, Math.floor(wilMod / 4));
+        return { cost: 0, damage: bonus, dex: 0, passive: true, wilDamage: bonus };
     }
     if (mastery === 2) return { cost: 2, damage: 5, dex: 4, passive: false, wilDamage: 0 };
     if (mastery === 1) return { cost: 3, damage: 4, dex: 3, passive: false, wilDamage: 0 };
@@ -5219,9 +7291,9 @@ function getMentorRewardChoices(character, mentorStyle) {
         }
     });
 
-    // Each mentor's signature techniques (e.g. the Turtle mentor's Pump Up) can be learned
-    // individually without adopting the whole style.
-    (mentor.moves || []).forEach(move => {
+    // A mentor can't teach individual style signature moves — those are ONLY gained by adopting
+    // the style. Mentor-specific techniques (e.g. the Turtle mentor's Pump Up) are taught alone.
+    (MENTOR_SPECIFIC_TECHNIQUES[mentorStyle] || []).forEach(move => {
         if (!known.includes(move)) {
             choices.push({ id: `technique_${move}`, type: 'technique', technique: move, label: `🧠 Learn ${move}` });
         }
@@ -5308,10 +7380,17 @@ function buildCompanionTeachingComponents(choices) {
 
 // ---------- Merchants (from the Trello "Merchant" card) ----------
 // Merchants are found in major cities. Only Earth shops sell food, shovels, and fishing rods.
-const MERCHANT_CITIES = {
-    'Earth': { 1: 'North City', 6: 'East City', 17: 'Satan City', 31: 'South City', 45: 'West City' },
-    'Frieza Planet': { 34: 'Frieza City', 126: 'New Capital', 185: 'Central City', 201: 'Eastern City', 285: 'Frost Point' }
-};
+// The city list is DERIVED from SPECIAL_SLOTS (the single source of truth for named locations,
+// defined further down) so a city's space can only ever be written in ONE place — this used to be
+// a separate literal table and the two drifted apart (Konats City, Sniper Hill, …).
+// See `MERCHANT_CITIES` directly below the SPECIAL_SLOTS table for the derivation.
+
+// List a planet's merchant cities for hint text, e.g. "North City (1), East City (6)".
+function cityListText(location) {
+    const cities = MERCHANT_CITIES[location];
+    if (!cities) return null;
+    return Object.entries(cities).map(([space, name]) => `${name} (${space})`).join(', ');
+}
 
 // Buy prices (tunable via config.json `merchantPrices`). `stock` is a rarity tier (or {min,max} override).
 const STOCK_TIERS = {
@@ -5326,6 +7405,7 @@ const DEFAULT_MERCHANT_PRICES = {
     'Ki Recovery Capsule': { price: 30000, stock: 'uncommon' },
     'Fishing Rod': { price: 15000, stock: 'uncommon' },
     'Fishing Tackle': { price: 50000, stock: 'rare' },
+    'Hunting Bag': { price: 80000, stock: 'rare' },
     'Mixed Capsule': { price: 45000, stock: 'uncommon' },
     'Sage Water': { price: 20000, stock: 'common' },
     'Hetap™': { price: 10000, stock: 'common' },
@@ -5349,11 +7429,16 @@ const DEFAULT_MERCHANT_PRICES = {
 };
 const MERCHANT_PRICES = { ...DEFAULT_MERCHANT_PRICES, ...(merchantPrices || {}) };
 
+// Tuffles shopping on Vegeta pay 50% more at merchants.
+function getMerchantPriceMult(character) {
+    return (character && character.race === 'Tuffle' && (character.location || 'Earth') === 'Vegeta') ? 1.5 : 1;
+}
+
 // Daily sale discounts: each item has a random chance (30%) to be on sale (20-70% off).
 const saleStock = new Map(); // `${location}-${space}-${item}` -> { date, sale, salePrice }
 function getSaleInfo(location, space, itemName, basePrice) {
     const key = `${location}-${space}-${itemName}`;
-    const today = new Date().toDateString();
+    const today = centralDateString();
     const existing = saleStock.get(key);
     if (existing && existing.date === today) return existing;
     let sale = null, salePrice = null;
@@ -5378,7 +7463,7 @@ const GEAR_QUALITIES = [
     { name: 'Worthless', price: 1000, heavyPrice: 3000 }
 ];
 
-const WEAPON_TYPES = ['Club', 'Spiked Club', 'Power Pole', 'Sword', 'Katana', 'Scythe', 'Nodachi', 'Halberd', 'Greatsword', 'Greathammer'];
+const WEAPON_TYPES = ['Basic Gloves', 'Reinforced Gloves', 'Spiked Gloves', 'Dragonhide Gloves', 'Basic Boots', 'Steel-Toe Boots', 'Bladed Boots', 'Dragonhide Boots', 'Club', 'Spiked Club', 'Power Pole', 'Sword', 'Katana', 'Scythe', 'Nodachi', 'Halberd', 'Greatsword', 'Greathammer'];
 const ARMOR_WEIGHTS = ['Light', 'Medium', 'Heavy'];
 
 // ---------- Traveling Merchant (rare find while searching) ----------
@@ -5393,6 +7478,7 @@ const TRAVELING_MERCHANT_POOL = [
     'Recovery Capsule', 'Ki Recovery Capsule', 'Mixed Capsule', 'Sage Water', 'Hetap™', 'Vita Drink',
     // Weapon stock (quality rolled on use/equip)
     'Sword', 'Katana', 'Nodachi', 'Greatsword', 'Halberd', 'Greathammer', 'Spear', 'Bo-Staff', 'Scythe', 'Club',
+    'Basic Gloves', 'Reinforced Gloves', 'Basic Boots', 'Steel-Toe Boots',
     // Crafting / components
     'Component', 'Copper Wire', 'Welding torch'
 ];
@@ -5574,24 +7660,35 @@ function buildTravelingMerchantSellView(userId, character) {
 // Weapon ATTACK mod + inhibiting DEX mod, from the Trello "Weapons" card.
 // attackMod adds to the attack (hit) roll; dexMod is the DEX penalty the weapon imposes while wielded.
 const WEAPON_STATS = {
-    'Club': { attackMod: '1d2', dexMod: '1d3', bypass: true },
-    'Spiked Club': { attackMod: '1d3', dexMod: '1d3', bypass: true },
-    'Power Pole': { attackMod: '1d4', dexMod: '1d3', bypass: true },
-    'Bo-Staff': { attackMod: '1d4', dexMod: '1d3', bypass: true, damageMode: 'dex' },
-    'Nun-Chuck': { attackMod: '1d2', dexMod: '1d3', bypass: true, damageMode: 'dex' },
-    'Duel Sai': { attackMod: '2d2', dexMod: '1d4+1', damageMode: 'halfAttackHalfDex' },
-    'Sword': { attackMod: '1d5', dexMod: '1d7+4' },
-    'Katana': { attackMod: '1d2', dexMod: '1d7+5', damageMode: 'halfAttackHalfDex' },
-    'Scythe': { attackMod: '1d7+1', dexMod: '1d8+4', noSwordsman: true },
-    'Nodachi': { attackMod: '1d4+1', dexMod: '1d9+5', damageMode: 'halfAttackHalfDex', noSwordsman: true },
-    'Spear': { attackMod: '1d6+2', dexMod: '1d8+3', noSwordsman: true },
-    'Spear of Longinus': { attackMod: '1d17+2', dexMod: '1d9+2', damageMode: 'halfWilHalfStr', noSwordsman: true, conBonus: 5, wilBonus: 5 },
-    'Halberd': { attackMod: '1d8+3', dexMod: '1d10+5', noSwordsman: true },
-    'Greatsword': { attackMod: '1d9+3', dexMod: '1d10+5' },
-    'Greathammer': { attackMod: '1d10+3', dexMod: '1d11+8', bypass: true, noSwordsman: true },
-    'Bansho Fan': { attackMod: '1d3', dexMod: '1d2+1', bypass: true, damageMode: 'halfSpiHalfStr' },
-    'Brave Sword': { attackMod: '1d15+4', dexMod: '1d8+3' },
-    'Dimension Sword': { attackMod: '1d20+6', dexMod: '1d6+2', bypass: true }
+    // Unarmed-style weapons (gloves/boots). Special effects handled in battleSystem.
+    // `atkPct` is a rolled % of the wielder's stat modifier added as bonus weapon damage;
+    // `dexPct` is a rolled % of the wielder's DEX mod reduced while wielding the weapon.
+    'Basic Gloves': { attackMod: '1d2', dexMod: '1d4', unarmedWeapon: true, atkPct: '1d2+2', dexPct: '1d4' },
+    'Reinforced Gloves': { attackMod: '1d4+1', dexMod: '1d5+1', unarmedWeapon: true, punchStrBonus: '1d4', atkPct: '1d3+3', dexPct: '1d4+1' },
+    'Spiked Gloves': { attackMod: '1d5', dexMod: '1d6+4', unarmedWeapon: true, bleedOnHit: 1, atkPct: '1d3+4', dexPct: '1d4+2' },
+    'Dragonhide Gloves': { attackMod: '1d6+2', dexMod: '1d4+4', unarmedWeapon: true, critRangeBonus: 1, atkPct: '1d4+5', dexPct: '1d4+3' },
+    'Basic Boots': { attackMod: '1d3', dexMod: '1d4+1', unarmedWeapon: true, atkPct: '1d2+2', dexPct: '1d4' },
+    'Steel-Toe Boots': { attackMod: '1d5+1', dexMod: '1d6+2', unarmedWeapon: true, punchStrBonus: '1d4', atkPct: '1d3+3', dexPct: '1d4+1' },
+    'Bladed Boots': { attackMod: '1d6', dexMod: '1d7+3', unarmedWeapon: true, bypass: true, atkPct: '1d3+5', dexPct: '1d4+2' },
+    'Dragonhide Boots': { attackMod: '1d8+2', dexMod: '1d8+4', unarmedWeapon: true, critRangeBonus: 1, atkPct: '1d4+5', dexPct: '1d4+3' },
+    'Club': { attackMod: '1d2', dexMod: '1d3', bypass: true, atkPct: '1d3+4', dexPct: '1d5+2' },
+    'Spiked Club': { attackMod: '1d3', dexMod: '1d3', bypass: true, atkPct: '1d3+5', dexPct: '1d5+3' },
+    'Power Pole': { attackMod: '1d4', dexMod: '1d3', bypass: true, atkPct: '1d4+6', dexPct: '1d5+2' },
+    'Bo-Staff': { attackMod: '1d4', dexMod: '1d3', bypass: true, damageMode: 'dex', atkPct: '1d4+6', dexPct: '1d5+3' },
+    'Nun-Chuck': { attackMod: '1d2', dexMod: '1d3', bypass: true, damageMode: 'dex', atkPct: '1d3+5', dexPct: '1d5+2' },
+    'Duel Sai': { attackMod: '2d2', dexMod: '1d4+1', damageMode: 'halfAttackHalfDex', atkPct: '1d4+7', dexPct: '1d5+3' },
+    'Sword': { attackMod: '1d5', dexMod: '1d7+4', atkPct: '1d5+10', dexPct: '1d10+5' },
+    'Katana': { attackMod: '1d2', dexMod: '1d7+5', damageMode: 'halfAttackHalfDex', atkPct: '1d5+12', dexPct: '1d10+8' },
+    'Scythe': { attackMod: '1d7+4', dexMod: '1d8+4', noSwordsman: true, atkPct: '1d10+13', dexPct: '1d10+10' },
+    'Nodachi': { attackMod: '1d4+1', dexMod: '1d9+5', damageMode: 'halfAttackHalfDex', noSwordsman: true, atkPct: '1d5+15', dexPct: '1d10+12' },
+    'Spear': { attackMod: '1d6+2', dexMod: '1d8+3', noSwordsman: true, atkPct: '1d5+15', dexPct: '1d10+10' },
+    'Spear of Longinus': { attackMod: '1d17+2', dexMod: '1d9+2', damageMode: 'halfWilHalfStr', noSwordsman: true, conBonus: 5, wilBonus: 5, atkPct: '1d10+40', dexPct: '1d10+15' },
+    'Halberd': { attackMod: '1d8+3', dexMod: '1d10+5', noSwordsman: true, atkPct: '1d5+18', dexPct: '1d10+12' },
+    'Greatsword': { attackMod: '1d9+3', dexMod: '1d10+5', atkPct: '1d5+20', dexPct: '1d10+15' },
+    'Greathammer': { attackMod: '1d10+3', dexMod: '1d11+8', bypass: true, noSwordsman: true, atkPct: '1d5+25', dexPct: '1d10+20' },
+    'Bansho Fan': { attackMod: '1d3', dexMod: '1d2+1', bypass: true, damageMode: 'halfSpiHalfStr', atkPct: '1d5+10', dexPct: '1d10+8' },
+    'Brave Sword': { attackMod: '1d15+4', dexMod: '1d8+3', atkPct: '1d10+45', dexPct: '1d10+12' },
+    'Dimension Sword': { attackMod: '1d20+6', dexMod: '1d6+2', bypass: true, atkPct: '1d10+60', dexPct: '1d10+15' }
 };
 
 // Bladed sword types (for Konatsian Sword Proficiency / Feinting Strike).
@@ -5652,11 +7749,17 @@ function getWeaponMods(weaponName) {
     return {
         attackMod: rollWeaponDie(w.attackMod) + q.weaponStr,
         dexPenalty: Math.max(0, rollWeaponDie(w.dexMod) - q.weaponDex),
+        atkPct: rollWeaponDie(w.atkPct),
+        dexPct: rollWeaponDie(w.dexPct),
         damageMode: w.damageMode || 'str',
         bypass: !!w.bypass,
         type,
         conBonus: w.conBonus || 0,
-        wilBonus: w.wilBonus || 0
+        wilBonus: w.wilBonus || 0,
+        unarmedWeapon: !!w.unarmedWeapon,
+        punchStrBonus: w.punchStrBonus || 0,
+        bleedOnHit: w.bleedOnHit || 0,
+        critRangeBonus: w.critRangeBonus || 0
     };
 }
 
@@ -5666,11 +7769,17 @@ function applyEnemyWeaponMods(enemy) {
     if (mods) {
         enemy.weaponType = mods.type;
         enemy.weaponAttackMod = mods.attackMod;
+        enemy.weaponAtkPct = mods.atkPct || 0;
+        enemy.weaponDexPct = mods.dexPct || 0;
         enemy.weaponDexPenalty = applyWeaponProficiencyReduction(enemy.race, enemy.style, mods.type, mods.dexPenalty);
         enemy.weaponDamageMode = mods.damageMode;
         enemy.weaponBypass = mods.bypass;
         enemy.weaponConBonus = mods.conBonus || 0;
         enemy.weaponWilBonus = mods.wilBonus || 0;
+        enemy.weaponUnarmed = mods.unarmedWeapon || false;
+        enemy.weaponPunchStrBonus = mods.punchStrBonus || 0;
+        enemy.weaponBleedOnHit = mods.bleedOnHit || 0;
+        enemy.weaponCritRangeBonus = mods.critRangeBonus || 0;
     }
 }
 
@@ -5679,7 +7788,7 @@ const MARTIAL_WEAPON_TYPES = new Set(['Katana', 'Nodachi', 'Duel Sai', 'Nun-Chuc
 
 // Apply racial/style weapon-proficiency reductions to a weapon's inhibiting DEX penalty.
 // - Swordsman style: -1d4 with bladed swords (Trello "Swordsman" card).
-// - Konatsian: -4 with bladed swords (Trello "Sword Proficiency").
+// - Konatsian: -10% of the DEX hindrance with bladed swords (Trello "Sword Proficiency").
 // - Tortle: -1d3 with martial weapons (Trello "Ancient Martial Weapon Proficiency").
 function applyWeaponProficiencyReduction(race, fightingStyle, weaponType, weaponDexPenalty) {
     if (!weaponType || weaponDexPenalty <= 0) return weaponDexPenalty;
@@ -5687,7 +7796,8 @@ function applyWeaponProficiencyReduction(race, fightingStyle, weaponType, weapon
         return Math.max(0, weaponDexPenalty - getRandomInt(4));
     }
     if (race === 'Konatsian' && SWORD_TYPES.has(weaponType)) {
-        return Math.max(0, weaponDexPenalty - 4);
+        // Sword Proficiency: -10% of the weapon's inhibiting DEX hindrance (min 1).
+        return Math.max(0, weaponDexPenalty - Math.max(1, Math.round(weaponDexPenalty * 0.1)));
     }
     if (race === 'Tortle' && MARTIAL_WEAPON_TYPES.has(weaponType)) {
         return Math.max(0, weaponDexPenalty - getRandomInt(3));
@@ -5767,9 +7877,58 @@ const ORE_BONUSES = {
     'Adamantine': { weaponStr: 3, weaponDex: 2, armorCon: 30, armorDex: 0, durability: 10 },
     'Katchin': { weaponStr: 4, weaponDex: 2, armorCon: 0, armorDex: 35, armorWil: 0, armorSpi: 0, durability: 4 },
     'Soulstone': { weaponStr: 0, weaponDex: 0, weaponSpiDmgPct: 15, armorCon: 0, armorDex: 0, armorWil: 20, armorSpi: 0, durability: -15 },
-    'Orichalcum': { weaponStr: 2, weaponDex: -2, armorCon: 20, armorDex: -20, durability: 10 },
+    'Orichalcum': { weaponStr: 5, weaponDex: -2, armorCon: 20, armorDex: -20, durability: 10 },
     'Ebonite': { weaponStr: 0, weaponDex: 1, weaponWilDmgPct: 20, armorCon: 0, armorDex: 0, armorWil: 0, armorSpi: 20, durability: -10 }
 };
+
+// Mined materials that aren't smelted into ingots (no forge bonus) — listed by /info so the
+// mining table is complete.
+const MATERIAL_NOTES = {
+    'Coal': 'Fuel for the forge: every `/smith action:Forge` burns Coal. No forge bonus itself — otherwise sell it.',
+    'Uranium': 'Radioactive ore. No forge bonus — sell it (or use it when crafting fuel gear).'
+};
+
+// Human-readable forge bonuses for a smithing material, split into weapon and armor effects.
+function describeMaterialBonuses(material) {
+    const b = ORE_BONUSES[material];
+    if (!b) return { weapon: [], armor: [] };
+    const weapon = [], armor = [];
+    if (b.weaponStr) weapon.push(`${b.weaponStr > 0 ? '+' : ''}${b.weaponStr} weapon attack mod`);
+    if (b.weaponDex) weapon.push(`${b.weaponDex > 0 ? '-' : '+'}${Math.abs(b.weaponDex)} weapon DEX penalty`);
+    if (b.weaponSpiDmgPct) weapon.push(`+${b.weaponSpiDmgPct}% of your SPI mod as bonus weapon damage`);
+    if (b.weaponWilDmgPct) weapon.push(`+${b.weaponWilDmgPct}% of your WIL mod as bonus weapon damage`);
+    if (b.armorCon) armor.push(`${b.armorCon > 0 ? '+' : ''}${b.armorCon}% armor damage reduction`);
+    if (b.armorDex) armor.push(`${b.armorDex > 0 ? '-' : '+'}${Math.abs(b.armorDex)}% armor DEX penalty`);
+    if (b.armorWil) armor.push(`+${b.armorWil} WIL while worn`);
+    if (b.armorSpi) armor.push(`+${b.armorSpi} SPI while worn`);
+    if (b.durability) armor.push(`${b.durability > 0 ? '+' : ''}${b.durability} durability`);
+    return { weapon, armor };
+}
+
+// One-line forge summary used by the /info material list.
+function summarizeMaterial(material) {
+    const { weapon, armor } = describeMaterialBonuses(material);
+    const parts = [];
+    if (weapon.length) parts.push(`⚔️ ${weapon.join(' · ')}`);
+    if (armor.length) parts.push(`🛡️ ${armor.join(' · ')}`);
+    return parts.length ? parts.join('\n   ') : 'No forge bonus.';
+}
+
+// Every mineable material: { material, ore, ingot, note?, weapon[], armor[] }.
+function getMaterialIndex() {
+    const list = [];
+    Object.entries(ORE_INGOTS).forEach(([ore, ingot]) => {
+        const material = ingot.replace(/ Ingot$/, '');
+        list.push({ material, ore, ingot, ...describeMaterialBonuses(material) });
+    });
+    Object.entries(MATERIAL_NOTES).forEach(([material, note]) => {
+        list.push({ material, ore: material, ingot: null, note, ...describeMaterialBonuses(material) });
+    });
+    return list;
+}
+
+// Coal burned as fuel per /smith forge action. Tunable via config.json `forgeCoalCost` (default 1).
+const FORGE_COAL_COST = (typeof forgeCoalCost === 'number' && forgeCoalCost >= 0) ? forgeCoalCost : 1;
 
 // Roll a forged gear's quality (d20 + INT) and return its modifiers.
 // Smithing proficiency replaces INT for gear quality: the higher it is, the easier it is
@@ -5810,13 +7969,19 @@ function forgeWeapon(character, ingot, weaponTypeName) {
         name: `${q.key} ${material} ${weaponTypeName}`,
         weaponType: weaponTypeName,
         weaponAttackMod: attackMod,
+        weaponAtkPct: rollWeaponDie(base.atkPct) || 0,
         weaponDexPenalty: dexPenalty,
+        weaponDexPct: rollWeaponDie(base.dexPct) || 0,
         weaponDamageMode: base.damageMode || 'str',
         weaponBypass: !!base.bypass,
         weaponConBonus: base.conBonus || 0,
         weaponWilBonus: base.wilBonus || 0,
         weaponSpiDmgPct: oreB.weaponSpiDmgPct || 0,
         weaponWilDmgPct: oreB.weaponWilDmgPct || 0,
+        weaponUnarmed: !!base.unarmedWeapon,
+        weaponPunchStrBonus: base.punchStrBonus || 0,
+        weaponBleedOnHit: base.bleedOnHit || 0,
+        weaponCritRangeBonus: base.critRangeBonus || 0,
         quality: q.key,
         material
     };
@@ -5860,30 +8025,60 @@ function gearItemPrice(quality, weight) {
 }
 
 // Daily gear stock per city/slot: always stocks BOTH weapons and armor, each a concrete item.
+// Saiyan merchants on planet Vegeta run bigger shops: 4-6 of each kind with 2-4 units apiece.
 const gearStock = new Map(); // `${location}-${space}` -> { date, items }
 function getGearStock(location, space) {
     const key = `${location}-${space}`;
-    const today = new Date().toDateString();
+    const today = centralDateString();
     const existing = gearStock.get(key);
     if (existing && existing.date === today) return existing;
 
     const items = [];
-    const addGear = (name, category, basePrice) => {
+    const addGear = (name, category, basePrice, remaining = getRandomInt(3)) => {
         const sale = getSaleInfo(location, space, name, basePrice);
-        items.push({ name, category, price: basePrice, sale: sale.sale, salePrice: sale.salePrice, remaining: getRandomInt(3) });
+        items.push({ name, category, price: basePrice, sale: sale.sale, salePrice: sale.salePrice, remaining });
     };
-
-    const weaponCount = getRandomInt(3) + 1; // 1-3 weapons
-    for (let i = 0; i < weaponCount; i++) {
+    const rollWeapon = () => {
         const q = GEAR_QUALITIES[getRandomInt(GEAR_QUALITIES.length) - 1];
         const type = WEAPON_TYPES[getRandomInt(WEAPON_TYPES.length) - 1];
-        addGear(`${q.name} ${type}`, 'weapon', q.price);
-    }
-    const armorCount = getRandomInt(3) + 1; // 1-3 armor pieces
-    for (let i = 0; i < armorCount; i++) {
+        return { name: `${q.name} ${type}`, price: q.price };
+    };
+    const rollArmor = () => {
         const q = GEAR_QUALITIES[getRandomInt(GEAR_QUALITIES.length) - 1];
         const weight = ARMOR_WEIGHTS[getRandomInt(ARMOR_WEIGHTS.length) - 1];
-        addGear(`${q.name} ${weight} Armor`, 'armor', gearItemPrice(q, weight));
+        return { name: `${q.name} ${weight} Armor`, price: gearItemPrice(q, weight) };
+    };
+
+    if (location === 'Vegeta') {
+        // Saiyan merchants on planet Vegeta stock extra weapons & armor for the warrior race:
+        // 4-6 of each kind with 2-4 units apiece, never repeating an item already stocked.
+        const rolled = new Set(); // concrete item names already stocked this reroll
+        const stockGear = (category, count, roll) => {
+            let guard = 0;
+            let added = 0;
+            while (added < count && guard++ < 100) {
+                const { name, price } = roll();
+                if (rolled.has(name)) continue;
+                rolled.add(name);
+                addGear(name, category, price, getRandomInt(3) + 1);
+                added++;
+            }
+        };
+        stockGear('weapon', getRandomInt(3) + 3, rollWeapon); // 4-6 weapons
+        stockGear('armor', getRandomInt(3) + 3, rollArmor);   // 4-6 armor pieces
+    } else {
+        const weaponCount = getRandomInt(3) + 1; // 1-3 weapons
+        for (let i = 0; i < weaponCount; i++) {
+            const q = GEAR_QUALITIES[getRandomInt(GEAR_QUALITIES.length) - 1];
+            const type = WEAPON_TYPES[getRandomInt(WEAPON_TYPES.length) - 1];
+            addGear(`${q.name} ${type}`, 'weapon', q.price);
+        }
+        const armorCount = getRandomInt(3) + 1; // 1-3 armor pieces
+        for (let i = 0; i < armorCount; i++) {
+            const q = GEAR_QUALITIES[getRandomInt(GEAR_QUALITIES.length) - 1];
+            const weight = ARMOR_WEIGHTS[getRandomInt(ARMOR_WEIGHTS.length) - 1];
+            addGear(`${q.name} ${weight} Armor`, 'armor', gearItemPrice(q, weight));
+        }
     }
 
     const stock = { date: today, items };
@@ -5897,13 +8092,14 @@ function getGearStockItem(location, space, itemName) {
 }
 
 // Trello consumable items (from the "Merchant and Items" cards).
-// Effects: `hp`/`ki` are % of max unless `flat: true`; `fatigue` is a % delta (negative removes);
-// `dice` rolls XdY % for the given stat; `full` restores HP, Ki, and removes all fatigue.
+// Effects: `hp`/`ki` are **% of max** (they scale with the growing HP/Ki pools); `fatigue` is a
+// % delta (negative removes); `dice` rolls XdY % for the given stat; `full` restores HP, Ki, and
+// removes all fatigue.
 const CONSUMABLE_ITEMS = {
     'Senzu Bean': { full: true },
-    'Bread': { ki: 5, flat: true },
-    'Ramen': { hp: 8, ki: 10, flat: true },
-    'Dumplings': { hp: 3, ki: 6, flat: true },
+    'Bread': { ki: 5, kiBase: 10 },
+    'Ramen': { hp: 8, ki: 10, hpBase: 10, kiBase: 10 },
+    'Dumplings': { hp: 3, ki: 6, hpBase: 8, kiBase: 8 },
     'Vita Drink': { dice: { hp: '1d5', fatigue: '1d5', ki: '1d5' } },
     'Sage Water': { dice: { ki: '1d20', fatigue: '1d20' } },
     'Hetap™': { dice: { hp: '1d7', fatigue: '1d7', ki: '1d7' } },
@@ -5921,23 +8117,23 @@ const FOOD_ITEMS = {
     'Hetap™': CONSUMABLE_ITEMS['Hetap™'],
     'Vita Drink': CONSUMABLE_ITEMS['Vita Drink'],
     'Sage Water': CONSUMABLE_ITEMS['Sage Water'],
-    'Small Fish': { hp: 2, ki: 2, flat: true },
-    'Medium Fish': { hp: 4, ki: 4, flat: true },
-    'Large Fish': { hp: 6, ki: 6, fatigue: -2, flat: true },
-    'Huge Fish': { hp: 9, ki: 9, fatigue: -4, flat: true },
-    'Massive Fish': { hp: 15, ki: 15, fatigue: -8, flat: true },
+    'Small Fish': { hp: 2, ki: 2, hpBase: 5, kiBase: 5 },
+    'Medium Fish': { hp: 4, ki: 4, hpBase: 8, kiBase: 8 },
+    'Large Fish': { hp: 6, ki: 6, fatigue: -2, hpBase: 12, kiBase: 12 },
+    'Huge Fish': { hp: 9, ki: 9, fatigue: -4, hpBase: 18, kiBase: 18 },
+    'Massive Fish': { hp: 15, ki: 15, fatigue: -8, hpBase: 30, kiBase: 30 },
     // Meat from /hunt animals. Raw meat must be cooked before it can be eaten (see /cook).
-    'Rabbit Meat': { hp: 4, ki: 4, fatigue: -2, flat: true },
-    'Deer Meat': { hp: 7, ki: 7, fatigue: -2, flat: true },
-    'Wolf Meat': { hp: 8, ki: 8, fatigue: -3, flat: true },
-    'Bear Meat': { hp: 12, ki: 12, fatigue: -5, flat: true },
-    'Dinosaur Meat': { hp: 25, ki: 25, fatigue: -5, flat: true }
+    'Rabbit Meat': { hp: 4, ki: 4, fatigue: -2, hpBase: 8, kiBase: 8 },
+    'Deer Meat': { hp: 7, ki: 7, fatigue: -2, hpBase: 12, kiBase: 12 },
+    'Wolf Meat': { hp: 8, ki: 8, fatigue: -3, hpBase: 15, kiBase: 15 },
+    'Bear Meat': { hp: 12, ki: 12, fatigue: -5, hpBase: 20, kiBase: 20 },
+    'Dinosaur Meat': { hp: 25, ki: 25, fatigue: -5, hpBase: 40, kiBase: 40 }
 };
 
 // Build a raw (uncooked) meat item from a hunted animal, so it must be cooked before eating.
 function makeRawMeat(name) {
     const spec = FOOD_ITEMS[name] || {};
-    return { name, type: 'consumable', cooked: false, hp: spec.hp || 0, ki: spec.ki || 0, fatigue: spec.fatigue || 0 };
+    return { name, type: 'consumable', cooked: false, hp: spec.hp || 0, ki: spec.ki || 0, hpBase: spec.hpBase || 0, kiBase: spec.kiBase || 0, fatigue: spec.fatigue || 0 };
 }
 
 // Roll an XdY percent string (e.g. '1d7' -> 1..7)
@@ -5954,6 +8150,22 @@ function rollPct(dice) {
 // Is this an uncooked/raw fish or meat? (must be cooked before use)
 function isUncookedFood(item) {
     return !!(item && typeof item === 'object' && /(fish|meat)$/i.test(String(item.name || '')) && item.cooked !== true);
+}
+
+// Plan a /cook batch: how many items get cooked, what that costs, and the largest batch the player
+// could afford instead — so a big pile of raw food can never silently eat every last resource.
+// Cost is 1 resource per item, or 1 per 5 with a Camp Fire, minus any Garden & Kitchen discount.
+function planCookBatch(rawCount, requested, hasCampfire, cookDiscountPct, resources) {
+    const total = Math.max(0, Number(rawCount) || 0);
+    const costFor = (n) => applyBaseDiscount(hasCampfire ? Math.max(1, Math.ceil(n / 5)) : n, cookDiscountPct);
+    const cookCount = (requested != null)
+        ? Math.min(Math.max(1, Math.floor(requested)), total)
+        : total;
+    const cost = costFor(cookCount);
+    const maxAffordable = hasCampfire
+        ? Math.min(total, Math.floor(resources) * 5)
+        : Math.min(total, Math.floor(resources));
+    return { cookCount, cost, costFor, maxAffordable, affordable: resources >= cost };
 }
 
 // Is this a fish item object?
@@ -5975,14 +8187,21 @@ function getFishTackle(character) {
     return character.fishTackle;
 }
 
+// The character's hunting bag storage array (initialized if missing). Stores up to 250 meats.
+function getHuntingBag(character) {
+    if (!Array.isArray(character.huntingBag)) character.huntingBag = [];
+    return character.huntingBag;
+}
+const HUNTING_BAG_CAPACITY = 250;
+
 // Fish species: weight range (kg), food effects, and sell value per kg.
 // Higher-weight fish are rarer and sell for a lot more (Trello fishing).
 const FISH_SPECIES = {
-    'Small Fish':   { min: 1,      max: 8,       hp: 2,  ki: 2,  fatigue: 0,  rate: 250,  id: 'small' },
-    'Medium Fish':  { min: 9,      max: 14.50,   hp: 4,  ki: 4,  fatigue: 0,  rate: 400,  id: 'medium' },
-    'Large Fish':   { min: 14.51,  max: 34.38,   hp: 6,  ki: 6,  fatigue: -2, rate: 650,  id: 'large' },
-    'Huge Fish':    { min: 34.38,  max: 57.80,   hp: 9,  ki: 9,  fatigue: -4, rate: 1000, id: 'huge' },
-    'Massive Fish': { min: 57.81,  max: 857.38,  hp: 15, ki: 15, fatigue: -8, rate: 3000, id: 'massive', massive: true }
+    'Small Fish':   { min: 1,      max: 8,       hp: 2,  ki: 2,  hpBase: 5,  kiBase: 5,  fatigue: 0,  rate: 250,  id: 'small' },
+    'Medium Fish':  { min: 9,      max: 14.50,   hp: 4,  ki: 4,  hpBase: 8,  kiBase: 8,  fatigue: 0,  rate: 400,  id: 'medium' },
+    'Large Fish':   { min: 14.51,  max: 34.38,   hp: 6,  ki: 6,  hpBase: 12, kiBase: 12, fatigue: -2, rate: 650,  id: 'large' },
+    'Huge Fish':    { min: 34.38,  max: 57.80,   hp: 9,  ki: 9,  hpBase: 18, kiBase: 18, fatigue: -4, rate: 1000, id: 'huge' },
+    'Massive Fish': { min: 57.81,  max: 857.38,  hp: 15, ki: 15, hpBase: 30, kiBase: 30, fatigue: -8, rate: 3000, id: 'massive', massive: true }
 };
 
 // Roll a fish's weight. Massive fish heavily bias toward the low end (really heavy ones are very rare).
@@ -6134,10 +8353,12 @@ async function runFishing(interaction, isButton = false) {
             cooked: false,
             hp: s.hp,
             ki: s.ki,
+            hpBase: s.hpBase,
+            kiBase: s.kiBase,
             fatigue: s.fatigue,
             weight
         };
-        text = `🎣 ${interaction.user.displayName} caught a **${species}** (${weight} kg)! ${s.hp ? `When cooked it restores **+${s.hp} HP**, **+${s.ki} Ki**${s.fatigue ? `, and **${s.fatigue}% Fatigue**` : ''}.` : ''}`;
+        text = `🎣 ${interaction.user.displayName} caught a **${species}** (${weight} kg)! ${s.hp ? `When cooked it restores **${s.hp}% HP + ${s.hpBase}**, **${s.ki}% Ki + ${s.kiBase}**${s.fatigue ? `, and **${s.fatigue}% Fatigue**` : ''}.` : ''}`;
     }
 
     // Add fish to inventory (or the Fishing Tackle, which takes no inventory space).
@@ -6178,7 +8399,9 @@ function getConsumableEffect(item) {
     if (CONSUMABLE_ITEMS[name]) return CONSUMABLE_ITEMS[name];
     if (FOOD_ITEMS[name]) return FOOD_ITEMS[name];
     if (data.type === 'consumable') {
-        return { hp: data.hp || 0, ki: data.ki || 0, fatigue: data.fatigue || 0, flat: true };
+        // All consumables heal by % of max HP/Ki (plus a small flat base for foods) so they
+        // scale with the game's growing pools while still being useful to new players.
+        return { hp: data.hp || 0, ki: data.ki || 0, hpBase: data.hpBase || 0, kiBase: data.kiBase || 0, fatigue: data.fatigue || 0 };
     }
     return null;
 }
@@ -6195,8 +8418,15 @@ function computeConsumableEffect(spec, character) {
         if (spec.dice.fatigue) fatigueDelta -= rollPct(spec.dice.fatigue);
     }
     if (spec.hp) hpHeal += spec.flat ? spec.hp : Math.round(maxHP * spec.hp / 100);
+    if (spec.hpBase) hpHeal += spec.hpBase;
     if (spec.ki) kiHeal += spec.flat ? spec.ki : Math.round(maxKi * spec.ki / 100);
+    if (spec.kiBase) kiHeal += spec.kiBase;
     if (spec.fatigue) fatigueDelta += spec.fatigue;
+    // Sphinxian "Spoiled": consumables give 25% more benefit (rounded down).
+    if (character && character.race === 'Sphinxian') {
+        hpHeal = Math.floor(hpHeal * 1.25);
+        kiHeal = Math.floor(kiHeal * 1.25);
+    }
     return { hpHeal, kiHeal, fatigueDelta, full };
 }
 
@@ -6359,7 +8589,7 @@ function getShopStock(location, space, itemName) {
         ? entry.stock
         : (STOCK_TIERS[entry.stock] || STOCK_TIERS.common);
     const key = `${location}-${space}-${itemName}`;
-    const today = new Date().toDateString();
+    const today = centralDateString();
     const existing = shopStock.get(key);
     if (!existing || existing.date !== today) {
         const stock = {
@@ -6398,12 +8628,27 @@ function getCompanionPowerLevel(companion, ownerChar) {
     const stats = companion.isChild
         ? getChildBattleStats(companion)
         : getCompanionBattleStats(companion, ownerChar);
-    const maxHP = calculateHP(stats.con, companion.race || null);
-    const maxKi = calculateKi(stats.spi, companion.race || null);
+    const maxHP = calculateHP(stats.con, companion.race || null, {}, companion);
+    const maxKi = calculateKi(stats.spi, companion.race || null, {}, companion);
     return characterManager.calculatePowerLevel({
         str: stats.str, dex: stats.dex, con: stats.con, wil: stats.wil, spi: stats.spi,
         maxHP, maxKi
     });
+}
+
+// Abbreviate power levels once they reach the millions: 999,999 stays "999,999",
+// then 1m, 1.1m, 12.34m, 1b, 1.5b, 2.25t, ... (m/b/t/q suffixes).
+function formatPL(n) {
+    n = Math.floor(Number(n) || 0);
+    if (n < 1000000) return n.toLocaleString();
+    const units = [[1e6, 'm'], [1e9, 'b'], [1e12, 't'], [1e15, 'q']];
+    for (let i = units.length - 1; i >= 0; i--) {
+        const [div, suffix] = units[i];
+        if (n < div) continue;
+        const v = Math.floor(n / div * 100) / 100; // 2 decimals, truncated (never rounds into the next suffix)
+        return `${v.toFixed(2).replace(/\.?0+$/, '')}${suffix}`;
+    }
+    return n.toLocaleString();
 }
 
 // Stat accessors for the /leaderboard command
@@ -6423,25 +8668,44 @@ const STAT_ACCESSORS = {
     '⚒️ Smithing Proficiency': c => getSmithingProficiency(c)
 };
 
-// Planets players can travel between
-const LOCATIONS = ['Earth', 'Namek', 'Frieza Planet', 'King Kai\'s Planet', 'Otherworld', 'Yardrat', 'Space'];
+// Planets players can /space-travel TO. King Kai's Planet is deliberately absent — the only way
+// onto it is running Snake Way (see resolveSnakeWayRoute). Hell is absent too: you only reach it
+// by dying with negative alignment, never by flying.
+const LOCATIONS = ['Earth', 'Namek', 'Frieza Planet', 'Yardrat', 'Vegeta', 'Konats', 'Cereal', 'Otherworld', 'Space'];
 
-// Number of spaces on each planet
+// Number of spaces on each planet. Every planet a player can stand on needs an entry (missing
+// planets silently fell back to 100 spaces). Yardrat is 75 so its four Dragon Ball spawn slots
+// (8/21/40/63) all stay in range.
 const PLANET_SPACES = {
     'Earth': 100,
     'Namek': 200,
+    'Yardrat': 75,
+    'Konats': 350,
+    'Vegeta': 650,
+    'Cereal': 200,
+    'Frieza Planet': 300,
     "King Kai's Planet": 10,
     'Otherworld': 10000,
     'Hell': 100,
-    'Frieza Planet': 300,
     'Space': 1000000
 };
 
 // Default planet based on race
 function getDefaultLocation(race) {
-    if (race === 'Namekian') return 'Namek';
-    if (race === 'Frost Demon' || race === 'Alien') return 'Frieza Planet';
-    return 'Earth';
+    const preferred = race === 'Namekian' ? 'Namek'
+        : (race === 'Frost Demon' || race === 'Alien') ? 'Frieza Planet'
+        : race === 'Cerealian' ? 'Cereal'
+        : race === 'Konatsian' ? 'Konats'
+        : (race === 'Saiyan' || race === 'Tuffle') ? 'Vegeta'
+        : 'Earth';
+    return getSafeSpawnPlanet(preferred);
+}
+
+// Never spawn/revive a character on a destroyed planet — fall back to any safe one.
+function getSafeSpawnPlanet(preferred) {
+    if (!isPlanetDestroyed(preferred)) return preferred;
+    const fallback = ['Earth', 'Namek', 'Frieza Planet', 'Yardrat', 'Vegeta', 'Konats', 'Cereal'].find(p => !isPlanetDestroyed(p));
+    return fallback || 'Space';
 }
 
 // Discord channel names for each planet (players must be in their planet's channel to act)
@@ -6450,6 +8714,10 @@ const PLANET_CHANNELS = {
     'Namek': 'namek',
     'Yardrat': 'yardrat',
     'Frieza Planet': 'frieza planet',
+    'Konats': 'konats',
+    'Vegeta': 'vegeta',
+    'Cereal': 'cereal',
+    "King Kai's Planet": "king kai's planet",
     'Otherworld': 'otherworld',
     'Hell': 'hell',
     'Space': 'space'
@@ -6474,15 +8742,20 @@ function channelMatchesPlanet(channelName, expected) {
 
 // Returns true if the player is in the Discord channel matching their current planet.
 // Planets without a dedicated channel (e.g. King Kai's Planet) are allowed anywhere.
+// A destroyed planet's channel is unusable regardless of which channel the player is in.
 function isInCorrectChannel(interaction, character) {
     const channelName = (interaction.channel && interaction.channel.name ? interaction.channel.name : '').trim().toLowerCase();
     const planet = character.location || 'Earth';
+    if (isPlanetDestroyed(planet)) return false;
     const expected = PLANET_CHANNELS[planet];
     return channelMatchesPlanet(channelName, expected);
 }
 
 function wrongChannelReply(character) {
     const planet = character.location || 'Earth';
+    if (isPlanetDestroyed(planet)) {
+        return `🌋 **${planet}** has been **destroyed**! You can't use its channel. If you're dead, use \`/reincarnate\`; otherwise travel to a safe planet.`;
+    }
     const expected = PLANET_CHANNELS[planet];
     return `❌ You're on **${planet}**, so you need to be in a **#${expected}** channel (e.g. #${expected}, #${expected}-1) to do that!`;
 }
@@ -6533,21 +8806,26 @@ function getFlyMasteryEffects(character) {
     };
 }
 
-// Special named slots on planets
+// Special named slots on planets — the CANONICAL table of every named place in the world.
+// `location -> space -> name`. Earth's entries match the Trello "Traveling" card exactly. A named
+// slot is a "major location": you can /travel to it once visited, you can't blow up the planet
+// while standing on one (only the location itself), and its NPC can hand out a quest.
+// Every walkable planet has entries; Hell/Space intentionally have none (no land to name).
+// Which of these are MERCHANT CITIES is declared once, by name, further below.
 const SPECIAL_SLOTS = {
     'Earth': {
-        24: 'World Tournament Arena',
-        3: "Goku's House",
-        36: "Roshi's Island",
-        45: 'West City',
         1: 'North City',
+        3: "Goku's House",
         6: 'East City',
+        10: 'Crane School',
         17: 'Satan City',
+        24: 'World Tournament Arena',
         31: 'South City',
-        46: 'Capsule Corp',
-        41: "Kami's Lookout",
+        36: "Roshi's Island",
         40: "Korin's Tower",
-        10: 'Crane School'
+        41: "Kami's Lookout",
+        45: 'West City',
+        46: 'Capsule Corp'
     },
     'Frieza Planet': {
         34: 'Frieza City',
@@ -6555,17 +8833,105 @@ const SPECIAL_SLOTS = {
         185: 'Central City',
         201: 'Eastern City',
         285: 'Frost Point'
+    },
+    'Namek': {
+        14: 'Namek City',
+        32: 'Green Lake City',
+        85: 'Guru City',
+        134: 'Elder Guru'
+    },
+    'Konats': {
+        34: 'Konats City',
+        75: 'Sword Peak',
+        150: 'Spirit Gate',
+        190: 'Ashen Ruins',
+        275: 'Crescent Town',
+        320: "Tapion's Shrine"
+    },
+    'Vegeta': {
+        1: 'Vegeta City',
+        120: 'Saiyan Capitol',
+        250: 'Tuffle Town',
+        400: 'Royal District',
+        550: 'Saiyan Barracks'
+    },
+    'Cereal': {
+        28: 'Sniper Hill',
+        50: 'Xen District',
+        110: 'Greenwood',
+        160: 'Rift Town'
+    },
+    // Yardrat — home of Spirit Control / Instant Transmission. Avoids the four Dragon Ball spawn
+    // slots (8, 21, 40, 63) so a ball is never sitting on a city.
+    'Yardrat': {
+        12: 'Yardrat Village',
+        25: 'Spirit Control Temple',
+        44: 'Teleport Bazaar',
+        68: 'Highland Outpost'
+    },
+    "King Kai's Planet": {
+        1: "King Kai's House",
+        6: 'Gravity Garden'
+    },
+    'Otherworld': {
+        1: "King Yemma's Check-In Station",
+        100: 'Snake Way',
+        5000: "Grand Kai's Planet"
     }
 };
 
-// Where each planet exits into empty space
+// Which named slots are MERCHANT CITIES (a shop rolls daily stock there) rather than landmarks
+// (Goku's House, Kami's Lookout, Sword Peak…). Listed by NAME, so a city's space is defined in
+// exactly one place — add a city to SPECIAL_SLOTS and its name here, nothing else.
+const MERCHANT_CITY_NAMES = new Set([
+    // Earth
+    'North City', 'East City', 'Satan City', 'South City', 'West City',
+    // Frieza Planet
+    'Frieza City', 'New Capital', 'Central City', 'Eastern City', 'Frost Point',
+    // Namek
+    'Green Lake City', 'Namek City', 'Guru City', 'Elder Guru',
+    // Konats
+    'Konats City', 'Sword Peak', 'Spirit Gate', 'Ashen Ruins', 'Crescent Town', "Tapion's Shrine",
+    // Vegeta
+    'Vegeta City', 'Saiyan Capitol', 'Tuffle Town', 'Royal District', 'Saiyan Barracks',
+    // Cereal
+    'Sniper Hill', 'Xen District', 'Greenwood', 'Rift Town',
+    // Yardrat (Spirit Control Temple is a landmark, not a city)
+    'Yardrat Village', 'Teleport Bazaar', 'Highland Outpost'
+]);
+
+// location -> space -> city name, DERIVED from SPECIAL_SLOTS so the tables can never disagree.
+const MERCHANT_CITIES = {};
+Object.entries(SPECIAL_SLOTS).forEach(([planet, slots]) => {
+    MERCHANT_CITIES[planet] = {};
+    Object.entries(slots).forEach(([space, name]) => {
+        if (MERCHANT_CITY_NAMES.has(name)) MERCHANT_CITIES[planet][space] = name;
+    });
+});
+
+// Guard: a merchant-city name that isn't in SPECIAL_SLOTS (typo or a renamed slot) would silently
+// lose its shop, so say so loudly at boot instead.
+const unmatchedMerchantCityNames = [...MERCHANT_CITY_NAMES]
+    .filter(name => !Object.values(SPECIAL_SLOTS).some(slots => Object.values(slots).includes(name)));
+if (unmatchedMerchantCityNames.length) {
+    console.warn('[locations] MERCHANT_CITY_NAMES not found in SPECIAL_SLOTS:', unmatchedMerchantCityNames.join(', '));
+}
+
+// Where each planet exits into empty space (used to measure interplanetary distances). Every
+// planet has an entry so nothing relies on the silent `|| 1` fallback; Hell/Space orbit at 1
+// because you can't fly out of the afterlife and Space is already, well, space.
 const PLANET_EXIT_SPACES = {
     'Earth': 1,
     'Namek': 6543,
     'Frieza Planet': 356432,
     'Yardrat': 23403,
+    'Konats': 12000,
+    'Vegeta': 30000,
+    'Cereal': 18000,
     "King Kai's Planet": 500000,
-    'Otherworld': 900000
+    'Otherworld': 900000,
+    'Hell': 1,
+    'Space': 1
 };
 
 // Spaceship speeds (space slots per minute) by level (level 1 = no upgrades)
@@ -6647,6 +9013,13 @@ function hasSpacePod(character) {
     return false;
 }
 
+// A Space Pod escapes to a random new planet (never Frieza Planet, never the destroyed one).
+function getSpacePodEscapePlanet(character) {
+    const options = ['Earth', 'Namek', 'Yardrat', 'Vegeta', 'Konats', 'Cereal'];
+    const pool = options.filter(p => p !== (character.location || 'Earth') && !isPlanetDestroyed(p));
+    return pool.length > 0 ? pool[getRandomInt(pool.length) - 1] : 'Earth';
+}
+
 function countInventoryItem(inventory, name) {
     return inventory.reduce((total, item) => {
         const p = parseItemName(item);
@@ -6664,7 +9037,7 @@ function ownsItem(character, name) {
 // Magic Carpet: two travel-roll rerolls per day (reset at midnight).
 function getCarpetRerolls(character) {
     if (!ownsItem(character, 'Magic Carpet')) return 0;
-    const today = new Date().toDateString();
+    const today = centralDateString();
     if (character.carpetRerollDay !== today || character.carpetRerolls === undefined) {
         character.carpetRerollDay = today;
         character.carpetRerolls = 2;
@@ -6822,6 +9195,24 @@ function buildInventoryMessage(character, page = 0) {
         }
     }
 
+    // Hunting Bag contents (stored meat takes up 0 inventory slots).
+    if (ownsItem(character, 'Hunting Bag')) {
+        const bag = getHuntingBag(character);
+        const meatCounts = {};
+        bag.forEach(meat => {
+            const key = `${meat.name}${meat.cooked ? '' : ' (raw)'}`;
+            meatCounts[key] = (meatCounts[key] || 0) + 1;
+        });
+        content += `\n🎒 **Hunting Bag** (${bag.length}/${HUNTING_BAG_CAPACITY}):\n`;
+        if (bag.length === 0) {
+            content += `Empty! Hunt with \`/hunt\` and meat will be stored here.\n`;
+        } else {
+            Object.entries(meatCounts).forEach(([key, count]) => {
+                content += `• ${key} ×${count}\n`;
+            });
+        }
+    }
+
     // Dispose buttons for this page's items (Discord: max 5 rows of 5 buttons).
     const components = [];
     for (let i = 0; i < pageItems.length; i += 5) {
@@ -6879,37 +9270,38 @@ function consumeSpacePod(userId, character) {
 
 // ---------- Combat techniques (from the Dragonball D&D Trello board) ----------
 const COMBAT_SKILLS = {
-    'Shove': { cost: 'action', needsTarget: true, ki: 'pct5', desc: '5% Ki: shove the target. Uses your Action (never your bonus action). Target makes a DEX save (DC d20+your CON mod) or is Off-Balance (-50% DEX defense). On success, you get your action back.' },
+    'Shove': { cost: 'action', needsTarget: true, ki: 'pct5', kiCostsPct: [5, 4, 3, 2], desc: '5% Ki (4%/3%/2% with mastery): shove the target. Uses your Action (never your bonus action). Target makes a DEX save (DC d20+your CON mod) or is Off-Balance (-50% DEX defense). On success, you get your action back.' },
     'Fly': { cost: 'bonus', needsTarget: false, ki: 'pct5', desc: '5% Ki: take flight. +2 DEX mod on attack/defense rolls. Grounded melee attackers have disadvantage against you.' },
-    'Dodon Ray': { cost: 'bonus', needsTarget: true, ki: 'd10pct', desc: 'd10% Ki: beam of light. Target makes a DEX save (DC d20+your WIL mod) or takes 1d7+WIL damage.' },
+    'Dodon Ray': { cost: 'bonus', needsTarget: true, ki: 'd10pct', kiCostsPct: [10, 7, 6, 6], desc: 'd10% Ki (d7%/d6% with mastery): beam of light. Target makes a DEX save (DC d20+your WIL mod) or takes 1d7+WIL damage (1d8/1d9/1d10 with mastery; mastery 3 also gives the save disadvantage if they whiffed last turn).' },
     'Spirit Ball': { cost: 'action', needsTarget: true, ki: 'd10-2pct', desc: '(d10-2)% Ki: ki ball attack (d20+DEX vs d20+DEX). Hit = 1d7+WIL. Miss = redirect once for 6 Ki.' },
-    'Wolf Fang Fist': { cost: 'bonus', needsTarget: false, ki: 'd20pct', desc: 'd20% Ki: gain an extra action and +10% DEX mod on attack rolls this turn.' },
+    'Wolf Fang Fist': { cost: 'bonus', needsTarget: false, ki: 'd20pct', kiCostsPct: [20, 20, 16, 16, 16], desc: 'd20% Ki (d16% with mastery 2+): gain an extra action and +10% DEX mod on attack rolls this turn (+13% at mastery 1, +15% at mastery 3; mastery 4 unlocks Neo Wolf Fang Fist).' },
     'Whirlwind Kick': { cost: 'action', needsTarget: true, ki: 'd10pct', desc: 'd10% Ki: spinning kick (d20+DEX vs d20+DEX). Hit = 1d9+STR and CON save (DC d20+your STR mod) or Off-Balance.' },
-    'Feral Fury Knee': { cost: 'action+bonus', needsTarget: true, ki: 'flat15', desc: '15 Ki: flying knee (d20+DEX vs d20+DEX). Hit = 1d8+STR and DEX save (DC d20+your DEX mod) or STUNNED 1 turn. Miss = lose your turn and Off-Balance.' },
+    'Feral Fury Knee': { cost: 'action+bonus', needsTarget: true, ki: 'flat15', kiCosts: [15, 15, 15, 10], desc: '15 Ki (10 at mastery 3): flying knee (d20+DEX vs d20+DEX). Hit = 1d8+STR and DEX save (DC d20+your DEX mod) or STUNNED 1 turn. Miss = lose your turn and Off-Balance.' },
     'Machine Gun Punches': { cost: 'action', needsTarget: true, ki: 'd10pct', desc: 'd10% Ki: DEX save (DC d20+your DEX mod) or 6×(1d4+STR) damage and disadvantage on their next attack.' },
     // --- Mentor-taught techniques (learned by beating mentors found via /search) ---
-    'Cross Slash': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d10', mod: 'str' }, desc: 'Swordsman. d10+15% Ki: slash (d20+DEX vs d20+DEX). Hit = 1d10+STR; CON save or bleed + a deadly second save that can slice them in half.' },
-    'Ki Sharpening': { cost: 'bonus', needsTarget: false, ki: 'pct5', desc: 'Swordsman. Bonus action toggle: +25% to damage rolls but -40% to DEX attack rolls, draining Ki each turn (mastery raises the damage bonus).' },
-    'Impaling Thrust': { cost: 'action', needsTarget: true, ki: 'flat5', attack: { dice: '1d10', mod: 'str' }, desc: 'Swordsman. 5 Ki: lunging thrust (d20+DEX vs d20+DEX). Hit = 1d10+STR.' },
+    'Cross Slash': { cost: 'action', needsTarget: true, ki: 'flat10', kiCosts: [10, 8, 7, 6], attack: { dice: '1d10', mod: 'str' }, desc: 'Swordsman. d10+15% Ki: slash (d20+DEX vs d20+DEX). Hit = 1d10+STR; CON save or bleed + a deadly second save that can slice them in half. Mastery: 1d12/1d14 and a cheaper slash.' },
+    'Ki Sharpening': { cost: 'bonus', needsTarget: false, ki: 'pct5', desc: 'Swordsman (innate for Konatsians). Bonus action toggle: +40% to damage rolls but -20% to DEX attack rolls, draining Ki each turn (mastery raises the damage bonus; Konatsians master it 20% easier).' },
+    'Impaling Thrust': { cost: 'action', needsTarget: true, ki: 'flat5', kiCosts: [5, 4, 3], attack: { dice: '1d10', mod: 'str' }, desc: 'Swordsman. 5 Ki (4 Ki at mastery 1, 3 at mastery 2): lunging thrust (d20+DEX vs d20+DEX). Hit = 1d10+STR.' },
     'Kamehameha': { cost: 'action', needsTarget: true, ki: 'd20pct', attack: { dice: '1d10', mod: 'wil', masteryDice: [10, 12, 14, 16] }, desc: 'Turtle School. d20% Ki: signature beam (d20+DEX vs d20+DEX). Hit = 1d10+WIL.' },
     'Kamehameha Surge': { cost: 'action', needsTarget: true, ki: 'd20pct', attack: { dice: '1d10', mod: 'wil', masteryDice: [10, 15, 20, 25] }, desc: 'Turtle School. d20% Ki: full-power beam (d20+DEX vs d20+DEX). Hit = 1d10+WIL.' },
     'Dashing Kamehameha': { cost: 'action', needsTarget: true, ki: 'd10pct', attack: { dice: '1d7', mod: 'wil', masteryDice: [7, 8, 9, 10] }, desc: 'Turtle School. d10% Ki: beam fired mid-dash (d20+DEX vs d20+DEX). Hit = 1d7+WIL.' },
-    'Destructo Disc': { cost: 'action', needsTarget: true, ki: 'd25pct', desc: 'Turtle School. d25% Ki: a razor disc (d20+DEX vs d20+DEX) that ignores guard bonuses; hit = 2d8+WIL, and a DEX save (advantage) or it cuts off a limb.' },
-    'Pump Up': { cost: 'action', needsTarget: false, ki: 'flat0', desc: 'Turtle School. Action: your body swells — +10 STR mod, +5 CON mod, -5 DEX mod (mastery scales). Drains 45 Ki per turn.' },
+    'Destructo Disc': { cost: 'action', needsTarget: true, ki: 'd25pct', kiCostsPct: [25, 25, 25, 20], desc: 'Turtle School. d25% Ki (d20% at mastery 3): a razor disc (d20+DEX vs d20+DEX) that ignores guard bonuses; hit = 2d8+WIL (2d10/2d12 with mastery), and a DEX save (advantage) or it cuts off a limb.' },
+    'Pump Up': { cost: 'action', needsTarget: false, ki: 'flat0', desc: 'Turtle School. Action: your body swells — +10 STR mod, +5 CON mod, -5 DEX mod. Mastery raises the mods AND adds a % of your own STR/CON mod (flat + pct). Drains 45 Ki per turn.' },
+    'Kaioken': { cost: 'bonus', needsTarget: false, ki: 'flat0', desc: 'King Kai. Bonus action toggle: multiply your combat mods (x2 base, then x3/x4/x5/x10/x20 with mastery) while burning Ki and building fatigue each turn. Cannot be activated at 50%+ fatigue; drops when you run out of Ki.' },
     'Dodon Barrage': { cost: 'action', needsTarget: true, ki: 'd10pct', attack: { dice: '2d4', mod: 'wil' }, desc: 'Crane School. d18% Ki: fire 5+ beams — each DEX save (d20+WIL) that fails deals d3+(WIL/2) (d4 at mastery 3).' },
     'Neo Wolf Fang Fist': { cost: 'action', needsTarget: false, ki: 'd40pct', desc: 'Wolf Style. d40% Ki: gain an extra action, +30% DEX mod and +25% STR mod to damage (added to your attacks).' },
     // --- Legionary Discipline (polearm style, per the Legionary card Abilities) ---
-    'Sweeping Swing': { cost: 'action', needsTarget: true, ki: 'd12pct', attack: { dice: '1d13', mod: 'str', masteryDice: [13, 15, 17, 17], save: { vs: 'dex', dc: { mod: 'str' }, effect: 'prone' } }, desc: 'Legionary. d12% Ki: low sweeping polearm strike (d20+DEX vs d20+DEX). Hit = 1d13+STR; DEX save (d18+STR) or knocked Prone (off-balance). Mastery raises damage (1d15/1d17) and grounds flying foes at 3.' },
+    'Sweeping Swing': { cost: 'action', needsTarget: true, ki: 'd12pct', kiCostsPct: [12, 10, 8, 9], attack: { dice: '1d13', mod: 'str', masteryDice: [13, 15, 17, 17], save: { vs: 'dex', dc: { mod: 'str' }, effect: 'prone' } }, desc: 'Legionary. d12% Ki (10%/8%/9% with mastery): low sweeping polearm strike (d20+DEX vs d20+DEX). Hit = 1d13+STR; DEX save (d18+STR) or knocked Prone (off-balance). Mastery raises damage (1d15/1d17) and grounds flying foes at 3.' },
     'Thrusting Strikes': { cost: 'action+bonus', needsTarget: true, ki: 'flat30', kiCosts: [30, 28, 25, 22, 19, 19], desc: 'Legionary. 30 Ki (action+bonus): slash then poke — attack twice for 2d5+STR, but -8 DEX and -10% DEX mod on the attack roll. Crit your attack roll to strike once more.' },
     'Lacerating Slash': { cost: 'action+bonus', needsTarget: true, ki: 'flat45', desc: 'Legionary. 45 Ki (action+bonus): slam the polearm blade — force a d30+(DEX+CON mod) save vs d20+2×STR; on fail deal d20+½ STR and Bleed for 1 turn.' },
-    'Clothesline': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d8', mod: 'str', save: { vs: 'dex', dc: { mod: 'str' }, effect: 'offbalance' } }, desc: 'Wrestling. 10 Ki: (d20+DEX vs d20+DEX). Hit = 1d8+STR and DEX save or Off-Balance.' },
-    'Arm Crusher': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d6', mod: 'str', save: { vs: 'con', dc: { mod: 'str' }, effect: 'disadvantage' } }, desc: 'Wrestling. 10 Ki: (d20+DEX vs d20+DEX). Hit = 1d6+STR and CON save or disadvantage on their next attack.' },
-    'Choke Slam': { cost: 'action', needsTarget: true, ki: 'flat15', attack: { dice: '1d10', mod: 'str', save: { vs: 'con', dc: { mod: 'str' }, effect: 'stun' } }, desc: 'Wrestling. 15 Ki: (d20+DEX vs d20+DEX). Hit = 1d10+STR and CON save or STUNNED 1 turn.' },
-    'Suplex': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d8', mod: 'str', save: { vs: 'dex', dc: { mod: 'str' }, effect: 'offbalance' } }, desc: 'Wrestling. 10 Ki: (d20+DEX vs d20+DEX). Hit = 1d8+STR and DEX save or Off-Balance.' },
-    'Groundslam': { cost: 'action', needsTarget: true, ki: 'flat15', attack: { dice: '1d12', mod: 'str' }, desc: 'Wrestling. 15 Ki: (d20+DEX vs d20+DEX). Hit = 1d12+STR.' },
-    'One-Two': { cost: 'action', needsTarget: true, ki: 'd20pct', attack: { dice: '2d4', mod: 'dex' }, desc: 'Boxing. d20% Ki: jab-cross combo (d20+DEX vs d20+DEX). First jab = 1d8+DEX; then a DEX save — on fail a 1d15+STR cross and advantage on your next attack.' },
+    'Clothesline': { cost: 'action', needsTarget: true, ki: 'flat10', kiCosts: [10, 10, 6, 6], attack: { dice: '1d13', mod: 'str', masteryDice: [13, 13, 13, 15], save: { vs: 'dex', dc: { mod: 'str' }, effect: 'offbalance' } }, desc: 'Wrestling. 10 Ki (6 with mastery 2+): (d20+DEX vs d20+DEX). Hit = 1d13+STR (1d15 at mastery 3) and DEX save or Off-Balance.' },
+    'Arm Crusher': { cost: 'action', needsTarget: true, ki: 'flat10', kiCosts: [10, 10, 9, 8], attack: { dice: '1d6', mod: 'str', masteryDice: [6, 6, 7, 8], save: { vs: 'con', dc: { mod: 'str' }, effect: 'disadvantage' } }, desc: 'Wrestling. 10 Ki (9 at mastery 2, 8 at 3): (d20+DEX vs d20+DEX). Hit = 1d6+STR (1d7/1d8 with mastery) and CON save or disadvantage on their next attack.' },
+    'Choke Slam': { cost: 'action', needsTarget: true, ki: 'flat15', kiCosts: [15, 15, 15, 12], attack: { dice: '1d10', mod: 'str', masteryDice: [10, 11, 12, 13], save: { vs: 'con', dc: { mod: 'str' }, effect: 'stun' } }, desc: 'Wrestling. 15 Ki (12 at mastery 3): (d20+DEX vs d20+DEX). Hit = 1d10+STR (up to 1d13 with mastery) and CON save or STUNNED 1 turn.' },
+    'Suplex': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d8', mod: 'str', masteryDice: [8, 9, 10, 12], save: { vs: 'dex', dc: { mod: 'str' }, effect: 'offbalance' } }, desc: 'Wrestling. 10 Ki: (d20+DEX vs d20+DEX). Hit = 1d8+STR (1d9/1d10/1d12 with mastery) and DEX save or Off-Balance.' },
+    'Groundslam': { cost: 'action', needsTarget: true, ki: 'flat15', kiCosts: [15, 15, 15, 12], attack: { dice: '1d12', mod: 'str' }, desc: 'Wrestling. 15 Ki (12 at mastery 3): (d20+DEX vs d20+DEX). Hit = 1d12+STR.' },
+    'One-Two': { cost: 'action', needsTarget: true, ki: 'd20pct', kiCostsPct: [20, 17, 17, 17], attack: { dice: '2d4', mod: 'dex' }, desc: 'Boxing. d20% Ki (d17% with mastery): jab-cross combo (d20+DEX vs d20+DEX). First jab = 1d8+DEX (1d9 at mastery 1); then a DEX save — on fail a 1d15+STR cross (1d18 at mastery 2) and advantage on your next attack (mastery 3: they get disadvantage instead).' },
     'Liver Punch': { cost: 'action', needsTarget: true, ki: 'd14pct', attack: { dice: '1d6', mod: 'str' }, desc: 'Boxing. d14% Ki: DEX save (d20+DEX, +5 if you dodged last round). On fail deal 1d15+STR and gain +1 Rhythm.' },
-    'Corkscrew': { cost: 'action', needsTarget: true, ki: 'd15pct', attack: { dice: '1d8', mod: 'str' }, desc: 'Boxing. d15% Ki: spinning punch. Hit = 1d13+STR; CON save or the torque leaves them reeling (blocked hits deal 1d5+STR/2).' },
+    'Corkscrew': { cost: 'action', needsTarget: true, ki: 'd15pct', kiCostsPct: [15, 13, 13, 13], attack: { dice: '1d8', mod: 'str' }, desc: 'Boxing. d15% Ki (d13% with mastery): spinning punch. Hit = 1d13+STR (1d15 at mastery 1); CON save or the torque leaves them reeling (blocked hits deal 1d5+STR/2).' },
     'Savage Elbow': { cost: 'action', needsTarget: true, ki: 'd15pct', attack: { dice: '1d8', mod: 'str' }, desc: 'Tiger Style. d15% Ki: downward elbow (d20+DEX vs d20+DEX). Hit = 1d12+STR and CON save or extra 1d10 + Concussion.' },
     'Tiger Teep': { cost: 'action', needsTarget: true, ki: 'd16pct', attack: { dice: '1d6', mod: 'str' }, desc: 'Tiger Style. d16% Ki: teep into the stomach. DEX save (d20+DEX) or 1d17+STR. Mastery 3: Rupture.' },
     'Leaping Tiger Fist': { cost: 'bonus', needsTarget: true, ki: 'd12pct', attack: { dice: '1d10', mod: 'str' }, desc: 'Tiger Style. d12% Ki: leaping smash (bonus action) — DEX save with disadvantage or 1d14+STR.' },
@@ -6939,7 +9331,16 @@ const COMBAT_SKILLS = {
     'Rising Sun Technique': { cost: 'action', needsTarget: true, ki: 'flat20', attack: { dice: '1d10', mod: 'str' }, desc: 'Shogun. 20 Ki: upward slash — DEX save (d20+DEX) or 1d10+STR and crushes their block.' },
     'Sweeping Sunlight': { cost: 'action', needsTarget: true, ki: 'flat10', attack: { dice: '1d3', mod: 'str' }, desc: 'Shogun. 9 Ki: leg sweep — DEX save (d20+DEX) or a small 1d3+STR hit.' },
     'Early Morning': { cost: 'bonus', needsTarget: false, ki: 'flat0', desc: 'Shogun. Toggle stance (20 Ki/turn): cannot dodge (block only), counters on block, +DEX to attacks.' },
-    'Crimson Sky Flurry': { cost: 'action', needsTarget: true, ki: 'd20pct', desc: 'Shogun. d20% Ki: 3 slashes (each DEX save) for 1d8+weapon/2; all hits = CON save or bleed.' }
+    'Crimson Sky Flurry': { cost: 'action', needsTarget: true, ki: 'd20pct', desc: 'Shogun. d20% Ki: 3 slashes (each DEX save) for 1d8+weapon/2; all hits = CON save or bleed.' },
+    // --- Frieza Force techniques (taught by Frieza's quest NPC in Frieza City) ---
+    'Death Beam': { cost: 'action', needsTarget: true, ki: 'd15pct', attack: { dice: '1d16', mod: 'wil' }, desc: 'Frieza Force. 1d15% Ki: a thin, piercing lance of light from the fingertip — 1d16+WIL damage.' },
+    'Death Saucer': { cost: 'action', needsTarget: true, ki: 'd25pct', attack: { dice: '1d18', mod: 'wil' }, save: { dc: { mod: 'wil' }, vs: 'dex', effect: 'bleed' }, desc: 'Frieza Force. 1d25% Ki: a razor-edged ki disc — 1d18+WIL damage and BLEEDING on a failed DEX save.' },
+    'Telekinesis': { cost: 'bonus', needsTarget: true, ki: 'flat10', attack: { dice: '1d6', mod: 'wil' }, save: { dc: { mod: 'wil' }, vs: 'str', effect: 'offbalance' }, desc: 'Frieza Force. 10 Ki (bonus action): seize the foe with your mind and hurl them — 1d6+WIL and OFF-BALANCE on a failed STR save.' },
+    'Supernova': { cost: 'action+bonus', needsTarget: false, aoe: true, ki: 'd35pct', attack: { dice: '1d35', mod: 'wil' }, desc: 'Frieza Force ULTIMATE. 1d35% Ki (action + bonus action): condense a miniature sun and drop it on ALL enemies — 1d35+WIL annihilation.' },
+    // --- Gohan\'s technique (taught by Gohan at Goku\'s House and Roshi\'s Island) ---
+    'Masenko': { cost: 'action', needsTarget: true, ki: 'd12pct', attack: { dice: '1d12', mod: 'wil' }, desc: 'Gohan\'s technique. 1d12% Ki: hands charged above the head, fired as a two-handed beam — 1d12+WIL damage.' },
+    // --- Blinding flash (taught by Tien at the Crane School and Krillin on Roshi\'s Island) ---
+    'Solar Flare': { cost: 'bonus', needsTarget: false, ki: 'flat5', desc: '5 Ki (bonus action): a blinding flash of light — every enemy has disadvantage on their next attack and this turn.' }
 };
 
 // Each technique is defined without a `name` field; populate it from its key so logs like
@@ -6948,7 +9349,173 @@ for (const name of Object.keys(COMBAT_SKILLS)) COMBAT_SKILLS[name].name = name;
 
 // These techniques have their own handler in executeCombatSkill, so the generic
 // "attack" block must not re-apply damage after the switch runs.
-const DEDICATED_SKILL_CASES = new Set(['One-Two', 'Liver Punch', 'Corkscrew', 'Savage Elbow', 'Tiger Teep', 'Leaping Tiger Fist', 'Dodon Barrage', 'Cross Slash', 'Gyaku-Zuki', 'Mae-Geri', 'Uraken', 'Shuto-Uchi', 'Assassinate', 'Pin-Point Blow', 'Incognito', 'Secret Poison', 'Crashing Thunder Kick', 'Tornado Roundhouse', "Heaven's Howl", 'Rising Sun Technique', 'Sweeping Sunlight', 'Neo Wolf Fang Fist', 'Crimson Sky Flurry', 'Early Morning', 'Thrusting Strikes', 'Lacerating Slash', 'Kamehameha', 'Kamehameha Surge', 'Destructo Disc']);
+const DEDICATED_SKILL_CASES = new Set(['One-Two', 'Liver Punch', 'Corkscrew', 'Savage Elbow', 'Tiger Teep', 'Leaping Tiger Fist', 'Dodon Barrage', 'Cross Slash', 'Gyaku-Zuki', 'Mae-Geri', 'Uraken', 'Shuto-Uchi', 'Assassinate', 'Pin-Point Blow', 'Incognito', 'Secret Poison', 'Crashing Thunder Kick', 'Tornado Roundhouse', "Heaven's Howl", 'Rising Sun Technique', 'Sweeping Sunlight', 'Neo Wolf Fang Fist', 'Crimson Sky Flurry', 'Early Morning', 'Thrusting Strikes', 'Lacerating Slash', 'Kamehameha', 'Kamehameha Surge', 'Destructo Disc', 'Solar Flare', 'Supernova']);
+
+// ---------- PER-TECHNIQUE MASTERY TABLES ----------
+// Indexed by mastery level; a level past the end of an array repeats the last entry (players cap
+// at 5). These are the SAME numbers the player path uses in `executeCombatSkill` — every dedicated
+// case there has the identical array/percentage inline, and the NPC path reads this table so an
+// enemy's technique scales EXACTLY like a player's at the same mastery level. If a player-side
+// mastery number changes, change it here too (NPCs would otherwise drift).
+const TECHNIQUE_MASTERY_DICE = {
+    'Dodon Ray': [7, 8, 9, 10],
+    'Spirit Ball': [7, 7, 7, 7],
+    'Whirlwind Kick': [9, 10, 11, 13],
+    'Kamehameha': [10, 12, 14, 16],
+    'Kamehameha Surge': [10, 15, 20, 25],
+    'Dashing Kamehameha': [7, 8, 9, 10],
+    'Destructo Disc': [8, 10, 12, 12],
+    'Feral Fury Knee': [8, 9, 10, 12],
+    'One-Two': [8, 9, 15, 18],
+    'Savage Elbow': [12, 14, 16, 18],
+    'Tiger Teep': [17, 18, 19, 20],
+    'Crashing Thunder Kick': [15, 17, 20, 20],
+    'Machine Gun Punches': [4, 4, 5, 6],
+    'Cross Slash': [10, 12, 14, 14],
+    'Dodon Barrage': [3, 3, 3, 4],
+    'Thrusting Strikes': [5, 6, 7, 8, 9, 9],
+    'Lacerating Slash': [20, 25, 25, 25],
+    // Wrestling (Trello cards 152/153/154/155/156/157).
+    'Clothesline': [13, 13, 13, 15],
+    'Arm Crusher': [6, 6, 7, 8],
+    'Choke Slam': [10, 11, 12, 13],
+    'Suplex': [8, 9, 10, 12],
+    // Taekwondo (the player cases carry the same inline arrays — these keep NPCs in sync).
+    'Tornado Roundhouse': [7, 10, 10, 10],
+    "Heaven's Howl": [8, 10, 12, 12]
+};
+// Percentages rather than damage dice (Wolf Fang Fist's DEX mod bonus, Pump Up's stat mods).
+// Wolf Fang Fist: +10% -> +13% -> +13% -> +15% DEX mod, and mastery 4 unlocks Neo Wolf Fang Fist.
+const TECHNIQUE_MASTERY_PCT = {
+    'Wolf Fang Fist': [10, 13, 13, 15, 15]
+};
+const TECHNIQUE_MASTERY_PUMPUP = {
+    str: [10, 11, 12, 12], con: [5, 6, 7, 7], dex: [-5, -4, -3, -3]
+};
+
+// Mastery is FLAT + PCT. The die/flat-stat part above is a fixed bonus that fades as stats grow,
+// so each mastery level ALSO adds a percentage of the technique's stat mods — the same flat + pct
+// shape as the racial mod scaling. A mastery-5 technique uses its mods at (1 + 5*modPctPerLevel)%.
+const MASTERY_SCALING = masteryScaling || {};
+const MASTERY_MOD_PCT_PER_LEVEL = (typeof MASTERY_SCALING.modPctPerLevel === 'number') ? MASTERY_SCALING.modPctPerLevel : 5;
+const MASTERY_PUMPUP_PCT_PER_LEVEL = (typeof MASTERY_SCALING.pumpUpPctPerLevel === 'number') ? MASTERY_SCALING.pumpUpPctPerLevel : 5;
+
+// The mastery percentage as a multiplier (1 == no change). Mastery is capped at 5.
+function getMasteryModMultiplier(mastery, pctPerLevel = MASTERY_MOD_PCT_PER_LEVEL) {
+    const m = Math.max(0, Math.min(5, Math.trunc(Number(mastery) || 0)));
+    if (!(pctPerLevel > 0) || m === 0) return 1;
+    return 1 + (pctPerLevel * m) / 100;
+}
+
+// Scales one technique stat mod by a mastery level. Penalties (<= 0) are left alone, exactly like
+// the racial mod scaling, so mastery never deepens a drawback.
+// NOTE: prefer `masteryScaledMod()` below — this helper MULTIPLIES the mod, which would compound
+// with the character's other percentage modifiers.
+function scaleModForMastery(modValue, mastery, pctPerLevel = MASTERY_MOD_PCT_PER_LEVEL) {
+    const v = Number(modValue) || 0;
+    const mult = getMasteryModMultiplier(mastery, pctPerLevel);
+    if (mult === 1 || v <= 0) return v;
+    return v + Math.round(v * (mult - 1));
+}
+
+// A technique's mastery bonus as ADDITIVE percentage points (5% per level, so +25% at level 5).
+function getMasteryModPct(mastery, pctPerLevel = MASTERY_MOD_PCT_PER_LEVEL) {
+    const m = Math.max(0, Math.min(5, Math.trunc(Number(mastery) || 0)));
+    if (!(pctPerLevel > 0) || m === 0) return 0;
+    return pctPerLevel * m;
+}
+
+// A technique's mastery-scaled effective modifier. The mastery percentage joins the SAME additive
+// stack as the character's stat-multiplier points, weapon DEX inhibition, armour and everything
+// else (see Battle.getEffectiveModifier), so mastery no longer compounds with them; penalties are
+// never deepened.
+function masteryScaledMod(battle, participant, stat, mastery, pctPerLevel = MASTERY_MOD_PCT_PER_LEVEL) {
+    const base = battle.getEffectiveModifier(participant, stat);
+    const pct = getMasteryModPct(mastery, pctPerLevel);
+    if (pct === 0 || base <= 0) return base;
+    return battle.getEffectiveModifier(participant, stat, pct);
+}
+
+// The percentage part of a mastery bonus for a flat-mod buff (Pump Up): pct of the user's own mod.
+function masteryPctBonus(modValue, mastery, pctPerLevel = MASTERY_PUMPUP_PCT_PER_LEVEL) {
+    const v = Math.max(0, Number(modValue) || 0);
+    const m = Math.max(0, Math.min(5, Math.trunc(Number(mastery) || 0)));
+    if (!(pctPerLevel > 0) || m === 0 || v === 0) return 0;
+    return Math.round(v * (pctPerLevel / 100) * m);
+}
+
+// A technique's mastery level for a participant (NPC/companion entries carry their own map).
+// Capped at the technique's own max so a level the technique has no tiers for can never apply.
+function getSkillMastery(entity, skillName) {
+    const raw = Number((entity && entity.techniqueMastery || {})[skillName]);
+    const lvl = Number.isFinite(raw) ? Math.trunc(raw) : 0;
+    return Math.max(0, Math.min(getTechniqueMaxMastery(skillName), lvl));
+}
+
+function masteryStepValue(table, mastery, fallback) {
+    if (!table) return fallback;
+    const m = Math.max(0, Math.min(table.length - 1, Math.trunc(Number(mastery) || 0)));
+    const v = table[m];
+    return (typeof v === 'number' && Number.isFinite(v)) ? v : fallback;
+}
+
+// Damage-die sides for a technique at a mastery level (falls back to the skill's base die).
+function techniqueMasteryDice(name, mastery, fallback) {
+    return masteryStepValue(TECHNIQUE_MASTERY_DICE[name], mastery, fallback);
+}
+
+// The highest mastery level ANY technique can reach.
+const MAX_TECHNIQUE_MASTERY = 5;
+
+// How many mastery levels a technique actually defines. The mastery tables are indexed by level, so
+// a 4-entry table covers levels 0-3 (three real upgrades) and a 6-entry ladder covers 0-5. Returns
+// 0 when the technique defines no tiers of its own.
+function getTechniqueMasteryTiers(name) {
+    const counts = [];
+    if (TECHNIQUE_MASTERY_DICE[name]) counts.push(TECHNIQUE_MASTERY_DICE[name].length - 1);
+    if (TECHNIQUE_MASTERY_PCT[name]) counts.push(TECHNIQUE_MASTERY_PCT[name].length - 1);
+    if (name === 'Pump Up') counts.push(TECHNIQUE_MASTERY_PUMPUP.str.length - 1);
+    if (name === 'Ki Sharpening') counts.push(3); // damage/upkeep arrays run 0-3
+    const skill = COMBAT_SKILLS[name];
+    if (skill) {
+        if (Array.isArray(skill.kiCosts) && skill.kiCosts.length > 1) counts.push(skill.kiCosts.length - 1);
+        if (Array.isArray(skill.kiCostsPct) && skill.kiCostsPct.length > 1) counts.push(skill.kiCostsPct.length - 1);
+        if (skill.attack && Array.isArray(skill.attack.masteryDice) && skill.attack.masteryDice.length > 1) {
+            counts.push(skill.attack.masteryDice.length - 1);
+        }
+    }
+    return counts.length ? Math.max(...counts) : 0;
+}
+
+// A technique's max mastery level: the number of tiers ITS OWN data defines (a 1d10 -> 1d16 table
+// caps at 3, Thrusting Strikes' 6-entry ladder caps at 5). A technique with no tiers of its own
+// still has the generic flat + pct mastery ladder, so it caps at MAX_TECHNIQUE_MASTERY.
+function getTechniqueMaxMastery(name) {
+    const tiers = getTechniqueMasteryTiers(name);
+    return tiers > 0 ? Math.min(MAX_TECHNIQUE_MASTERY, tiers) : MAX_TECHNIQUE_MASTERY;
+}
+
+// A character's mastery in one technique, clamped to that technique's own max (legacy characters
+// may hold levels assigned before the per-technique caps existed).
+function getCharacterTechniqueMastery(character, name) {
+    const raw = Math.trunc(Number((character && character.techniqueMastery) ? character.techniqueMastery[name] : 0) || 0);
+    return Math.max(0, Math.min(getTechniqueMaxMastery(name), raw));
+}
+
+// Mastery only changes a technique's Ki cost when the TECHNIQUE says so — an explicit per-mastery
+// `kiCosts` (flat Ki) or `kiCostsPct` (% of max Ki) ladder (e.g. Legionary Thrusting Strikes, the
+// Wrestler slams, Crane Dodon Ray). There is NO blanket mastery discount; other cost effects
+// (Ki Efficiency master 3's -5, Fly's travel discount) are their own abilities.
+// Mirrors the player path exactly (including the "no upfront cost stays free" rule).
+function applyTechniqueMasteryKiCost(kiCost, skill, mastery, maxKi = 0) {
+    if (!(kiCost > 0)) return kiCost;
+    if (Array.isArray(skill.kiCosts)) return scaleKiMove(masteryStepValue(skill.kiCosts, mastery, skill.kiCosts[0]));
+    if (Array.isArray(skill.kiCostsPct)) {
+        const pct = masteryStepValue(skill.kiCostsPct, mastery, skill.kiCostsPct[0]);
+        return Math.max(1, Math.round((Number(maxKi) || 0) * pct / 100));
+    }
+    return kiCost;
+}
 
 function getKnownSkills(viewer) {
     const character = characterManager.getCharacter(viewer.id);
@@ -6957,7 +9524,12 @@ function getKnownSkills(viewer) {
     const known = (Array.isArray(character.techniques) ? character.techniques : [])
         .map(t => String(typeof t === 'string' ? t : (t.name || t)))
         // Ki Efficiency is a passive ability (not a combat toggle), so it never appears here.
-        .filter(name => { if (!COMBAT_SKILLS[name] || seen.has(name) || name === 'Ki Efficiency') return false; seen.add(name); return true; });
+        // Custom /create techniques are stored on the character and resolved at use time.
+        .filter(name => {
+            if (seen.has(name) || name === 'Ki Efficiency') return false;
+            if (!COMBAT_SKILLS[name] && !getCustomSkill(character, name)) return false;
+            seen.add(name); return true;
+        });
     // Ki Application is a battle toggle available to anyone who has learned it.
     if (hasKiApplication(character) && COMBAT_SKILLS['Ki Application'] && !seen.has('Ki Application')) known.push('Ki Application');
     return known;
@@ -6989,6 +9561,478 @@ function buildSkillComponents(viewer) {
     components.push(backRow);
 
     return components;
+}
+
+// ---------- Custom player-created techniques (/create) ----------
+// Players design their own signature moves through a button wizard. A finished technique is
+// stored on the character (customSkills map) AND in their techniques array so it shows up in
+// the battle skill menu. Balance is enforced by the fixed option tables below: bigger damage
+// dice and stronger riders cost proportionally more Ki, and bonus-action moves deal far less
+// damage than action moves.
+const MAX_CUSTOM_SKILLS = (typeof maxCustomSkills === 'number') ? maxCustomSkills : 5;
+
+// Creating a technique costs STAT POINTS (unspentPoints), not zeni — a custom move is a permanent
+// power spike, so it must be paid for with progression. The price scales with how much Ki the move
+// spends (bigger dice + stronger riders cost more) and never drops below the configured minimum
+// (default 5,000). Tunable via config.json `customTechniqueCost`.
+const CUSTOM_TECH_COST_CFG = (customTechniqueCost && typeof customTechniqueCost === 'object') ? customTechniqueCost : {};
+const CUSTOM_TECH_COST_MIN = (typeof CUSTOM_TECH_COST_CFG.min === 'number') ? CUSTOM_TECH_COST_CFG.min : 5000;
+const CUSTOM_TECH_COST_PER_KI_PCT = (typeof CUSTOM_TECH_COST_CFG.perKiPct === 'number') ? CUSTOM_TECH_COST_CFG.perKiPct : 300;
+// Fraction of the price refunded by /forget (default 50%).
+const CUSTOM_TECH_REFUND_PCT = (typeof customTechniqueRefundPct === 'number') ? customTechniqueRefundPct : 50;
+
+// The stat-point price of the technique the current wizard state would build.
+function getCustomTechniqueCost(state) {
+    if (!state) return CUSTOM_TECH_COST_MIN;
+    const rider = state.rider && state.rider !== 'none' ? CUSTOM_RIDERS[state.rider] : null;
+    let kiPct = (state.dicePct || 0) + (rider ? rider.pct : 0);
+    // A CHARGED move multiplies its own damage by the charge bonus, so it costs more to create.
+    if (state.mode === 'charge') kiPct += CUSTOM_CHARGE_COST_PCT;
+    const raw = Math.round(kiPct * CUSTOM_TECH_COST_PER_KI_PCT);
+    return Math.max(CUSTOM_TECH_COST_MIN, raw);
+}
+
+// A custom CHARGED technique behaves like the Kamehameha: using it starts a charge (Ki drains every
+// turn and the charge grows), and using it again releases the built-up attack. While charging the
+// combatant may still use any other move, including bonus-action buffs.
+const CUSTOM_CHARGE_COST_PCT = 15;
+// Multi-hit combo limits: 2-6 hits on one target, 2-3 when the move hits every enemy.
+const CUSTOM_COMBO_MIN_HITS = 2;
+const CUSTOM_COMBO_MAX_HITS = 6;
+const CUSTOM_COMBO_MAX_HITS_AOE = 3;
+
+// How many hits a combo lands.
+function getCustomComboHits(state) {
+    const max = (state && state.aoe === 'aoe') ? CUSTOM_COMBO_MAX_HITS_AOE : CUSTOM_COMBO_MAX_HITS;
+    return Math.min(max, Math.max(CUSTOM_COMBO_MIN_HITS, Number(state && state.combo) || CUSTOM_COMBO_MIN_HITS));
+}
+
+// Split a multi-hit combo's damage across its hits. A single-target combo divides evenly (the total
+// is unchanged); an AOE combo divides MORE harshly — each hit only gets total/(hits+1) — because
+// spraying a whole enemy team with a flurry is worth less per hit.
+function splitComboDamage(total, hits, isAoe) {
+    const n = Math.max(2, Number(hits) || 2);
+    // AOE combo: every hit only carries 1/(hits+1) of the damage — the rest is lost in the spread,
+    // which is what makes the division harsher than a single-target combo.
+    if (isAoe) return new Array(n).fill(Math.floor(total / (n + 1)));
+    const per = Math.floor(total / n);
+    const parts = new Array(n).fill(per);
+    parts[n - 1] += total - per * n; // the finisher carries the rounding remainder
+    return parts;
+}
+
+// Multi-hit combos dilute their riders: every extra hit makes the resisting save easier to pass
+// (an AOE combo, which sprays a whole team, dilutes hardest). Returns the adjusted save DC.
+function comboRiderDc(dc, skill) {
+    const hits = Math.max(1, Number(skill && skill.combo) || 1);
+    if (hits <= 1) return dc;
+    const dilute = (skill && skill.aoe ? 0.2 : 0.1) * (hits - 1);
+    return Math.max(1, Math.round(dc * Math.max(0.3, 1 - dilute)));
+}
+
+// Auto riders (no save) on a combo land less often: -15% chance per extra hit, never below 20%.
+function comboAutoRiderApplies(battle, skill) {
+    const hits = Math.max(1, Number(skill && skill.combo) || 1);
+    if (hits <= 1) return true;
+    return battle.rollDice(100) <= Math.max(20, 100 - 15 * (hits - 1));
+}
+
+// Pending /create wizard state: userId -> state { userId, name, type, cost, effect, dice, dicePct, mod, rider }
+const pendingCustomSkills = new Map();
+
+// Damage-dice options per action cost (sides -> Ki % of max). Balanced so custom moves sit
+// BELOW the signature techniques per Ki: an action move tops out ~0.33 dmg per 1% Ki and an
+// action+bonus "ultimate" ~0.39 dmg per 1% Ki (Supernova is ~0.51). Bonus-action strikes deal
+// far less. 
+const CUSTOM_DICE_OPTIONS = {
+    action: { 8: 13, 10: 16, 12: 19, 14: 23 },
+    bonus: { 3: 6, 4: 8 },
+    both: { 20: 30, 25: 34, 30: 40, 35: 46 }
+};
+
+// Riders/statuses a custom move can carry (pulled from existing statuses). `pct` adds to the
+// Ki cost. `save` = the stat the defender rolls to resist. `auto` riders apply on hit with no
+// save. Stun is only offered on action-cost moves.
+const CUSTOM_RIDERS = {
+    none: { label: '➖ None', pct: 0 },
+    bleed: { label: '🩸 Bleed', pct: 10, save: 'con' },
+    offbalance: { label: '🌀 Off-Balance', pct: 15, save: 'str' },
+    disadvantage: { label: '⚠️ Disadvantage', pct: 15, save: 'dex' },
+    stun: { label: '⚡ Stun (1 turn)', pct: 25, save: 'con', actionOnly: true },
+    selfadvantage: { label: '🎯 Self-Advantage', pct: 10, auto: true },
+    blindall: { label: '☀️ Blind ALL enemies', pct: 20, auto: true }
+};
+
+// Which rider list to offer per cost tier (stun is too strong for bonus-action moves).
+function getCustomRiderOptions(cost) {
+    const allowed = ['none', 'bleed', 'offbalance', 'disadvantage', 'selfadvantage', 'blindall'];
+    if (cost === 'action') allowed.push('stun');
+    return allowed;
+}
+
+function getCustomSkill(character, name) {
+    if (!character || !character.customSkills || typeof character.customSkills !== 'object') return null;
+    const skill = character.customSkills[name];
+    if (!skill || skill.name !== name) return null;
+    // Normalize the legacy "Action + Bonus" tier id ('both') to the id the battle engine checks, at
+    // the single read point, so a custom ULTIMATE always consumes BOTH actions no matter when it
+    // was crafted or which path resolves it.
+    if (skill.cost === 'both') return { ...skill, cost: 'action+bonus' };
+    return skill;
+}
+
+function getCustomSkillCount(character) {
+    if (!character || !character.customSkills) return 0;
+    return Object.keys(character.customSkills).length;
+}
+
+// Final damage dice for a custom damaging move: a rider/status reduces it, and AOE spreads deal
+// much less than a single-target strike (35% of the dice — ~65% less — so hitting everyone
+// doesn't scale out of control). Stronger status riders (stun etc.) shrink the dice more.
+function getCustomDamageDice(state) {
+    const rider = state.rider && state.rider !== 'none' ? CUSTOM_RIDERS[state.rider] : null;
+    let dice = state.dice;
+    if (rider) dice = Math.max(4, dice - Math.round(rider.pct / 3));
+    if (state.aoe === 'aoe') dice = Math.max(3, Math.floor(dice * 0.35));
+    return dice;
+}
+
+// Custom damaging moves use only a % of the stat mod — a crafted technique can't just tack a huge
+// flat mod onto its dice. The % grows with the Ki spend (a costlier / bigger move uses more of the
+// mod) and is gated by action type: bonus moves use the least, action+bonus ultimates the most.
+function getCustomDamageModPct(state) {
+    const rider = state.rider && state.rider !== 'none' ? CUSTOM_RIDERS[state.rider] : null;
+    const kiPct = (state.dicePct || 0) + (rider ? rider.pct : 0);
+    const base = state.cost === 'both' ? 0.45 : state.cost === 'action' ? 0.35 : 0.2;
+    // +0.005 per 1% Ki spent (capped at +0.25), so costlier moves utilize more of the mod.
+    const growth = Math.min(0.25, kiPct * 0.005);
+    return Math.min(0.8, base + growth);
+}
+
+// Build a balanced COMBAT_SKILLS-compatible technique from the wizard state.
+function buildCustomSkillFromState(state) {
+    const typeLabel = state.type === 'ki' ? 'ki' : 'physical';
+    const skill = {
+        name: state.name,
+        custom: true,
+        type: typeLabel,
+        // Normalize the "Action + Bonus" tier to the 'action+bonus' id the battle engine checks.
+        // The wizard button passes 'both' — stored as-is it consumed NEITHER action in combat.
+        cost: state.cost === 'both' ? 'action+bonus' : state.cost,
+        needsTarget: false,
+        ki: 'flat0',
+        // Stat points paid to create this technique (refunded partially by /forget).
+        statCost: getCustomTechniqueCost(state),
+        desc: ''
+    };
+    const costText = state.cost === 'action' ? 'action' : state.cost === 'bonus' ? 'bonus action' : 'action + bonus action';
+
+    if (state.effect === 'damage') {
+        const rider = state.rider && state.rider !== 'none' ? CUSTOM_RIDERS[state.rider] : null;
+        // Statuses/riders on a damaging move reduce its damage dice (they add utility), and an
+        // AOE spread hits every enemy instead of one but deals less per target.
+        const dice = getCustomDamageDice(state);
+        const isAoe = state.aoe === 'aoe';
+        skill.needsTarget = !isAoe;
+        if (isAoe) skill.aoe = true;
+        skill.attack = { dice: `1d${dice}`, mod: state.mod };
+        // Only a % of the stat mod is added to the dice — it grows with the Ki spend & action cost.
+        skill.modPct = getCustomDamageModPct(state);
+        // Delivery: a CHARGED move mirrors the Kamehameha (Ki drains every turn while charging, then
+        // it releases for extra damage), and a COMBO strikes 2-6 times by splitting its damage. The
+        // two can't be combined, and an ultimate (action + bonus) can't be a combo.
+        const charged = state.mode === 'charge';
+        const comboHits = state.mode === 'combo' ? getCustomComboHits(state) : 1;
+        if (charged) skill.charge = true;
+        if (comboHits > 1) skill.combo = comboHits;
+        let pct = state.dicePct;
+        if (rider) {
+            pct += rider.pct;
+            if (rider.auto) {
+                skill.attack.save = { effect: state.rider, auto: true };
+            } else {
+                skill.attack.save = { dc: { mod: state.mod }, vs: rider.save, effect: state.rider };
+            }
+        }
+        skill.ki = `d${pct}pct`;
+        const modPct = Math.round(skill.modPct * 100);
+        let desc = `Custom ${typeLabel} technique (${costText}). ${pct}% of max Ki: ${isAoe ? 'hit ALL enemies for' : 'attack for'} **1d${dice}+${modPct}% ${state.mod.toUpperCase()}** damage${isAoe ? ' each' : ''}.`;
+        if (charged) {
+            desc += ` **Charged:** using it starts a charge — Ki drains every turn and the charge grows; use it again to release the built-up strike for **+${KH_CHARGE_BONUS_PER_CHARGE} damage per charge** (max ${KH_MAX_CHARGE} charges, before the normal attack). You can still use other moves, including buffs, while charging.`;
+        } else if (comboHits > 1) {
+            desc += ` **${comboHits}-hit combo:** the damage is split across ${comboHits} hits${isAoe ? ` and an AOE combo divides more harshly (each hit gets 1/${comboHits + 1} of the damage)` : ''}, and status riders are easier to resist (-10% DC per extra hit${isAoe ? ', -20% for AOE' : ''}).`;
+        }
+        if (rider) {
+            if (state.rider === 'blindall') desc += ' On hit, ALL enemies are blinded (disadvantage on their next attack).';
+            else if (state.rider === 'selfadvantage') desc += ' On hit, you gain **advantage on your next attack roll**.';
+            else desc += ` On hit, the defender's ${rider.save.toUpperCase()} save vs your ${state.mod.toUpperCase()} DC or they suffer: ${CUSTOM_RIDERS[state.rider].label.replace(/^\S+\s/, '')}.`;
+        }
+        skill.desc = desc;
+        skill.customEffect = 'damage';
+        return skill;
+    }
+
+    if (state.effect === 'status') {
+        // A no-damage strike that inflicts an existing status. It relies on a WIL saving throw
+        // (no attack roll) so the target can always resist it — a debuff-only move never misses
+        // via an attack throw, it's denied by the save.
+        const rider = CUSTOM_RIDERS[state.rider] || CUSTOM_RIDERS.offbalance;
+        const pct = 10 + rider.pct;
+        skill.needsTarget = true;
+        skill.customEffect = 'status';
+        skill.rider = state.rider;
+        skill.saveStat = 'wil';
+        skill.saveVs = 'wil';
+        skill.ki = `d${pct}pct`;
+        skill.desc = `Custom ${typeLabel} technique (${costText}). ${pct}% of max Ki: **WIL** save vs your **WIL** DC — on a fail the target suffers **${rider.label.replace(/^\S+\s/, '')}** (no damage).`;
+        return skill;
+    }
+
+    if (state.effect === 'buffatk') {
+        skill.customEffect = 'buff_attack';
+        skill.ki = state.cost === 'bonus' ? 'flat5' : 'flat10';
+        skill.desc = `Custom technique (${costText}). ${scaleKiMove(state.cost === 'bonus' ? 1 : 2)} Ki: focus your energy — **advantage on your next attack roll**.`;
+        return skill;
+    }
+
+    // buffdmg — charge power into your next attack.
+    skill.customEffect = 'buff_damage';
+    skill.buffDice = state.cost === 'bonus' ? 4 : 8;
+    skill.ki = state.cost === 'bonus' ? 'flat5' : 'flat10';
+    skill.desc = `Custom technique (${costText}). ${scaleKiMove(state.cost === 'bonus' ? 1 : 2)} Ki: charge power — your next attack deals **+1d${skill.buffDice}** extra damage.`;
+    return skill;
+}
+
+// Render the /create wizard for the current state (buttons dictate everything).
+// Module-scope so the /create command and its cs_* buttons can drive the wizard.
+function buildCustomSkillPrompt(state, character) {
+    const uid = state.userId;
+    const btn = (id, label, style) => new ButtonBuilder().setCustomId(`cs_${id}`).setLabel(label).setStyle(style);
+    const rows = [];
+    const addRow = (buttons) => { rows.push(new ActionRowBuilder().addComponents(...buttons)); };
+    const chosen = [];
+    if (state.cost) chosen.push(`Cost: **${state.cost === 'action' ? 'Action' : state.cost === 'bonus' ? 'Bonus Action' : 'Action + Bonus Action'}**`);
+    if (state.effect) chosen.push(`Effect: **${{ damage: 'Damage Attack', status: 'Status Strike', buffatk: 'Buff Next Attack Roll', buffdmg: 'Buff Next Damage Roll' }[state.effect]}**`);
+    if (state.dice) {
+        const dice = getCustomDamageDice(state);
+        const rider = state.rider && state.rider !== 'none' ? CUSTOM_RIDERS[state.rider] : null;
+        const notes = [];
+        if (rider) notes.push('rider');
+        if (state.aoe === 'aoe') notes.push('AOE');
+        const modPct = Math.round(getCustomDamageModPct(state) * 100);
+        chosen.push(`Damage: **1d${dice}+${modPct}% ${(state.mod || '?').toUpperCase()}**${notes.length ? ` (reduced: ${notes.join(', ')})` : ''} (mods scale with Ki spent)`);
+    }
+    if (state.rider) chosen.push(`Rider: **${CUSTOM_RIDERS[state.rider].label}**`);
+    if (state.aoe) chosen.push(`Area: **${state.aoe === 'aoe' ? 'All Enemies' : 'Single Target'}**`);
+    if (state.mode === 'charge') chosen.push('Delivery: **Charged** (Ki drains every turn, release for bonus damage)');
+    if (state.mode === 'combo') {
+        const hits = getCustomComboHits(state);
+        chosen.push(`Delivery: **Combo — ${hits} hits**${state.aoe === 'aoe' ? ` (AOE: harsher division, each hit gets 1/${hits + 1} of the damage)` : ' (damage split between the hits, riders easier to resist)'}`);
+    }
+
+    if (!state.cost) {
+        addRow([
+            btn(`cost_${uid}_action`, '⚡ Action', ButtonStyle.Primary),
+            btn(`cost_${uid}_bonus`, '✨ Bonus Action', ButtonStyle.Primary),
+            btn(`cost_${uid}_both`, '⚡✨ Action + Bonus', ButtonStyle.Primary)
+        ]);
+    } else if (!state.effect) {
+        addRow([
+            btn(`effect_${uid}_damage`, state.cost === 'both' ? '☄️ Ultimate Damage' : '🗡️ Damage Attack', ButtonStyle.Danger),
+            btn(`effect_${uid}_status`, '🌀 Status Strike', ButtonStyle.Primary),
+            btn(`effect_${uid}_buffatk`, '🎯 Buff Next Attack', ButtonStyle.Success),
+            btn(`effect_${uid}_buffdmg`, '💪 Buff Next Damage', ButtonStyle.Success)
+        ]);
+    } else if (state.effect === 'damage' && !state.dice) {
+        const opts = Object.entries(CUSTOM_DICE_OPTIONS[state.cost]);
+        const buttons = [];
+        for (const [sides, pct] of opts) {
+            if (buttons.length === 5) { addRow(buttons.slice()); buttons.length = 0; }
+            buttons.push(btn(`dice_${uid}_${sides}_${pct}`, `1d${sides} (+${pct}% Ki)`, ButtonStyle.Secondary));
+        }
+        if (buttons.length) addRow(buttons);
+    } else if (state.effect === 'damage' && !state.mod) {
+        const mods = state.type === 'ki' ? ['wil', 'spi'] : ['str', 'dex', 'con'];
+        addRow(mods.map(m => btn(`mod_${uid}_${m}`, m.toUpperCase(), ButtonStyle.Secondary)));
+    } else if ((state.effect === 'damage' && state.mod && !state.rider) || (state.effect === 'status' && !state.rider)) {
+        const riderOpts = getCustomRiderOptions(state.cost).filter(r => (state.effect === 'status' ? r !== 'selfadvantage' && r !== 'blindall' : true));
+        const buttons = [];
+        for (const r of riderOpts) {
+            if (buttons.length === 5) { addRow(buttons.slice()); buttons.length = 0; }
+            buttons.push(btn(`rider_${uid}_${r}`, CUSTOM_RIDERS[r].label, ButtonStyle.Secondary));
+        }
+        if (buttons.length) addRow(buttons);
+    } else if (state.effect === 'damage' && state.mod && state.rider && !state.aoe) {
+        addRow([
+            btn(`aoe_${uid}_single`, '🎯 Single Target', ButtonStyle.Secondary),
+            btn(`aoe_${uid}_aoe`, '🌊 All Enemies', ButtonStyle.Secondary)
+        ]);
+    } else if (state.effect === 'damage' && state.aoe && !state.mode) {
+        // Delivery: one big strike, a multi-hit combo, or a Kamehameha-style charged beam.
+        // Ultimates (Action + Bonus) can't be combos, so the option isn't offered for them.
+        const modeButtons = [btn(`mode_${uid}_single`, '🎯 Single Strike', ButtonStyle.Secondary)];
+        if (state.cost !== 'both') modeButtons.push(btn(`mode_${uid}_combo`, '🌀 Combo (2-6 hits)', ButtonStyle.Primary));
+        modeButtons.push(btn(`mode_${uid}_charge`, '🔋 Charged (Ki/turn)', ButtonStyle.Success));
+        addRow(modeButtons);
+    } else if (state.effect === 'damage' && state.mode === 'combo' && !state.combo) {
+        // Hit count. An AOE combo tops out at 3 hits (and divides its damage more harshly).
+        const maxHits = state.aoe === 'aoe' ? CUSTOM_COMBO_MAX_HITS_AOE : CUSTOM_COMBO_MAX_HITS;
+        const buttons = [];
+        for (let h = CUSTOM_COMBO_MIN_HITS; h <= maxHits; h++) {
+            buttons.push(btn(`combo_${uid}_${h}`, `${h} hits`, ButtonStyle.Secondary));
+        }
+        addRow(buttons);
+    } else {
+        // Everything chosen — show the final confirmation.
+        const skill = buildCustomSkillFromState(state);
+        const kiText = skill.ki.startsWith('flat')
+            ? `${scaleKiMove(Number(skill.ki.slice(4)))} Ki`
+            : `${skill.ki.slice(1, -3)}% of max Ki`;
+        const count = getCustomSkillCount(character);
+        const cost = getCustomTechniqueCost(state);
+        const points = (character && character.unspentPoints) || 0;
+        const affordable = points >= cost;
+        const content = `🛠️ **Create Technique: ${state.name}**\n\n${chosen.join('\n')}\n\n**Ki Cost:** ${kiText}\n**Cost:** **${cost.toLocaleString()} stat points** (you have **${points.toLocaleString()}**)\n\n${skill.desc}\n\n${affordable ? '✅ Confirm to learn this technique!' : '❌ You do not have enough stat points for this technique yet.'} (You know **${count}/${MAX_CUSTOM_SKILLS}** custom techniques.)`;
+        addRow([
+            btn(`confirm_${uid}`, `✅ Learn "${state.name.slice(0, 55)}"`, ButtonStyle.Success),
+            btn(`cancel_${uid}`, '❌ Cancel', ButtonStyle.Secondary)
+        ]);
+        return { content, components: rows };
+    }
+
+    const content = `🛠️ **Create Technique: ${state.name}** (${state.type === 'ki' ? 'Ki' : 'Physical'} attack)\n\n${chosen.length ? chosen.join('\n') + '\n\n' : ''}Choose what the move does 👇`;
+    return { content, components: rows };
+}
+
+// Apply a rider/status to a target (used by custom /create techniques). Returns a log note.
+function applyCustomRider(target, attacker, rider) {
+    switch (rider) {
+        case 'bleed':
+            target.bleedTurns = (target.bleedTurns || 0) + 1;
+            return `🩸 **${target.username}** starts BLEEDING for **1 turn**!`;
+        case 'offbalance':
+            target.turnDisadvantage = true;
+            return `🌀 **${target.username}** is knocked OFF-BALANCE!`;
+        case 'disadvantage':
+            target.nextAttackDisadvantage = true;
+            return `⚠️ **${target.username}** has disadvantage on their next attack!`;
+        case 'stun':
+            target.stunned = true;
+            target.stunnedTurns = attacker.fightingStyle === 'Wrestler' ? 2 : 1;
+            return `⚡ **${target.username}** is STUNNED!`;
+        case 'prone':
+            target.offBalance = true;
+            target.turnDisadvantage = true;
+            return `🦵 **${target.username}** is knocked PRONE (off-balance)!`;
+        case 'selfadvantage':
+            attacker.nextAttackAdvantage = true;
+            return `🎯 **${attacker.username}** gains **advantage on their next attack roll**!`;
+        case 'blindall':
+            target.nextAttackDisadvantage = true;
+            return `☀️ **${target.username}** is BLINDED!`;
+        default:
+            return '';
+    }
+}
+
+// Start the /create technique wizard for a player.
+function startCreateTechnique(interaction, name, type) {
+    const character = characterManager.getCharacter(interaction.user.id);
+    if (!character) {
+        return interaction.reply({ content: '❌ You need a character to create a technique!', ephemeral: true });
+    }
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return interaction.reply({ content: '❌ You must name your technique!', ephemeral: true });
+    if (trimmed.length > 55) return interaction.reply({ content: '❌ Technique names must be **55 characters** or fewer.', ephemeral: true });
+    if (COMBAT_SKILLS[trimmed]) return interaction.reply({ content: `❌ **${trimmed}** is already a known technique! Pick a unique name.`, ephemeral: true });
+    if (getCustomSkill(character, trimmed)) return interaction.reply({ content: `❌ You already created a technique named **${trimmed}**.`, ephemeral: true });
+    if (getCustomSkillCount(character) >= MAX_CUSTOM_SKILLS) {
+        return interaction.reply({ content: `❌ You already know the max **${MAX_CUSTOM_SKILLS}** custom techniques!`, ephemeral: true });
+    }
+    // Custom techniques are paid for with stat points (minimum CUSTOM_TECH_COST_MIN). The exact
+    // price depends on the options chosen, so we only require the minimum up front.
+    if ((character.unspentPoints || 0) < CUSTOM_TECH_COST_MIN) {
+        return interaction.reply({ content: `❌ Creating a technique costs at least **${CUSTOM_TECH_COST_MIN.toLocaleString()} stat points** (you have **${(character.unspentPoints || 0).toLocaleString()}**).\nEarn more by completing missions, sparring and training, then try \`/create\` again.`, ephemeral: true });
+    }
+    const state = { userId: interaction.user.id, name: trimmed, type: type || 'ki', cost: null, effect: null, dice: null, dicePct: null, mod: null, rider: null, aoe: null, mode: null, combo: null };
+    pendingCustomSkills.set(interaction.user.id, state);
+    const prompt = buildCustomSkillPrompt(state, character);
+    return interaction.reply({ content: prompt.content, components: prompt.components, ephemeral: true });
+}
+
+// Handle a /create wizard button (cs_*).
+async function handleCustomSkillButton(interaction) {
+    const customId = interaction.customId;
+    const uid = interaction.user.id;
+    const state = pendingCustomSkills.get(uid);
+    const character = characterManager.getCharacter(uid);
+    if (!state) return interaction.reply({ content: '❌ Your technique design has expired. Start again with `/create`.', ephemeral: true });
+    if (!character) { pendingCustomSkills.delete(uid); return interaction.reply({ content: '❌ Character not found!', ephemeral: true }); }
+
+    const parts = customId.split('_');
+    const action = parts[1];
+
+    switch (action) {
+        case 'cancel':
+            pendingCustomSkills.delete(uid);
+            return interaction.update({ content: '❌ Technique design cancelled.', components: [] });
+        case 'cost':
+            state.cost = parts[3];
+            break;
+        case 'effect':
+            state.effect = parts[3];
+            break;
+        case 'dice':
+            state.dice = parseInt(parts[3], 10);
+            state.dicePct = parseInt(parts[4], 10);
+            break;
+        case 'mod':
+            state.mod = parts[3];
+            break;
+        case 'rider':
+            state.rider = parts[3];
+            break;
+        case 'aoe':
+            state.aoe = parts[3];
+            break;
+        case 'mode':
+            state.mode = parts[3];
+            // Ultimates (action + bonus) can't be combos or charged moves — a combo is a flurry of
+            // strikes and a charge needs a whole turn of upkeep, so the two are exclusive.
+            if (state.mode === 'combo' && state.cost === 'both') {
+                return interaction.reply({ content: '❌ **Ultimate** techniques (Action + Bonus Action) cannot be combos!', ephemeral: true });
+            }
+            // A charged AOE stays a single-target-style build: the charge is aimed, the release
+            // resolves through the normal attack/AOE path.
+            break;
+        case 'combo':
+            state.combo = parseInt(parts[3], 10);
+            break;
+        case 'confirm': {
+            if (getCustomSkillCount(character) >= MAX_CUSTOM_SKILLS) {
+                pendingCustomSkills.delete(uid);
+                return interaction.reply({ content: `❌ You already know the max **${MAX_CUSTOM_SKILLS}** custom techniques!`, ephemeral: true });
+            }
+            const skill = buildCustomSkillFromState(state);
+            const cost = typeof skill.statCost === 'number' ? skill.statCost : CUSTOM_TECH_COST_MIN;
+            const points = character.unspentPoints || 0;
+            if (points < cost) {
+                return interaction.reply({ content: `❌ Learning **${skill.name}** costs **${cost.toLocaleString()} stat points**, but you only have **${points.toLocaleString()}**.\nPick a cheaper design (a bonus-action move or a weaker rider costs less) or earn more points first.`, ephemeral: true });
+            }
+            const customSkills = { ...(character.customSkills || {}) };
+            customSkills[skill.name] = skill;
+            const techniques = Array.isArray(character.techniques) ? [...character.techniques] : [];
+            if (!techniques.includes(skill.name)) techniques.push(skill.name);
+            characterManager.updateCharacter(uid, character.id, { customSkills, techniques, unspentPoints: points - cost });
+            pendingCustomSkills.delete(uid);
+            return interaction.update({ content: `✅ **${character.name}** created **${skill.name}** for **${cost.toLocaleString()} stat points**! (points left: **${(points - cost).toLocaleString()}**)\n\n${skill.desc}`, components: [] });
+        }
+        default:
+            return interaction.reply({ content: '❌ Unknown option.', ephemeral: true });
+    }
+
+    const prompt = buildCustomSkillPrompt(state, character);
+    return interaction.update({ content: prompt.content, components: prompt.components });
 }
 
 // Buttons to pick a form (manual transformations only — False Super Saiyan is excluded)
@@ -7089,6 +10133,16 @@ function buildGrappleTargetComponents(battle, viewer) {
     return components;
 }
 
+// A technique is "physical" (and thus fails to hit an intangible Yokai) when it either
+// explicitly declares type 'physical' or scales off a body stat (STR/DEX/CON). Ki-based
+// techniques (WIL/SPI scaling, or type 'ki') can pierce a Ghostly Structure.
+function isPhysicalSkill(skill) {
+    if (!skill) return false;
+    if (skill.type === 'physical') return true;
+    if (skill.attack && skill.attack.mod && ['str', 'dex', 'con'].includes(skill.attack.mod)) return true;
+    return false;
+}
+
 async function executeCombatSkill(interaction, battle, viewer, skill, targetId) {
     const current = battle.getCurrentTurn();
     const ui = ensureBattleUI(battle);
@@ -7100,15 +10154,31 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         return interaction.reply({ content: '❌ That target is no longer available!', ephemeral: true });
     }
 
-    // Action availability
-    if (skill.cost === 'action' && current.hasActed) {
-        return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
-    }
-    if (skill.cost === 'bonus' && current.hasBonusActed) {
-        return interaction.reply({ content: '❌ You already used your bonus action this turn!', ephemeral: true });
-    }
-    if (skill.cost === 'action+bonus' && (current.hasActed || current.hasBonusActed)) {
-        return interaction.reply({ content: '❌ This technique uses your action AND bonus action — you need both free!', ephemeral: true });
+    // Turning a sustained toggle OFF (lowering Ki Sense/Fly, dropping Ki Sharpening/Pump Up/
+    // Kaioken) is always free — it costs NO Ki and NO action, so a fighter can drop a toggle at
+    // any time to stop its drain and conserve Ki. Only switching one ON costs a bonus action + Ki.
+    const togglingOff = (skill.name === 'Ki Sense' && current.kiSense)
+        || (skill.name === 'Fly' && current.flying)
+        || (skill.name === 'Ki Application' && current.kiApplicationActive)
+        || (skill.name === 'Ki Sharpening' && current.kiSharpeningActive)
+        || (skill.name === 'Pump Up' && current.pumpUpActive)
+        || (skill.name === 'Kaioken' && current.kaiokenActive);
+
+    // Action availability. Custom /create techniques crafted before the action-cost normalization
+    // store their "Action + Bonus" tier as 'both' — treat it exactly like 'action+bonus' so these
+    // ultimates consume BOTH actions (previously they consumed neither, allowing Ki-only spam).
+    const skillActionCost = skill.cost === 'both' ? 'action+bonus' : skill.cost;
+    // A toggle being switched off doesn't need a free action — it's always allowed.
+    if (!togglingOff) {
+        if (skillActionCost === 'action' && current.hasActed) {
+            return interaction.reply({ content: '❌ You already used your action this turn!', ephemeral: true });
+        }
+        if (skillActionCost === 'bonus' && current.hasBonusActed) {
+            return interaction.reply({ content: '❌ You already used your bonus action this turn!', ephemeral: true });
+        }
+        if (skillActionCost === 'action+bonus' && (current.hasActed || current.hasBonusActed)) {
+            return interaction.reply({ content: '❌ This technique uses your action AND bonus action — you need both free!', ephemeral: true });
+        }
     }
 
     // Ki cost
@@ -7127,56 +10197,71 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         case 'd35pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(35) / 100)); break;
         case 'd40pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(40) / 100)); break;
         case 'd25pct': kiCost = Math.max(1, Math.round(maxKi * battle.rollDice(25) / 100)); break;
-        case 'flat3': kiCost = 3; break;
-        case 'flat5': kiCost = 5; break;
-        case 'flat10': kiCost = 10; break;
-        case 'flat15': kiCost = 15; break;
-        case 'flat20': kiCost = 20; break;
-        case 'flat30': kiCost = 30; break;
-        case 'flat45': kiCost = 45; break;
+        case 'flat3': kiCost = scaleKiMove(3); break;
+        case 'flat5': kiCost = scaleKiMove(5); break;
+        case 'flat10': kiCost = scaleKiMove(10); break;
+        case 'flat15': kiCost = scaleKiMove(15); break;
+        case 'flat20': kiCost = scaleKiMove(20); break;
+        case 'flat30': kiCost = scaleKiMove(30); break;
+        case 'flat45': kiCost = scaleKiMove(45); break;
+        default: {
+            // Generic parser (custom /create techniques use arbitrary dXX% Ki tiers).
+            // Bonus-action custom moves roll 1d4/1d6 (d5pct/d7pct) and 1d30 ultimates/status
+            // strikes use d30pct — none match the explicit cases above, so without this they
+            // would cost 0 Ki.
+            const pctMatch = /^d(\d+)pct$/.exec(skill.ki);
+            kiCost = pctMatch ? Math.max(1, Math.round(maxKi * parseInt(pctMatch[1], 10) / 100)) : 0;
+        }
     }
 
-    // Mastery makes techniques more Ki-efficient (20% cheaper per mastery level).
-    // Skills with no upfront cost (kiCost === 0) stay free.
+    // Mastery only changes a technique's Ki cost when the TECHNIQUE itself says so: an explicit
+    // per-mastery `kiCosts` ladder (e.g. Legionary Thrusting Strikes [30,28,25,22,19,19]).
+    // There is no blanket "mastery makes everything cheaper" discount. Other cost effects are their
+    // own documented abilities (Ki Efficiency master 3's -5 drain, Fly's travel discount, ...).
     const viewerCharacter = characterManager.getCharacter(viewer.id);
-    const skillMastery = (viewerCharacter && (viewerCharacter.techniqueMastery || {})[skill.name]) || 0;
+    // Clamped to the technique's own max mastery level (see getTechniqueMaxMastery).
+    const skillMastery = getCharacterTechniqueMastery(viewerCharacter, skill.name);
     if (Array.isArray(skill.kiCosts) && kiCost > 0) {
-        // Some techniques have explicit per-mastery Ki costs (e.g. Legionary Thrusting Strikes).
-        kiCost = skill.kiCosts[Math.min(skillMastery, skill.kiCosts.length - 1)];
-    } else if (skillMastery > 0 && kiCost > 0) {
-        kiCost = Math.max(1, Math.round(kiCost * (1 - 0.2 * skillMastery)));
+        kiCost = scaleKiMove(skill.kiCosts[Math.min(skillMastery, skill.kiCosts.length - 1)]);
+    } else if (Array.isArray(skill.kiCostsPct) && kiCost > 0) {
+        // Percentage ladders (e.g. Crane Dodon Ray D10% -> D7% -> D6%) replace the rolled % cost.
+        const pct = skill.kiCostsPct[Math.min(skillMastery, skill.kiCostsPct.length - 1)];
+        kiCost = Math.max(1, Math.round(maxKi * pct / 100));
     }
 
-    // Ki Efficiency Mastery 3 (passive): -5 Ki drain on attacks.
+    // Ki Efficiency Mastery 3 (passive): -5 Ki drain on attacks (scaled to match ki costs).
     if (viewerCharacter && getKiEfficiencyMastery(viewerCharacter) >= 3) {
-        kiCost = Math.max(0, kiCost - 5);
+        kiCost = Math.max(0, kiCost - scaleKiMove(5));
     }
 
-    // Hunter of Legend "Vital Strike" costs only 3 Energy (Trello card).
+    // Hunter of Legend "Vital Strike" costs only 3 Energy (Trello card) — scaled like other costs.
     if (skill.vitalStrike && current.mutation === 'Hunter of Legend') {
-        kiCost = 3;
+        kiCost = scaleKiMove(3);
     }
 
-    // Turning OFF a sustained passive (e.g. lowering Ki Sense, landing) is free — a character
-    // shouldn't pay Ki to disable a toggle, so they can drop it to conserve Ki and manage fatigue.
-    const togglingOff = (skill.name === 'Ki Sense' && current.kiSense) || (skill.name === 'Fly' && current.flying) || (skill.name === 'Ki Application' && current.kiApplicationActive);
+    // Deactivating a sustained toggle is free (see `togglingOff` above) — never charge Ki for it.
     if (togglingOff) kiCost = 0;
 
     if (current.currentKi < kiCost) {
         return interaction.reply({ content: `❌ Not enough Ki! **${skill.name}** costs **${kiCost} Ki** (you have ${current.currentKi}).`, ephemeral: true });
     }
 
-    // Consume action and ki
-    if (skill.cost === 'action') current.hasActed = true;
-    else if (skill.cost === 'bonus') current.hasBonusActed = true;
-    else if (skill.cost === 'action+bonus') { current.hasActed = true; current.hasBonusActed = true; }
+    // Consume action and ki (deactivating a toggle costs neither).
+    if (!togglingOff) {
+        if (skillActionCost === 'action') current.hasActed = true;
+        else if (skillActionCost === 'bonus') current.hasBonusActed = true;
+        else if (skillActionCost === 'action+bonus') { current.hasActed = true; current.hasBonusActed = true; }
+    }
     current.currentKi -= kiCost;
 
-    const strMod = battle.getEffectiveModifier(current, 'str');
-    const dexMod = battle.getEffectiveModifier(current, 'dex');
-    const wilMod = battle.getEffectiveModifier(current, 'wil');
-    const conMod = battle.getEffectiveModifier(current, 'con');
-    const spiMod = battle.getEffectiveModifier(current, 'spi');
+    // Technique mastery is FLAT + PCT: the mastery die tables give the flat part, and each mastery
+    // level also boosts the technique's stat mods by `masteryScaling.modPctPerLevel` %, so mastery
+    // stays relevant as stats grow. Penalties are never magnified (see scaleModForMastery).
+    const strMod = masteryScaledMod(battle, current, 'str', skillMastery);
+    const dexMod = masteryScaledMod(battle, current, 'dex', skillMastery);
+    const wilMod = masteryScaledMod(battle, current, 'wil', skillMastery);
+    const conMod = masteryScaledMod(battle, current, 'con', skillMastery);
+    const spiMod = masteryScaledMod(battle, current, 'spi', skillMastery);
 
     let log = `🧠 **${current.username}** uses **${skill.name}**! (${kiCost} Ki)`;
     let eyePrompted = false;
@@ -7184,9 +10269,14 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
     const isCrane = current.fightingStyle === 'Crane';
     const applyDamage = (dmg) => {
         let finalDmg = dmg;
-        // Crane's Mark: a ki attacker deals +1d15 extra damage to a marked entity.
-        if (target.craneMarkTurns > 0 && isCrane) {
-            const markBonus = battle.rollDice(15);
+        // Yokai (Ghastly Structure): the ghostly form takes +25% damage from all sources.
+        if (target && target.race === 'Yokai') {
+            finalDmg = Math.floor(finalDmg * 1.25);
+        }
+        // Crane's Mark: a KI technique hitting a marked entity deals extra damage (scaled off the
+        // marker's WIL mod). Any attacker triggers it — the mark is what sears.
+        if (target.craneMarkTurns > 0 && !isPhysicalSkill(skill)) {
+            const markBonus = battle.craneMarkDamage(target, current);
             finalDmg += markBonus;
             log += `\n🐦 **Crane's Mark** sears into the wound, adding **+${markBonus} damage**!`;
         }
@@ -7194,6 +10284,8 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         if (target.currentHP <= 0 && !target.isIncapacitated) {
             target.isIncapacitated = true;
         }
+        // Pregnant fighters risk a miscarriage when they take damage.
+        log += maybeMiscarry(target);
         // Crane's Marking Strike: a Crane's ki technique marks the opponent for 1d5 turns.
         if (isCrane && !target.isIncapacitated) {
             const markTurns = battle.rollDice(5);
@@ -7213,10 +10305,10 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         const fatigue = participant.currentFatigue || 0;
         const disadvantage = (statName === 'wil' && fatigue >= 40) || (statName === 'con' && fatigue >= 80);
         const rollOnce = () => {
-            if (statName === 'str') return battle.rollDice(battle.getStrDice(stat)) + mod;
-            if (statName === 'dex') return battle.rollDice(battle.getDexDice(stat)) + mod;
-            const td = battle.getThrowDice(stat);
-            return battle.rollDice(td.dice) + mod + td.flat;
+            // Every stat roll now uses a modifier-scaled die (exactly like basic DEX attacks), so
+            // STR/WIL/CON/SPI techniques and save DCs keep pace with regular attacks instead of
+            // sitting on a flat d20 (STR rolls used to be a tiny d5-d45).
+            return battle.rollDice(battle.statDice(stat, mod)) + mod;
         };
         const value = rollOnce();
         return disadvantage ? Math.min(value, rollOnce()) : value;
@@ -7227,7 +10319,8 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         const defDice = battle.getDexDice(target.stats.dex);
         let base = battle.rollDice(atkDice);
         let modTotal = dexMod;
-        if (current.turnDisadvantage || current.nextAttackDisadvantage) {
+        // Pacifist (Wise Old One): disadvantage to all attacking throws.
+        if (current.turnDisadvantage || current.nextAttackDisadvantage || current.mutation === 'Wise Old One') {
             base = Math.min(base, battle.rollDice(atkDice));
         }
         current.nextAttackDisadvantage = false;
@@ -7238,6 +10331,14 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         if (current.flying) modTotal += 2;
         if (current.wolfFang) modTotal += Math.max(1, Math.round(dexMod * ((current.wolfFangDexPct || 10) / 100)));
         let atk = base + modTotal;
+        // Crane's Persistence: +6+25% SPI and +4+25% WIL mod on KI techniques. Techniques roll
+        // their own attack, so this (and the Crane's Mark DEX penalty below) previously only
+        // applied to BASIC attacks — the style's passives were dead on every technique.
+        if (current.fightingStyle === 'Crane' && battle.isStyleActive(current) && !isPhysicalSkill(skill)) {
+            atk += (6 + Math.round(spiMod * 0.25)) + (4 + Math.round(wilMod * 0.25));
+        }
+        // Crane's Mark: -10% DEX to the marked attacker's attack roll.
+        if (current.craneMarkTurns > 0) atk -= Math.round(dexMod * 0.1);
         // Cerealian "Evolved Right Eye": spend Ki to reroll the strike (takes the better).
         if (current.race === 'Cerealian' && current.eyeRerollEnabled !== false
             && !current.evolvedRightEyeUsed && (current.currentKi || 0) > 0) {
@@ -7256,13 +10357,15 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         }
         let def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex');
         if (target.flying) def += 2;
+        // Crane's Mark: -10% DEX to the marked defender's defense roll.
+        if (target.craneMarkTurns > 0) def -= Math.round(battle.getEffectiveModifier(target, 'dex') * 0.1);
         return { atk, def, hit: atk > def };
     };
 
     switch (skill.name) {
         case 'Shove': {
-            // Crushing Physicality: a Wrestler substitutes STR for CON in their shove's attack roll.
-            const dc = rollStatThrow(current, current.fightingStyle === 'Wrestler' ? 'str' : 'con');
+            // Crushing Physicality: a Wrestler substitutes CON for STR in their shove's attack roll.
+            const dc = rollStatThrow(current, current.fightingStyle === 'Wrestler' ? 'con' : 'str');
             const save = rollStatThrow(target, 'dex');
             if (save >= dc) {
                 // Target resists: your action stays spent, bonus action untouched
@@ -7434,7 +10537,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 const dmg = battle.rollDice(dmgDice) + strMod;
                 applyDamage(dmg);
                 log += `\n🌀 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
-                const dc = battle.rollDice(20) + strMod;
+                const dc = battle.modRoll(strMod);
                 const conSave = rollStatThrow(target, 'con');
                 if (conSave < dc) {
                     const blockSave = rollStatThrow(target, 'dex');
@@ -7470,14 +10573,14 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 applyDamage(dmg);
                 log += `\n✅ **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
                 const dcDie = [14, 16, 18, 20][Math.min(skillMastery, 3)] || 14;
-                const dc = battle.rollDice(dcDie) + strMod;
+                const dc = battle.rollDice(battle.modDice(strMod, dcDie)) + strMod;
                 const save = rollStatThrow(target, 'con');
                 if (save < dc) {
                     const impact = battle.rollDice(10);
                     applyDamage(impact);
                     log += `\n💥 **${target.username}** takes an extra **${impact} damage** from the impact!`;
                     target.concussed = true;
-                    const concSave = battle.rollDice(30);
+                    const concSave = battle.rollDice(battle.modDice(strMod, 30));
                     const victimSave = rollStatThrow(target, 'con');
                     log += `\n🧠 **${target.username}** is CONCUSSED! (-75% DEX mod)`;
                     if (victimSave < concSave && !target.isIncapacitated) {
@@ -7535,7 +10638,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 if (skillMastery >= 3 && raw === dmgDice) dmg *= 2; // M3: 2x on crit damage roll
                 applyDamage(dmg);
                 log += `\n✅ **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
-                const wilDc = battle.rollDice(20) + spiMod;
+                const wilDc = battle.modRoll(spiMod);
                 const wilSave = rollStatThrow(target, 'wil');
                 if (wilSave < wilDc) {
                     target.windedTurns = 1;
@@ -7620,7 +10723,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 const dmg = battle.rollDice(dmgDice) + strMod;
                 applyDamage(dmg);
                 log += `\n🎯 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
-                const dc = battle.rollDice(20) + Math.floor(strMod / 2);
+                const dc = battle.modRoll(Math.floor(strMod / 2));
                 const conSave = rollStatThrow(target, 'con');
                 if (conSave < dc) {
                     const rTurns = battle.rollDice(3);
@@ -7767,6 +10870,14 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             break;
         }
         case 'Neo Wolf Fang Fist': {
+            // Trello Wolf Fang Fist mastery 4 unlocks this follow-up: you can't use it until your
+            // Wolf Fang Fist mastery reaches 4.
+            if (getCharacterTechniqueMastery(viewerCharacter, 'Wolf Fang Fist') < 4) {
+                current.hasActed = false;
+                current.currentKi += kiCost;
+                log += `\n🐺 **Neo Wolf Fang Fist** needs **Wolf Fang Fist mastery 4** — nothing happens.`;
+                break;
+            }
             current.hasActed = false; // extra action
             current.wolfFang = true;
             current.wolfFangDexPct = 30;
@@ -7796,7 +10907,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                     hits++;
                     total += rollXdY(2, dmgSides) + strMod; // each strike deals 2dX+STR
                     // Crit the attack roll -> strike once more (1d5+1/4 STR, 1d10+1/2 STR at mastery 5).
-                    if (rawAtk === atkDice) critBonus = true;
+                    if (rawAtk > atkDice - battle.natBand(atkDice)) critBonus = true;
                 } else {
                     log += `\n💨 A thrust misses! (${atk} vs ${def})`;
                 }
@@ -7820,8 +10931,8 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         case 'Lacerating Slash': {
             // Legionary: slam the polearm blade — d30+(DEX+CON mod) save vs d20+2×STR; on fail
             // deal d20+½ STR and Bleed for 1 turn.
-            const dc = battle.rollDice(20) + (2 * strMod);
-            const save = battle.rollDice(30) + dexMod + conMod;
+            const dc = battle.modRoll(2 * strMod);
+            const save = battle.modRoll(dexMod + conMod, 30);
             if (save >= dc) {
                 log += `\n🛡️ **${target.username}** braces against the slash! (${save} vs ${dc})`;
             } else {
@@ -7897,7 +11008,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                     applyDamage(dmg);
                     log += `\n🌀 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
                     // DEX save with advantage (d20+WIL); on fail, it cuts off a limb.
-                    const dc = battle.rollDice(20) + wilMod;
+                    const dc = battle.modRoll(wilMod);
                     const s1 = rollStatThrow(target, 'dex');
                     const s2 = rollStatThrow(target, 'dex');
                     const save = Math.max(s1, s2);
@@ -7922,11 +11033,37 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             }
             break;
         }
+        case 'Solar Flare': {
+            // A blinding flash of light — each enemy makes a WIL save (d20+WIL vs the caster's WIL
+            // DC); if they fail they're blinded (disadvantage this turn + next attack).
+            const dc = rollStatThrow(current, 'wil');
+            const enemies = getAliveTargets(battle, current.userId);
+            if (enemies.length === 0) {
+                log += `\n☀️ **${current.username}** flashes a **Solar Flare**, but there's no one around!`;
+                break;
+            }
+            let blinded = 0;
+            for (const enemy of enemies) {
+                const save = rollStatThrow(enemy, 'wil');
+                if (save < dc) {
+                    enemy.nextAttackDisadvantage = true;
+                    enemy.turnDisadvantage = true;
+                    blinded++;
+                    log += `\n☀️ **${enemy.username}** is BLINDED! (WIL ${save} vs ${dc})`;
+                } else {
+                    log += `\n🛡️ **${enemy.username}** shields their eyes! (WIL ${save} vs ${dc})`;
+                }
+            }
+            if (blinded === 0) {
+                log += `\n☀️ **${current.username}**'s **Solar Flare** blazes, but everyone averts their eyes!`;
+            }
+            break;
+        }
         case 'Kamehameha': {
             if (current.kamehamehaCharging) {
                 // Release the charged beam.
                 const dmgDice = [10, 12, 14, 16][Math.min(skillMastery, 3)] || 10;
-                const chargeBonus = (current.kamehamehaCharge || 0) * 2;
+                const chargeBonus = (current.kamehamehaCharge || 0) * KH_CHARGE_BONUS_PER_CHARGE;
                 const res = skillAttackRoll();
                 if (res.hit) {
                     const dmg = battle.rollDice(dmgDice) + wilMod + chargeBonus;
@@ -7956,7 +11093,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 applyDamage(dmg);
                 log += `\n🌊 **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
                 if (skillMastery >= 3) {
-                    const saveDc = battle.rollDice(25) + wilMod + Math.floor(dmg / 3);
+                    const saveDc = battle.rollDice(battle.modDice(wilMod, 25)) + wilMod + Math.floor(dmg / 3);
                     const save = rollStatThrow(target, 'con') + Math.max(0, Math.floor(((target.currentHP || 0))));
                     if (save < saveDc) {
                         target.isDead = true;
@@ -8016,7 +11153,7 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 applyDamage(dmg);
                 log += `\n✂️ **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
                 // CON save (d20+STR) — on fail, Bleed 1d4 and a second, deadlier save.
-                const dc = battle.rollDice(20) + strMod;
+                const dc = battle.modRoll(strMod);
                 const conSave = rollStatThrow(target, 'con');
                 if (conSave < dc) {
                     const bleed = battle.rollDice(4);
@@ -8045,8 +11182,8 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 log += `\n🔪 ${current.username} lowered their **Ki Sharpening**.`;
             } else {
                 const mastery = (viewerCharacter && (viewerCharacter.techniqueMastery || {})['Ki Sharpening']) || 0;
-                const dmgPct = [25, 30, 35, 40][Math.min(mastery, 3)] || 25;
-                const dexPenalty = mastery >= 3 ? 30 : 40;
+                const dmgPct = [40, 45, 50, 55][Math.min(mastery, 3)] || 40;
+                const dexPenalty = mastery >= 3 ? 10 : 20;
                 // Flat per-turn Ki cost that drops with mastery (0/1: 40, 2: 25, 3: 10).
                 const flatCost = [40, 40, 25, 10][Math.min(mastery, 3)] || 40;
                 current.kiSharpeningActive = true;
@@ -8072,8 +11209,13 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             } else {
                 const pm = Math.min(skillMastery, 3);
                 // Enhanced (Oni/Hera): stronger mods, no action cost, and only 10 Ki/turn.
-                const pumpStr = enhanced ? 15 : ([10, 11, 12, 12][pm] || 10);
-                const pumpCon = enhanced ? 9 : ([5, 6, 7, 7][pm] || 5);
+                // Mastery is flat + pct (masteryScaling.pumpUpPctPerLevel): the flat part above is
+                // fixed, so it also adds a % of the user's own mods, or it stops mattering as the
+                // character grows. The DEX drawback stays flat (never magnified).
+                const pumpBaseStr = battle.getEffectiveModifier(current, 'str');
+                const pumpBaseCon = battle.getEffectiveModifier(current, 'con');
+                const pumpStr = (enhanced ? 15 : ([10, 11, 12, 12][pm] || 10)) + masteryPctBonus(pumpBaseStr, skillMastery);
+                const pumpCon = (enhanced ? 9 : ([5, 6, 7, 7][pm] || 5)) + masteryPctBonus(pumpBaseCon, skillMastery);
                 const pumpDex = enhanced ? 4 : ([-5, -4, -3, -3][pm] || -5);
                 current.pumpUpActive = true;
                 current.modBonus = current.modBonus || {};
@@ -8085,6 +11227,46 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 log += `\n💪 **${current.username}** activates **Pump Up**!${enhanced ? ' **(Enhanced)**' : ''} (+${pumpStr} STR, +${pumpCon} CON, ${pumpDex} DEX — drains ${current.pumpUpCost} Ki/turn)`;
                 // Enhanced variant is a free action — it doesn't take your turn.
                 if (enhanced) current.hasActed = false;
+            }
+            break;
+        }
+        case 'Kaioken': {
+            // Toggle. While active the fighter's EFFECTIVE combat mods are multiplied, so the
+            // stored `kaiokenMods` is exactly what was added to modBonus (removed again on drop).
+            if (current.kaiokenActive) {
+                const kmods = current.kaiokenMods || {};
+                current.modBonus = current.modBonus || {};
+                KAIOKEN_STATS.forEach(s => {
+                    current.modBonus[s] = Math.max(0, (current.modBonus[s] || 0) - (kmods[s] || 0));
+                });
+                current.kaiokenActive = false;
+                current.kaiokenCost = 0;
+                current.kaiokenMods = null;
+                log += `\n🔴 ${current.username} **powers down** Kaioken.`;
+            } else {
+                // Trello: Kaioken "cannot be used when at or above 50% fatigue".
+                if ((current.currentFatigue || 0) >= getKaiokenFatigueCap()) {
+                    current.hasBonusActed = false;
+                    current.currentKi += kiCost;
+                    log += `\n🔴 **${current.username}** is too exhausted (**${Math.round(current.currentFatigue || 0)}%** fatigue) to enter Kaioken — it needs to be under **${getKaiokenFatigueCap()}%**.`;
+                    break;
+                }
+                const mult = getKaiokenMultiplier(skillMastery);
+                const mods = {};
+                KAIOKEN_STATS.forEach(s => {
+                    const eff = battle.getEffectiveModifier(current, s) || 0;
+                    mods[s] = Math.round(Math.max(0, eff) * (mult - 1));
+                });
+                current.modBonus = current.modBonus || {};
+                Object.entries(mods).forEach(([s, v]) => { current.modBonus[s] = (current.modBonus[s] || 0) + v; });
+                current.kaiokenActive = true;
+                current.kaiokenMods = mods;
+                current.kaiokenCost = getKaiokenDrainKi(skillMastery);
+                current.kaiokenStrain = getKaiokenStrainPct(skillMastery);
+                const shown = KAIOKEN_STATS.filter(s => mods[s] > 0).map(s => `+${mods[s]} ${s.toUpperCase()}`).join(', ');
+                log += `\n🔴 **${current.username}** roars — **KAIOKEN ×${mult}**! (${shown || 'no mods gained'} — drains ${current.kaiokenCost} Ki/turn and **${current.kaiokenStrain}% fatigue**)`;
+                // No action fiddling: the engine already marks this skill as a BONUS action, so the
+                // main action stays available (and an already-used main action is never refunded).
             }
             break;
         }
@@ -8100,7 +11282,17 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
         }
         case 'Ki Application': {
             const kiChar = characterManager.getCharacter(current.userId);
-            const kiApp = getKiApplicationEffects(kiChar);
+            // Mastery 3's passive +1/4 WIL damage bonus derives from the battle participant's
+            // effective WIL mod (form scaling + gear + modBonus included), not the raw stat.
+            const kiApp = getKiApplicationEffects(kiChar, battle.getEffectiveModifier(current, 'wil'));
+            if (kiApp.passive) {
+                // Mastery 3 is passive & free — it can't be toggled off (doing so used to clear the
+                // +1/4 WIL damage bonus for the rest of the fight).
+                current.kiApplicationActive = true;
+                current.kiAppDamage = kiApp.damage;
+                log += `\n💥 **${current.username}**'s **Ki Application** is passive (Mastery 3) — always active (+${kiApp.damage} damage).`;
+                break;
+            }
             if (current.kiApplicationActive) {
                 current.kiApplicationActive = false;
                 current.kiAppDamage = 0;
@@ -8122,16 +11314,188 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             } else {
                 log += `\n🎵 **${current.username}** plays **Hero's Flute**! (d20 = **${roll}**) — the tune fails to lift their spirits.`;
             }
+            // Namekian Large Ears: the loud flute hurts their sensitive hearing (-7 DEX for a few turns).
+            const namekians = battle.turnOrder.filter(p => !p.isDead && !p.isIncapacitated && p.race === 'Namekian');
+            if (namekians.length > 0) {
+                namekians.forEach(p => {
+                    p.namekianDexPenalty = Math.max(p.namekianDexPenalty || 0, battle.rollDice(5));
+                });
+                log += `\n👂 The shrill flute pierces Namekian ears — **${namekians.map(p => p.username).join(', ')}** take **-7 DEX** for a few turns!`;
+            }
             break;
+        }
+    }
+
+    // Custom /create techniques: charged wind-ups, no-damage status strikes and self-buffs.
+    let customChargeBonus = 0;
+    let skipAttack = false;
+    if (skill.custom) {
+        if (skill.charge && skill.customEffect === 'damage') {
+            // CHARGED moves work exactly like the Kamehameha: the first use starts the charge (Ki is
+            // drained every turn by battleSystem.advance(), and the charge grows each turn), and
+            // using it again releases the built-up strike. Nothing locks the rest of your turn while
+            // charging — bonus-action buffs and even other attacks stay available.
+            if (current.customCharging === skill.name) {
+                customChargeBonus = (current.customCharge || 0) * KH_CHARGE_BONUS_PER_CHARGE;
+                current.customCharging = null;
+                current.customCharge = 0;
+                current.customChargingName = null;
+                log += `\n🔋 **${current.username}** RELEASES the charged **${skill.name}**! (+${customChargeBonus} damage from the stored charge)`;
+            } else {
+                current.customCharging = skill.name;
+                current.customCharge = 1;
+                current.customChargingName = skill.name;
+                skipAttack = true;
+                log += `\n🔋 **${current.username}** begins charging **${skill.name}**! (Ki drains every turn and the charge builds — use it again to release; other moves, including buffs, stay available)`;
+            }
+        }
+        if (skill.customEffect === 'status' && target) {
+            const dcStat = skill.saveStat || 'wil';
+            const vsStat = skill.saveVs || 'wil';
+            const dc = rollStatThrow(current, dcStat);
+            const save = rollStatThrow(target, vsStat);
+            if (save < dc) {
+                log += `\n${applyCustomRider(target, current, skill.rider)}`;
+            } else {
+                log += `\n🛡️ **${target.username}** resists! (${save} vs ${dc})`;
+            }
+        } else if (skill.customEffect === 'buff_attack') {
+            current.nextAttackAdvantage = true;
+            log += `\n🎯 **${current.username}** focuses — **advantage on their next attack roll**!`;
+        } else if (skill.customEffect === 'buff_damage') {
+            current.nextDamageBonusDice = Math.max(current.nextDamageBonusDice || 0, skill.buffDice || 4);
+            log += `\n💪 **${current.username}** charges power — their next attack deals **+1d${skill.buffDice}** extra damage!`;
+        }
+    }
+
+    // AOE techniques (Supernova, /create Area moves): hit every enemy on the field.
+    if (skill.aoe && !target && !skipAttack) {
+        const enemies = getAliveTargets(battle, current.userId);
+        if (enemies.length === 0) {
+            log += `\n💨 There's no one left to hit!`;
+        } else {
+            const atkDice = battle.getDexDice(current.stats.dex);
+            let hits = 0, total = 0;
+            for (const enemy of enemies) {
+                // Yokai (Ghastly Structure): a physical technique passes through an intangible form.
+                if (enemy.ghastlyActive && !enemy.ghastlyExposed && isPhysicalSkill(skill)) {
+                    log += `\n👻 **${enemy.username}**'s **Ghastly Structure** is intangible — **${skill.name}** passes straight through!`;
+                    continue;
+                }
+                const defDice = battle.getDexDice(enemy.stats.dex);
+                let atkRoll = battle.rollDice(atkDice);
+                // Pacifist (Wise Old One) and disadvantage: roll twice, take the lower.
+                if (current.mutation === 'Wise Old One' || current.turnDisadvantage || current.nextAttackDisadvantage) {
+                    atkRoll = Math.min(atkRoll, battle.rollDice(atkDice));
+                }
+                current.nextAttackDisadvantage = false;
+                if (current.nextAttackAdvantage) {
+                    atkRoll = Math.max(atkRoll, battle.rollDice(atkDice));
+                    current.nextAttackAdvantage = false;
+                }
+                const atk = atkRoll + dexMod + (current.flying ? 2 : 0) + (current.wolfFang ? Math.max(1, Math.round(dexMod * ((current.wolfFangDexPct || 10) / 100))) : 0);
+                const def = battle.rollDice(defDice) + battle.getEffectiveModifier(enemy, 'dex') + (enemy.flying ? 2 : 0) + (enemy.kiSense ? 1 : 0);
+                if (atk > def) {
+                    hits++;
+                    let dmg = 0;
+                    if (skill.attack) {
+                        const diceMatch = String(skill.attack.dice).match(/^(\d+)d(\d+)$/);
+                        let sides = diceMatch ? parseInt(diceMatch[2], 10) : 8;
+                        if (skill.attack.masteryDice) sides = skill.attack.masteryDice[Math.min(skillMastery, 3)] || sides;
+                        const dice = diceMatch ? rollXdY(parseInt(diceMatch[1], 10), sides) : 0;
+                        const mods = { str: strMod, dex: dexMod, wil: wilMod, con: conMod, spi: spiMod };
+                        let modAmt = mods[skill.attack.mod] || 0;
+                        // Custom /create moves add only a % of the stat mod (scales with Ki spend / action cost).
+                        if (skill.custom && skill.modPct) modAmt = Math.round(modAmt * skill.modPct);
+                        dmg = dice + modAmt;
+                    }
+                    // Custom /create CHARGED release: the stored charge adds damage.
+                    if (customChargeBonus) dmg += customChargeBonus;
+                    // Ki Application: +flat attack damage on techniques too (matches NPC behavior).
+                    if (current.kiAppDamage) dmg += current.kiAppDamage;
+                    if (current.kiSharpened) {
+                        const bonus = battle.rollDice(4);
+                        dmg += bonus;
+                        current.kiSharpened = false;
+                        log += `\n🔪 Ki Sharpening adds **+${bonus}**!`;
+                    }
+                    if (current.nextDamageBonusDice) {
+                        const bonus = battle.rollDice(current.nextDamageBonusDice);
+                        dmg += bonus;
+                        current.nextDamageBonusDice = 0;
+                        log += `\n💪 **Charged attack!** +${bonus} damage!`;
+                    }
+                    if (enemy.race === 'Yokai') {
+                        const ghostDmg = Math.floor(dmg * 0.25);
+                        if (ghostDmg > 0) dmg += ghostDmg;
+                        if (enemy.ghastlyActive && !enemy.ghastlyExposed) {
+                            enemy.ghastlyActive = false;
+                            enemy.ghastlyExposed = true;
+                            log += `\n👻 A Ki-based technique shatters **${enemy.username}**'s **Ghastly Structure** — exposed!`;
+                        }
+                    }
+                    // Multi-hit combo: split this enemy's damage across the hits (an AOE combo divides
+                    // more harshly, so the total drops too).
+                    const aoeHits = Math.max(1, Number(skill.combo) || 1);
+                    let hitBreakdown = '';
+                    if (aoeHits > 1) {
+                        const parts = splitComboDamage(dmg, aoeHits, true);
+                        dmg = parts.reduce((a, b) => a + b, 0);
+                        hitBreakdown = ` 🌀${aoeHits}-hit combo (${parts.join('+')})`;
+                    }
+                    enemy.currentHP -= dmg;
+                    if (enemy.currentHP <= 0 && !enemy.isIncapacitated) enemy.isIncapacitated = true;
+                    total += dmg;
+                    log += `\n✅ **${enemy.username}** takes **${dmg} damage**!${hitBreakdown} (HP: ${enemy.currentHP})`;
+                    log += maybeMiscarry(enemy);
+                    // Rider / save on the hit.
+                    const saveSpec = skill.attack && skill.attack.save;
+                    if (saveSpec) {
+                        if (saveSpec.auto) {
+                            if (!comboAutoRiderApplies(battle, skill)) {
+                                log += `\n💨 The flurry spreads the effect too thin — no rider on **${enemy.username}**.`;
+                            } else if (saveSpec.effect === 'blindall') {
+                                enemy.nextAttackDisadvantage = true;
+                                log += `\n☀️ **${enemy.username}** is BLINDED!`;
+                            } else {
+                                log += `\n${applyCustomRider(enemy, current, saveSpec.effect)}`;
+                            }
+                        } else {
+                            // A multi-hit combo dilutes its rider: the save is easier to pass.
+                            const dc = comboRiderDc(rollStatThrow(current, saveSpec.dc.mod), skill);
+                            const saveRoll = rollStatThrow(enemy, saveSpec.vs);
+                            if (saveRoll < dc) {
+                                log += `\n${applyCustomRider(enemy, current, saveSpec.effect)}`;
+                            } else {
+                                log += `\n🛡️ ${enemy.username} resists! (${saveRoll} vs ${dc})`;
+                            }
+                        }
+                    }
+                } else {
+                    log += `\n💨 **${skill.name}** misses **${enemy.username}**! (${atk} vs ${def})`;
+                }
+            }
+            if (hits > 0) {
+                log += `\n🌊 **${skill.name}** hits **${hits}/${enemies.length}** enemies for **${total} total damage**!`;
+            }
         }
     }
 
     // Generic mentor-taught techniques: d20+DEX vs d20+DEX, damage dice + stat mod
     // (skips abilities handled by a dedicated case above).
-    if (skill.attack && target && !DEDICATED_SKILL_CASES.has(skill.name)) {
+    if (skill.attack && target && !skipAttack && !DEDICATED_SKILL_CASES.has(skill.name)) {
         const atkDice = battle.getDexDice(current.stats.dex);
         const defDice = battle.getDexDice(target.stats.dex);
         let atkRoll = battle.rollDice(atkDice);
+        // Pacifist (Wise Old One) and disadvantage: roll twice, take the lower.
+        if (current.mutation === 'Wise Old One' || current.turnDisadvantage || current.nextAttackDisadvantage) {
+            atkRoll = Math.min(atkRoll, battle.rollDice(atkDice));
+        }
+        current.nextAttackDisadvantage = false;
+        if (current.nextAttackAdvantage) {
+            atkRoll = Math.max(atkRoll, battle.rollDice(atkDice));
+            current.nextAttackAdvantage = false;
+        }
         let atk = atkRoll + dexMod + (current.flying ? 2 : 0) + (current.wolfFang ? Math.max(1, Math.round(dexMod * ((current.wolfFangDexPct || 10) / 100))) : 0);
         // Cerealian "Evolved Right Eye": reroll the strike at a Ki cost (takes the better).
         // Vital Strike asks Yes/No; other ki attacks auto-reroll when the toggle is on.
@@ -8177,7 +11541,10 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             }
         }
         const def = battle.rollDice(defDice) + battle.getEffectiveModifier(target, 'dex') + (target.flying ? 2 : 0) + (target.kiSense ? 1 : 0);
-        if (atk > def) {
+        // Yokai (Ghastly Structure): a physical technique passes straight through an intangible form.
+        if (target.ghastlyActive && !target.ghastlyExposed && isPhysicalSkill(skill)) {
+            log += `\n👻 **${target.username}**'s **Ghastly Structure** makes their form intangible — **${skill.name}** passes straight through!`;
+        } else if (atk > def) {
             // Vital Strike is a precision (DEX) strike: scale its damage dice with DEX and add the DEX mod.
             let dmg;
             if (skill.vitalStrike) {
@@ -8187,14 +11554,28 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                 let sides = diceMatch ? parseInt(diceMatch[2], 10) : 8;
                 if (skill.attack.masteryDice) sides = skill.attack.masteryDice[Math.min(skillMastery, 3)] || sides;
                 const dice = diceMatch ? rollXdY(parseInt(diceMatch[1], 10), sides) : 0;
-                const mods = { str: strMod, dex: dexMod, wil: wilMod, con: conMod };
-                dmg = dice + (mods[skill.attack.mod] || 0);
+                const mods = { str: strMod, dex: dexMod, wil: wilMod, con: conMod, spi: spiMod };
+                let modAmt = mods[skill.attack.mod] || 0;
+                // Custom /create moves add only a % of the stat mod (scales with Ki spend / action cost).
+                if (skill.custom && skill.modPct) modAmt = Math.round(modAmt * skill.modPct);
+                dmg = dice + modAmt;
             }
+            // Custom /create CHARGED release: the stored charge adds damage on top of the strike.
+            if (customChargeBonus) dmg += customChargeBonus;
+            // Ki Application: +flat attack damage on techniques too (matches NPC behavior).
+            if (current.kiAppDamage) dmg += current.kiAppDamage;
             if (current.kiSharpened) {
                 const bonus = battle.rollDice(4);
                 dmg += bonus;
                 current.kiSharpened = false;
                 log += `\n🔪 Ki Sharpening adds **+${bonus}**!`;
+            }
+            // Custom /create "buff damage" charge powers the next attack.
+            if (current.nextDamageBonusDice) {
+                const bonus = battle.rollDice(current.nextDamageBonusDice);
+                dmg += bonus;
+                current.nextDamageBonusDice = 0;
+                log += `\n💪 **Charged attack!** +${bonus} damage!`;
             }
             // Cerealian "Vital Strike": drain Energy from the target, and +50% damage on a critical.
             // Hunter of Legend's version drains d16+WIL mod instead of a flat 10.
@@ -8204,14 +11585,30 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
                     : (Number(skill.drainKi) || 10);
                 target.currentKi = Math.max(0, (target.currentKi || 0) - drained);
                 log += `\n⚡ **${target.username}** has **${drained} Energy** drained! (Ki: ${target.currentKi})`;
-                if (atkRoll === atkDice) {
+                if (atkRoll > atkDice - battle.natBand(atkDice)) {
                     const bonus = Math.round(dmg * 0.5);
                     dmg += bonus;
                     log += `\n💥 **CRITICAL!** (+${bonus} damage)`;
                 }
             }
-            applyDamage(dmg);
-            log += `\n✅ **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
+            // Multi-hit combo: the damage is divided between the hits (the total is unchanged for a
+            // single-target combo — the hits are what make riders harder to land).
+            const comboHits = Math.max(1, Number(skill.combo) || 1);
+            if (comboHits > 1) {
+                const parts = splitComboDamage(dmg, comboHits, false);
+                dmg = parts.reduce((a, b) => a + b, 0);
+                applyDamage(dmg);
+                log += `\n🌀 **${comboHits}-hit combo!** ${parts.map(p => `**${p}**`).join(' + ')} = **${dmg} damage** to **${target.username}**! (HP: ${target.currentHP})`;
+            } else {
+                applyDamage(dmg);
+                log += `\n✅ **${target.username}** takes **${dmg} damage**! (HP: ${target.currentHP})`;
+            }
+            // Yokai (Ghastly Structure): a connecting Ki-based technique breaks the intangible form.
+            if (target.ghastlyActive && !target.ghastlyExposed) {
+                target.ghastlyActive = false;
+                target.ghastlyExposed = true;
+                log += `\n👻 A Ki-based technique shatters **${target.username}**'s **Ghastly Structure** — exposed to all attacks!`;
+            }
             // Suck Blood (Vampire): drain the target's blood to refill the user's blood bar.
             if (skill.vampiric) {
                 const vc = characterManager.getCharacter(current.userId);
@@ -8224,31 +11621,28 @@ async function executeCombatSkill(interaction, battle, viewer, skill, targetId) 
             }
             const saveSpec = skill.attack.save;
             if (saveSpec) {
-                const dc = rollStatThrow(current, saveSpec.dc.mod);
-                const saveRoll = rollStatThrow(target, saveSpec.vs);
-                if (saveRoll < dc) {
-                    if (saveSpec.effect === 'offbalance') {
-                        target.turnDisadvantage = true;
-                        log += `\n🌀 **${target.username}** is knocked OFF-BALANCE!`;
-                    } else if (saveSpec.effect === 'disadvantage') {
-                        target.nextAttackDisadvantage = true;
-                        log += `\n⚠️ ${target.username} has disadvantage on their next attack!`;
-                    } else if (saveSpec.effect === 'stun') {
-                        target.stunned = true;
-                        // Grapple Mastery: Wrestler stuns last 1 turn longer.
-                        target.stunnedTurns = current.fightingStyle === 'Wrestler' ? 2 : 1;
-                        log += `\n⚡ **${target.username}** is STUNNED!`;
-                    } else if (saveSpec.effect === 'prone') {
-                        target.offBalance = true;
-                        target.turnDisadvantage = true;
-                        log += `\n🦵 **${target.username}** is knocked PRONE (off-balance)!`;
-                    } else if (saveSpec.effect === 'bleed') {
-                        const bleedTurns = 1;
-                        target.bleedTurns = (target.bleedTurns || 0) + bleedTurns;
-                        log += `\n🩸 **${target.username}** starts BLEEDING for **${bleedTurns} turn**!`;
+                if (saveSpec.auto) {
+                    if (!comboAutoRiderApplies(battle, skill)) {
+                        log += `\n💨 The combo spreads the effect too thin — the rider doesn't apply.`;
+                    } else if (saveSpec.effect === 'blindall') {
+                        battle.turnOrder.forEach(p => {
+                            if (!p.isDead && !p.isIncapacitated && p.userId !== current.userId && !p.isAlly) {
+                                p.nextAttackDisadvantage = true;
+                            }
+                        });
+                        log += `\n☀️ **A blinding flash!** Every enemy has disadvantage on their next attack!`;
+                    } else {
+                        log += `\n${applyCustomRider(target, current, saveSpec.effect)}`;
                     }
                 } else {
-                    log += `\n🛡️ ${target.username} resists! (${saveRoll} vs ${dc})`;
+                    // A multi-hit combo dilutes its rider: the defender's save is easier to pass.
+                    const dc = comboRiderDc(rollStatThrow(current, saveSpec.dc.mod), skill);
+                    const saveRoll = rollStatThrow(target, saveSpec.vs);
+                    if (saveRoll < dc) {
+                        log += `\n${applyCustomRider(target, current, saveSpec.effect)}`;
+                    } else {
+                        log += `\n🛡️ ${target.username} resists! (${saveRoll} vs ${dc})`;
+                    }
                 }
             }
         } else {
@@ -8298,26 +11692,103 @@ function getRemainingTravelMs(character) {
     return Math.max(0, character.inTransitUntil - Date.now());
 }
 
+// ---------- Snake Way ⇄ King Kai's Planet ----------
+// The ONLY route onto King Kai's Planet. Snake Way sits on Otherworld (space 100, added to
+// SPECIAL_SLOTS), so the trip is cross-planet and can't use the normal /space-travel or
+// same-planet /travel rules. How long it takes depends on DEX: 50,000 DEX does it in 5 minutes,
+// and because the speed falls off quadratically the trip balloons toward 5 hours well before
+// DEX hits zero. Tunable via config.json `kingKaiTravel`.
+const KING_KAI_CFG = (kingKaiTravel && typeof kingKaiTravel === 'object') ? kingKaiTravel : {};
+const KING_KAI_DEX_CAP = (typeof KING_KAI_CFG.dexCap === 'number') ? KING_KAI_CFG.dexCap : 50000;
+const KING_KAI_MIN_MINUTES = (typeof KING_KAI_CFG.minMinutes === 'number') ? KING_KAI_CFG.minMinutes : 5;
+const KING_KAI_MAX_MINUTES = (typeof KING_KAI_CFG.maxMinutes === 'number') ? KING_KAI_CFG.maxMinutes : 300;
+const KING_KAI_FALLOFF = (typeof KING_KAI_CFG.falloffExponent === 'number') ? KING_KAI_CFG.falloffExponent : 2;
+const SNAKE_WAY = { location: 'Otherworld', space: 100, name: 'Snake Way' };
+// Dead players spawn at the Check-In Station (Otherworld space 1) — the head of Snake Way, and
+// where the run starts.
+const CHECK_IN_STATION = { location: 'Otherworld', space: 1, name: "King Yemma's Check-In Station" };
+const KING_KAI_PLANET = { location: "King Kai's Planet", space: 1, name: "King Kai's Planet" };
+
+// Minutes to run Snake Way, from DEX: 5 min at the cap, up to 5 hours when DEX is low.
+function getSnakeWayTravelMinutes(dex) {
+    const t = Math.max(0, Math.min(1, (Number(dex) || 0) / KING_KAI_DEX_CAP));
+    const slow = Math.pow(1 - t, KING_KAI_FALLOFF);
+    const minutes = KING_KAI_MIN_MINUTES + (KING_KAI_MAX_MINUTES - KING_KAI_MIN_MINUTES) * slow;
+    return Math.max(KING_KAI_MIN_MINUTES, Math.min(KING_KAI_MAX_MINUTES, Math.round(minutes)));
+}
+function getSnakeWayTravelMs(character) {
+    const dex = (character && character.stats && character.stats.dex) || 0;
+    return getSnakeWayTravelMinutes(dex) * 60000;
+}
+function isAtSnakeWay(character) {
+    return (character.location || 'Earth') === SNAKE_WAY.location && (character.space || 1) === SNAKE_WAY.space;
+}
+function isAtCheckInStation(character) {
+    return (character.location || 'Earth') === CHECK_IN_STATION.location && (character.space || 1) === CHECK_IN_STATION.space;
+}
+function isAtKingKaiPlanet(character) {
+    return (character.location || 'Earth') === KING_KAI_PLANET.location && (character.space || 1) === KING_KAI_PLANET.space;
+}
+
+// Resolve a /travel destination against the Snake Way route. Returns:
+//   { error }                  -> can't make this trip (with the reason)
+//   { to, fromName, dexInfo }  -> a valid route (the caller runs the trip)
+function resolveSnakeWayRoute(character, destination) {
+    const dest = String(destination || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+    if (!dest) return null;
+    const wantsKingKai = ['kingkaisplanet', 'kingkai', 'kingkais'].includes(dest);
+    const wantsSnakeWay = ['snakeway', 'snakeways'].includes(dest);
+    if (!wantsKingKai && !wantsSnakeWay) return null;
+
+    if (wantsKingKai) {
+        if (isAtKingKaiPlanet(character)) return { error: `📍 **${character.name}** is already on **King Kai's Planet**!` };
+        if (!isAtSnakeWay(character)) {
+            return { error: `❌ The only way to **King Kai's Planet** is to run **Snake Way** — you must be standing on the **Snake Way** slot first (Otherworld, Space ${SNAKE_WAY.space}).` };
+        }
+        return { to: KING_KAI_PLANET, fromName: SNAKE_WAY.name };
+    }
+
+    // Snake Way -> back to the Check-In Station or down to King Kai's Planet.
+    if (isAtKingKaiPlanet(character)) {
+        return { to: SNAKE_WAY, fromName: KING_KAI_PLANET.name };
+    }
+    if (isAtSnakeWay(character)) {
+        return { to: CHECK_IN_STATION, fromName: SNAKE_WAY.name };
+    }
+    // The run itself starts at King Yemma's Check-In Station (where the dead arrive).
+    if (isAtCheckInStation(character)) {
+        return { to: SNAKE_WAY, fromName: CHECK_IN_STATION.name };
+    }
+    return { error: `❌ You can only set out down **Snake Way** from **King Yemma's Check-In Station** (Otherworld, Space ${CHECK_IN_STATION.space}) — you're on **${character.location || 'Earth'}**.` };
+}
+
 // Complete a travel that has finished
 function finalizeTravel(userId, character) {
     if (!character.inTransitUntil || Date.now() < character.inTransitUntil) return false;
     const dest = character.transitDestination;
+    let destLocation = dest ? dest.location : character.location;
+    let destSpace = dest ? dest.space : character.space;
+    // If the destination planet got destroyed mid-travel, reroute to a safe planet.
+    if (dest && isPlanetDestroyed(dest.location)) {
+        destLocation = getDefaultLocation(character.race);
+        destSpace = getRandomInt(PLANET_SPACES[destLocation] || 100);
+    }
     const updates = {
-        location: dest ? dest.location : character.location,
-        space: dest ? dest.space : character.space,
+        location: destLocation,
+        space: destSpace,
         inTransitUntil: null,
         transitDestination: null
     };
     // Unlock fast-travel to any named major location the character reaches.
-    if (dest && getSpecialSlotName(dest.location, dest.space)) {
+    if (dest && destLocation === dest.location && getSpecialSlotName(dest.location, dest.space)) {
         const key = `${dest.location}-${dest.space}`;
         const visited = Array.isArray(character.visitedSlots) ? [...character.visitedSlots] : [];
         if (!visited.includes(key)) { visited.push(key); updates.visitedSlots = visited; }
     }
     characterManager.updateCharacter(userId, character.id, updates);
     if (dest) {
-        character.location = dest.location;
-        character.space = dest.space;
+        character.location = destLocation;
+        character.space = destSpace;
     }
     if (updates.visitedSlots) character.visitedSlots = updates.visitedSlots;
     character.inTransitUntil = null;
@@ -8352,7 +11823,7 @@ function formatPlayersAtSlot(location, space) {
 }
 
 // Start travel: returns the duration in ms (0 = instant arrival)
-function scheduleTravel(userId, character, destLocation, destSpace, distance, speed) {
+function scheduleTravel(userId, character, destLocation, destSpace, distance, speed, overrideMs = null) {
     // Record the departure so others on the same slot can /follow within 10 seconds.
     const sourceLocation = character.location || 'Earth';
     const sourceSpace = character.space || 1;
@@ -8363,7 +11834,10 @@ function scheduleTravel(userId, character, destLocation, destSpace, distance, sp
         expiresAt: Date.now() + 10000
     });
 
-    const durationMs = Math.ceil((distance / speed) * 60000);
+    // `overrideMs` is used by special routes (Snake Way) whose duration isn't distance/speed based.
+    const durationMs = (overrideMs != null)
+        ? Math.max(0, Math.round(overrideMs))
+        : Math.ceil((distance / speed) * 60000);
     if (durationMs <= 0) {
         const updates = { location: destLocation, space: destSpace, inTransitUntil: null, transitDestination: null };
         if (getSpecialSlotName(destLocation, destSpace)) {
@@ -8388,39 +11862,57 @@ function scheduleTravel(userId, character, destLocation, destSpace, distance, sp
 }
 
 // Live travel countdown: edits the travel announcement every ~minute until the character arrives.
-const travelCountdowns = new Map(); // userId -> { messageId, baseContent, destinationText, timer }
+// PERF: ONE shared sweeper interval handles every active traveler. Previously each departing
+// character armed its own 60s setInterval (timer count grew with concurrent travelers, and each
+// timer independently fetched + edited its message against the Discord API).
+const travelCountdowns = new Map(); // userId -> { channelId, messageId, baseContent, destinationText }
+const TRAVEL_SWEEP_INTERVAL_MS = 60000;
+let travelSweeperTimer = null;
+let travelSweepRunning = false;
 
-function startTravelCountdown(userId, channelId, messageId, baseContent, destinationText, durationMs) {
-    if (!messageId) return;
-
-    const existing = travelCountdowns.get(userId);
-    if (existing) clearInterval(existing.timer);
-
-    const timer = setInterval(async () => {
+async function sweepTravelCountdowns() {
+    for (const [userId, cd] of [...travelCountdowns.entries()]) {
         const character = characterManager.getCharacter(userId);
         const remainingMs = character ? getRemainingTravelMs(character) : 0;
-        const channel = client.channels.cache.get(channelId);
         let content;
         if (remainingMs <= 0) {
-            clearInterval(timer);
             travelCountdowns.delete(userId);
             if (character) finalizeTravel(userId, character);
-            content = `${baseContent}\n✅ **Arrived at ${destinationText}!**`;
+            content = `${cd.baseContent}\n✅ **Arrived at ${cd.destinationText}!**`;
         } else {
-            content = `${baseContent}\n⏱️ **Time remaining:** ~${formatDuration(remainingMs)}`;
+            content = `${cd.baseContent}\n⏱️ **Time remaining:** ~${formatDuration(remainingMs)}`;
         }
-        if (!channel) return;
+        const channel = client.channels.cache.get(cd.channelId);
+        if (!channel) continue;
         try {
-            const msg = await channel.messages.fetch(messageId);
+            const msg = await channel.messages.fetch(cd.messageId);
             await msg.edit({ content });
         } catch (e) {
             // Message was deleted or the channel is inaccessible — stop refreshing.
-            clearInterval(timer);
             travelCountdowns.delete(userId);
         }
-    }, 60000);
+    }
+}
 
-    travelCountdowns.set(userId, { messageId, baseContent, destinationText, timer });
+function ensureTravelSweeper() {
+    if (travelSweeperTimer) return;
+    travelSweeperTimer = setInterval(async () => {
+        // Never let a slow sweep overlap itself (many travelers + slow API round-trips).
+        if (travelSweepRunning) return;
+        travelSweepRunning = true;
+        try { await sweepTravelCountdowns(); } catch (e) { /* next sweep retries */ }
+        finally { travelSweepRunning = false; }
+    }, TRAVEL_SWEEP_INTERVAL_MS);
+    // A countdown sweeper must never keep the process alive at shutdown.
+    if (travelSweeperTimer.unref) travelSweeperTimer.unref();
+}
+
+function startTravelCountdown(userId, channelId, messageId, baseContent, destinationText, durationMs) {
+    if (!messageId) return;
+    travelCountdowns.set(userId, { channelId, messageId, baseContent, destinationText });
+    ensureTravelSweeper();
+    // Short trips (< 60s) don't get a live countdown tick before arrival — identical to the old
+    // per-user timer, whose first tick also fired 60s after departure.
 }
 
 // ---------- Training system ----------
@@ -8435,6 +11927,17 @@ const GRAVITY_TIERS = [
     { gravity: 250, pl: 250000, solo: '6d100',  spar: '6x5d100' },
     { gravity: 300, pl: 500000, solo: '10d100', spar: '10x5d100' }
 ];
+
+// Intrinsic training intensity for each gravity tier (index matches GRAVITY_TIERS). Higher tiers
+// require more PL and are more intense, so they yield a proportionally larger progression reward.
+const TRAIN_TIER_VALUE = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25];
+
+// How much of the advertised training/spar dice roll is ADDED to the power-level progression
+// reward each session. 1 = the roll shown in the message counts in full; lower it (e.g. 0.25)
+// to make the dice a smaller slice of the gain. Tunable via config.json `trainingDiceGainMult`.
+const TRAINING_DICE_GAIN_MULT = (typeof trainingDiceGainMult === 'number' && trainingDiceGainMult >= 0)
+    ? trainingDiceGainMult
+    : 1;
 
 // Planets with natural gravity (default 1x)
 const PLANET_GRAVITY = {
@@ -8477,7 +11980,9 @@ function addDiceToSpec(spec, extra) {
 }
 
 function getTrainingGravity(character) {
-    return Math.max(1, character.gravityChamber || 0, PLANET_GRAVITY[character.location] || 1);
+    // A home Training Room acts as a gravity chamber (its level sets the gravity floor).
+    const baseGravity = getBaseBonuses(character).gravity || 0;
+    return Math.max(1, character.gravityChamber || 0, baseGravity, PLANET_GRAVITY[character.location] || 1);
 }
 
 // Pick the highest gravity tier the character can use (gravity available + PL requirement)
@@ -8554,18 +12059,30 @@ function getWeightsDexPenalty(character) {
 // see exactly what's contributing to a stat's modifier (base, racial, form, weapon, etc.).
 function getStatModifierBreakdown(character, stat) {
     const sources = [];
-    const baseMod = calculateAllModifiers((character.stats) || {})[stat] || 0;
+    const baseMod = calculateAllModifiers((character.stats) || {}, character.statMultipliers)[stat] || 0;
     if (baseMod !== 0) sources.push(`Base ${baseMod >= 0 ? '+' : ''}${baseMod}`);
     const racialMods = getRaceStatModifiers(character.race, character);
     const racial = racialMods[stat] || 0;
-    if (racial !== 0) sources.push(`Racial ${racial >= 0 ? '+' : ''}${racial}`);
-    if (character.activeForm && FORMS[character.activeForm] && FORMS[character.activeForm].modBonus) {
+    // Racial mods are "flat + a % of this stat's own mod", so show both parts: "+15 (+3 +7%)".
+    if (racial !== 0) sources.push(`Racial ${formatRacialModValue(racialMods, character, stat)}`);
+    if (character.activeForm && FORMS[character.activeForm]) {
         const form = FORMS[character.activeForm];
         const mastery = (character.formMastery || {})[character.activeForm] || 0;
+        // Stat-multiplier forms (most forms) scale the stat itself, not its modifier.
+        if (form.statMult != null) {
+            const mults = (typeof form.statMult === 'number')
+                ? { str: form.statMult, dex: form.statMult, con: form.statMult, wil: form.statMult, spi: form.statMult }
+                : form.statMult;
+            const m = Number(mults[stat]);
+            if (m && m !== 1) {
+                const baseStat = (character.stats || {})[stat] || 0;
+                sources.push(`${character.activeForm} ×${m} ${stat.toUpperCase()} (${baseStat} → ${Math.round(baseStat * m)})`);
+            }
+        }
         // Super Saiyan-family forms don't grow ALL MODS with mastery; they add combat mods at 4/5.
         const hasSsMastery = form.mastery && form.mastery.drainReduction;
         const bonusMultiplier = hasSsMastery ? 1 : (1 + mastery * 0.1);
-        const fm = Math.round((form.modBonus[stat] || 0) * bonusMultiplier);
+        const fm = Math.round(((form.modBonus || {})[stat] || 0) * bonusMultiplier);
         if (fm !== 0) sources.push(`${character.activeForm} ${fm >= 0 ? '+' : ''}${fm}`);
         if (hasSsMastery) {
             const strAtk = (form.mastery.strAtk || {})[mastery] || 0;
@@ -8590,25 +12107,72 @@ function getStatModifierBreakdown(character, stat) {
 }
 
 // ---------- Forms / Transformations ----------
-const FORMS = {
-    'False Super Saiyan': { race: 'Saiyan', modBonus: { str: 5, dex: 5, con: 5, wil: 5, spi: 5 }, plMultiplier: 1, description: '+5 ALL MODS (except INT) while active.' },
-    'Super Saiyan': { race: 'Saiyan', modBonus: { str: 10, dex: 10, con: 10, wil: 10, spi: 10 }, plMultiplier: 50, drain: 30, mastery: { drainReduction: [0, 10, 10, 5, 5, 5], strAtk: { 4: 5, 5: 5 }, dexAtkDef: { 4: 5, 5: 5 }, plBoost: { 5: 65 } }, description: '+10 ALL MODS (except INT) and x50 PL. Drains 30 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +5 STR (attack) & +5 DEX (attack/defense); at Level 5: x65 PL.' },
-    'Super Saiyan 2': { race: 'Saiyan', modBonus: { str: 20, dex: 20, con: 20, wil: 20, spi: 20 }, plMultiplier: 100, drain: 100, mastery: { drainReduction: [0, 20, 20, 20, 10, 10], strAtk: { 4: 5, 5: 5 }, dexAtkDef: { 4: 5, 5: 5 }, plBoost: { 5: 150 } }, description: '+20 ALL MODS (except INT) and x100 PL. Drains 100 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +5 STR (attack) & +5 DEX (attack/defense); at Level 5: x150 PL.' },
-    'Super Saiyan 3': { race: 'Saiyan', modBonus: { str: 80, dex: 80, con: 80, wil: 80, spi: 80 }, plMultiplier: 400, drain: 500, mastery: { drainReduction: [0, 100, 100, 100, 50, 50], strAtk: { 4: 10, 5: 10 }, dexAtkDef: { 4: 10, 5: 10 }, plBoost: { 5: 480 } }, description: '+80 ALL MODS (except INT) and x400 PL. Drains 500 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +10 STR (attack) & +10 DEX (attack/defense); at Level 5: x480 PL.' },
-    'Dark Devil': { race: 'Oni', modBonus: { str: 15, dex: 15, con: 15, wil: 15, spi: 15 }, plMultiplier: 30, description: '+15 ALL MODS (except INT) and x30 PL while active. Transforming does not take an action.' },
-    'Ultra Power': { race: 'Hera', modBonus: { str: 5, dex: 5, con: 5, wil: 5, spi: 5 }, plMultiplier: 1, drain: 30, description: '+5 ALL MODS (except INT). Trigger at 70% HP or lower; takes an action. Drains 30 Ki/turn.' },
+// Form definitions. Bonuses come in three flavours: `statMult` (multiply the combat stats — the
+// primary mechanic for most forms), `modBonus` (flat modifier bonuses, kept for special/mixed
+// forms) and `statScale` (the Frost Demon suppression forms, which scale stats DOWN). Every form
+// can be overridden per-form in `config/config.json` under `forms` (partial overrides are
+// shallow-merged over these defaults; config may also define brand-new forms).
+const DEFAULT_FORMS = {
+    'False Super Saiyan': { race: 'Saiyan', statMult: 1.1, plMultiplier: 1, description: '×1.1 all combat stats (except INT) while active.' },
+    'Super Saiyan': { race: 'Saiyan', statMult: 1.5, plMultiplier: 50, drain: 30, mastery: { drainReduction: [0, 10, 10, 5, 5, 5], strAtk: { 4: 5, 5: 5 }, dexAtkDef: { 4: 5, 5: 5 }, plBoost: { 5: 65 } }, description: '×1.5 all combat stats and x50 PL. Drains 30 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +5 STR (attack) & +5 DEX (attack/defense); at Level 5: x65 PL.' },
+    'Super Saiyan 2': { race: 'Saiyan', statMult: 2.0, plMultiplier: 100, drain: 100, mastery: { drainReduction: [0, 20, 20, 20, 10, 10], strAtk: { 4: 5, 5: 5 }, dexAtkDef: { 4: 5, 5: 5 }, plBoost: { 5: 150 } }, description: '×2 all combat stats and x100 PL. Drains 100 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +5 STR (attack) & +5 DEX (attack/defense); at Level 5: x150 PL.' },
+    'Super Saiyan 3': { race: 'Saiyan', statMult: 3.0, plMultiplier: 400, drain: 500, mastery: { drainReduction: [0, 100, 100, 100, 50, 50], strAtk: { 4: 10, 5: 10 }, dexAtkDef: { 4: 10, 5: 10 }, plBoost: { 5: 480 } }, description: '×3 all combat stats and x400 PL. Drains 500 Ki/turn; mastery lowers the drain, and at Level 4/5 grants +10 STR (attack) & +10 DEX (attack/defense); at Level 5: x480 PL.' },
+    'Dark Devil': { race: 'Oni', statMult: 1.6, plMultiplier: 30, description: '×1.6 all combat stats and x30 PL while active. Transforming does not take an action.' },
+    'Ultra Power': { race: 'Hera', statMult: 1.15, plMultiplier: 1, drain: 30, description: '×1.15 all combat stats. Trigger at 70% HP or lower; takes an action. Drains 30 Ki/turn.' },
     // Ultimate Power: mastery 2/4/5 add extra STR/CON/DEX, and mastery lowers the 80 Ki drain.
-    'Ultimate Power': { race: 'Hera', modBonus: { str: 15, dex: 15, con: 15, wil: 15, spi: 15 }, plMultiplier: 75, drain: 80, masteryMods: { 2: { str: 1, con: 1, dex: 1 }, 4: { str: 2, con: 2, dex: 2 }, 5: { str: 3, con: 2, dex: 2 } }, description: '+15 ALL MODS (except INT) and x75 PL. Triggered by a traumatic experience; drains 80 Ki/turn (mastery reduces).' },
-    '5th Form': { race: 'Frost Demon', modBonus: { str: 15, dex: 15, con: 15, wil: 15, spi: 15 }, plMultiplier: 75, description: '+15 ALL MODS (except INT) and x75 PL while active.' },
-    'Great Namekian': { race: 'Namekian', modBonus: { str: 3, con: 3 }, plMultiplier: 1, drain: 10, masteryMods: { 1: { con: 3 }, 2: { wil: 3 }, 3: { str: 6, con: 9 } }, description: '+3 STR mod and +3 CON mod while active. Heals 1d10% HP and refills Ki once per battle. Drains 10 Ki/turn; mastery 1: +3 CON, mastery 2: +3 WIL, mastery 3: +6 STR & +9 CON.' },
-    'Super Namekian': { race: 'Namekian', modBonus: { str: 20, dex: 20, con: 20, wil: 20, spi: 20 }, plMultiplier: 2, drain: 60, description: 'Fusion form: +20 ALL MODS (except INT), x2 PL while active, drains 60 Ki/turn. Unlocked via /fuse.' },
-    '1st Form': { race: 'Frost Demon', statScale: 0.125, kiRegen: { type: 'flat', dice: 20 }, plMultiplier: 1, description: 'Stats at 1/8, but +1d20 Ki each turn.' },
+    'Ultimate Power': { race: 'Hera', statMult: 1.8, plMultiplier: 75, drain: 80, masteryMods: { 2: { str: 1, con: 1, dex: 1 }, 4: { str: 2, con: 2, dex: 2 }, 5: { str: 3, con: 2, dex: 2 } }, description: '×1.8 all combat stats and x75 PL. Triggered by a traumatic experience; drains 80 Ki/turn (mastery reduces).' },
+    '5th Form': { race: 'Frost Demon', statMult: 1.75, plMultiplier: 75, description: '×1.75 all combat stats and x75 PL while active.' },
+    'Great Namekian': { race: 'Namekian', statMult: 1.3, modBonus: { str: 3, con: 3 }, plMultiplier: 1, drain: 10, masteryMods: { 1: { con: 3 }, 2: { wil: 3 }, 3: { str: 6, con: 9 } }, description: '×1.3 combat stats, +3 STR mod and +3 CON mod while active. Heals 1d10% HP and refills Ki once per battle. Drains 10 Ki/turn; mastery 1: +3 CON, mastery 2: +3 WIL, mastery 3: +6 STR & +9 CON.' },
+    'Super Namekian': { race: 'Namekian', statMult: 2.0, plMultiplier: 2, drain: 60, description: 'Fusion form: ×2 combat stats, x2 PL while active, drains 60 Ki/turn. Unlocked via /fuse.' },
+    '1st Form': { race: 'Frost Demon', statScale: 0.125, kiRegen: { type: 'pct', dice: 10, base: 25 }, plMultiplier: 1, description: 'Stats at 1/8, but +25 Ki and +1d10% Ki each turn.' },
     '2nd Form': { race: 'Frost Demon', statScale: 0.25, kiRegen: { type: 'pct', dice: 10 }, plMultiplier: 1, description: 'Stats at 1/4, but +1d10% Ki each turn.' },
     '3rd Form': { race: 'Frost Demon', statScale: 0.5, kiRegen: { type: 'pct', dice: 5 }, plMultiplier: 1, description: 'Stats at 1/2, but +1d5% Ki each turn.' },
     '4th Form': { race: 'Frost Demon', statScale: 1, plMultiplier: 1, description: 'Full power — no buffs, no Ki regen.' },
-    '100% 4th Form': { race: 'Frost Demon', modBonus: { str: 5, dex: -5 }, plMultiplier: 1, drain: 80, mastery: { drainReduction: [0, 3, 6, 11, 16, 21] }, masteryMods: { 1: {}, 2: { str: 1 }, 3: { str: 2 }, 4: { str: 3 }, 5: { str: 4, dex: 6 } }, description: 'Push yourself to your peak state. -5 DEX mod, +5 STR mod; drains 80 Ki/turn (mastery lowers it). Mastery 2-5 add STR; at Level 5 the DEX penalty is removed and you gain +1 DEX.' },
-    'Legendary Super Saiyan': { race: ['Saiyan', 'Half-Saiyan'], modBonus: { str: 25, dex: 25, con: 25, wil: 25, spi: 25 }, plMultiplier: 1, description: 'Mutation form: +25 ALL MODS (except INT) while active. Each turn, gain +5 ALL MODS (increasing by 5×turn number), +d80 Ki, and 70 Ki drain.' },
-    'Slug': { race: 'Namekian', modBonus: { str: 4, dex: 4, con: 4, wil: 4, spi: 4 }, plMultiplier: 30, description: '+4 ALL MODS and x30 PL while active.' }
+    '100% 4th Form': { race: 'Frost Demon', statMult: 1.4, modBonus: { str: 5, dex: -5 }, plMultiplier: 1, drain: 80, mastery: { drainReduction: [0, 3, 6, 11, 16, 21] }, masteryMods: { 1: {}, 2: { str: 1 }, 3: { str: 2 }, 4: { str: 3 }, 5: { str: 4, dex: 6 } }, description: '×1.4 combat stats. Push yourself to your peak: -5 DEX mod, +5 STR mod; drains 80 Ki/turn (mastery lowers it). Mastery 2-5 add STR; at Level 5 the DEX penalty is removed and you gain +1 DEX.' },
+    'Legendary Super Saiyan': { race: ['Saiyan', 'Half-Saiyan'], statMult: 1.9, plMultiplier: 1, description: 'Mutation form: ×1.9 all combat stats while active. Each turn, gain +5 ALL MODS (increasing by 5×turn number), +d80 Ki, and 70 Ki drain.' },
+    'Slug': { race: 'Namekian', statMult: 1.6, plMultiplier: 30, description: '×1.6 all combat stats and x30 PL while active.' },
+    // "Potential Unleashed" (Trello "Ultimate" technique). Unlocked via potential unlock (Elder
+    // Guru / Ultra Divine Water). Normal: +12 STR/+8 CON/+8 DEX mod, attacks bypass the first 10
+    // pts of damage reduction, drains 35 Ki/turn. Mastery 1: +13/+9/+9 (30 Ki); Mastery 2:
+    // +14/+10/+10 (activation = bonus action); Mastery 3+ "Ultimate": +18/+12/+19, bypass 20 pts,
+    // drains 15 Ki/turn, free activation, immune to mind effects (Zenith Mind).
+    'Potential Unleashed': {
+        modBonus: { str: 12, con: 8, dex: 8 },
+        drain: 35,
+        bypassDR: 10,
+        ultimateBypassDR: 20,
+        ultimateAt: 3,
+        zenithMindAt: 3,
+        mastery: { drainReduction: [0, 5, 5, 20, 20, 20] },
+        masteryMods: { 1: { str: 1, con: 1, dex: 1 }, 2: { str: 2, con: 2, dex: 2 }, 3: { str: 6, con: 4, dex: 11 } },
+        description: 'Draw out your deep, dormant power. +12 STR, +8 CON, +8 DEX mod; attacks bypass the first 10 points of damage reduction. Drains 35 Ki/turn. Mastery 1: 13/9/9 (30 Ki). Mastery 2: 14/10/10 (bonus action). Mastery 3+ (Ultimate): +18 STR, +12 CON, +19 DEX, bypass 20 DR, 15 Ki/turn, free activation, immune to mind effects.'
+    }
+};
+
+// Merge config.json `forms` over the defaults (per-form, partial overrides are shallow-merged;
+// config may also add brand-new forms). Read at module load → restart required after edits.
+const FORMS = (() => {
+    const merged = {};
+    for (const [name, def] of Object.entries(DEFAULT_FORMS)) {
+        merged[name] = { ...def, ...((formsConfig && formsConfig[name]) || {}) };
+    }
+    if (formsConfig) {
+        for (const [name, def] of Object.entries(formsConfig)) {
+            if (!merged[name]) merged[name] = { ...def };
+        }
+    }
+    return merged;
+})();
+
+// Forms that can be AWAKENED through /mastery when not yet owned. Ordered chains: each form
+// requires the previous form in the chain. `save` = the awakening chance (roll a 1d-save, need
+// a max roll). Super Saiyan keeps its existing 1d200/save 200; SSJ2/SSJ3 scale up the difficulty.
+const MASTERY_AWAKEN = {
+    'Super Saiyan': { chain: ['Super Saiyan', 'Super Saiyan 2', 'Super Saiyan 3'], index: 0, save: 200, races: ['Saiyan', 'Half-Saiyan'] },
+    'Super Saiyan 2': { chain: ['Super Saiyan', 'Super Saiyan 2', 'Super Saiyan 3'], index: 1, save: 300, races: ['Saiyan', 'Half-Saiyan'] },
+    'Super Saiyan 3': { chain: ['Super Saiyan', 'Super Saiyan 2', 'Super Saiyan 3'], index: 2, save: 400, races: ['Saiyan', 'Half-Saiyan'] },
+    // Replaces Super Saiyan for a Saiyan with the Legendary mutation (no prerequisite).
+    'Legendary Super Saiyan': { chain: ['Legendary Super Saiyan'], index: 0, save: 200, races: ['Saiyan', 'Half-Saiyan'] }
 };
 
 // Compute a character's battle stats (raw) and flat mod bonuses from forms/racial passives
@@ -8616,15 +12180,18 @@ const FORMS = {
 function getFormDrain(formName, mastery) {
     const form = FORMS[formName];
     // Super Saiyan-family forms: base drain reduced by the mastery level (per the JSON).
+    // The whole net drain is scaled up by `kiDrainScale.formDrainMult` (config) so it stays
+    // meaningful against the larger max-Ki pools.
     if (form && form.drain) {
         const reductions = (form.mastery && form.mastery.drainReduction) || [];
         const reduction = reductions[Math.min(mastery, 5)] || 0;
-        return Math.max(0, form.drain - reduction);
+        return Math.max(0, Math.round((form.drain - reduction) * KI_FORM_DRAIN_MULT));
     }
-    if (formName === 'Ultra Power') return 30;
+    if (formName === 'Ultra Power') return Math.max(1, Math.round(30 * KI_FORM_DRAIN_MULT));
     if (formName === 'Ultimate Power') {
         const reductions = [0, 5, 5, 5, 5, 15];
-        return Math.max(10, 80 - (reductions[Math.min(mastery, 5)] || 0));
+        const net = Math.max(10, 80 - (reductions[Math.min(mastery, 5)] || 0));
+        return Math.max(1, Math.round(net * KI_FORM_DRAIN_MULT));
     }
     return 0;
 }
@@ -8647,6 +12214,13 @@ function getFormMasteryEffectLines(formName, level) {
     const lines = [];
     const mastery = form.mastery || {};
 
+    // Stat-multiplier forms (most forms): describe the base multiplier.
+    if (form.statMult != null) {
+        const txt = (typeof form.statMult === 'number')
+            ? `×${form.statMult} all combat stats`
+            : Object.entries(form.statMult).map(([s, m]) => `×${m} ${s.toUpperCase()}`).join(', ');
+        lines.push(txt);
+    }
     if (form.drain) {
         lines.push(`Drain: **${getFormDrain(formName, level)} Ki/turn**${level > 0 ? ` (was ${getFormDrain(formName, 0)})` : ''}`);
     }
@@ -8670,7 +12244,9 @@ function getFormMasteryEffectLines(formName, level) {
         const statDiv = Math.round(1 / form.statScale);
         let kiTxt = '';
         if (form.kiRegen) {
-            kiTxt = form.kiRegen.type === 'pct' ? `+1d${form.kiRegen.dice}% Ki/turn` : `+1d${form.kiRegen.dice} Ki/turn`;
+            kiTxt = form.kiRegen.type === 'pct'
+                ? `+${form.kiRegen.base ? `${form.kiRegen.base} Ki and ` : ''}1d${form.kiRegen.dice}% Ki/turn`
+                : `+1d${form.kiRegen.dice} Ki/turn`;
         }
         lines.push(`Stats at 1/${statDiv}${kiTxt ? `, ${kiTxt}` : ''}`);
     }
@@ -8687,6 +12263,49 @@ function getFormMaxMastery(formName) {
     return modKeys.length ? Math.max(3, ...modKeys) : 3;
 }
 
+// ---------- Kaioken (taught by King Kai on King Kai's Planet) ----------
+// A bonus-action toggle that MULTIPLIES the fighter's effective combat mods. Per the Trello card:
+// x2 at base, then x3 / x4 / x5 / x10 / x20 as mastery rises, each level adding a flat per-turn Ki
+// drain and fatigue ("strain"), and it cannot be started at/above `maxFatiguePct` fatigue.
+// Tunable via config.json `kaioken`.
+const KAIOKEN_CFG = (kaioken && typeof kaioken === 'object') ? kaioken : {};
+const KAIOKEN_MULTIPLIERS = Array.isArray(KAIOKEN_CFG.multipliers) && KAIOKEN_CFG.multipliers.length
+    ? KAIOKEN_CFG.multipliers
+    : [2, 3, 4, 5, 10, 20];
+const KAIOKEN_KI_PER_TURN = Array.isArray(KAIOKEN_CFG.kiPerTurn) && KAIOKEN_CFG.kiPerTurn.length
+    ? KAIOKEN_CFG.kiPerTurn
+    : [20, 30, 40, 50, 100, 200];
+const KAIOKEN_STRAIN_PCT = Array.isArray(KAIOKEN_CFG.strainPct) && KAIOKEN_CFG.strainPct.length
+    ? KAIOKEN_CFG.strainPct
+    : [10, 15, 20, 25, 40, 50];
+const KAIOKEN_MAX_FATIGUE_PCT = (typeof KAIOKEN_CFG.maxFatiguePct === 'number') ? KAIOKEN_CFG.maxFatiguePct : 50;
+const KAIOKEN_STATS = ['str', 'dex', 'con', 'wil', 'spi'];
+
+// Reads one Kaoiken per-mastery table entry (clamped to the table's range).
+function kaiokenStep(mastery, table, fallback) {
+    const idx = Math.max(0, Math.min(table.length - 1, Math.floor(Number(mastery) || 0)));
+    const v = Number(table[idx]);
+    return Number.isFinite(v) ? v : fallback;
+}
+// ×2 normally, rising with mastery (×3/×4/×5/×10/×20 by default).
+function getKaiokenMultiplier(mastery) {
+    const mult = kaiokenStep(mastery, KAIOKEN_MULTIPLIERS, 2);
+    return mult > 1 ? mult : 2;
+}
+// Ki drained each turn while Kaioken is up (flat per mastery level, scaled like other form drains).
+function getKaiokenDrainKi(mastery = 0) {
+    return Math.max(1, scaleKiFormDrain(kaiokenStep(mastery, KAIOKEN_KI_PER_TURN, 20)));
+}
+// Fatigue ("strain") added each turn while Kaioken is up.
+function getKaiokenStrainPct(mastery = 0) {
+    return Math.max(0, kaiokenStep(mastery, KAIOKEN_STRAIN_PCT, 10));
+}
+// Kaioken can't be started once fatigue is this high (Trello: "Cannot be used when at or above
+// 50% fatigue").
+function getKaiokenFatigueCap() {
+    return KAIOKEN_MAX_FATIGUE_PCT;
+}
+
 // Describe a technique's effects at a given mastery level (mirrors the /mastery messages).
 function getTechniqueMasteryEffectLines(name, level) {
     const lines = [];
@@ -8696,17 +12315,479 @@ function getTechniqueMasteryEffectLines(name, level) {
         if (level >= 3) lines.push('+2 DEX defense while flying');
         if (level >= 4) lines.push('+3 retreat rolls, Travel **6** less Ki');
         if (level >= 5) lines.push('Travel is **free**');
+    } else if (name === 'Kaioken') {
+        lines.push(`Multiplier: **×${getKaiokenMultiplier(level)}** (×2 base → ×3/×4/×5/×10/×20 with mastery)`);
+        lines.push(`Drain: **${getKaiokenDrainKi(level)}** Ki per turn (rises with the multiplier)`);
+        lines.push(`Strain: **+${getKaiokenStrainPct(level)}%** fatigue per turn`);
+        lines.push(`Can only be activated below **${getKaiokenFatigueCap()}%** fatigue`);
+        lines.push('Bonus action toggle — you can still attack the turn you power up');
     } else if (name === 'Ki Application') {
         lines.push('Ki upkeep reduced (at mastery 3: passive & free)');
     } else if (name === 'Ki Efficiency') {
         lines.push('+SPI/WIL mods increased (at mastery 3: -5 Ki drain)');
     } else if (name === 'Shogun') {
         lines.push('Bushido Code is a style — it can only be unlocked in battle, not mastered');
+    } else if (name === 'Ki Sharpening') {
+        // Ki Sharpening is one of the techniques whose mastery DOES specify a cost: the per-turn
+        // upkeep drops (40 -> 40 -> 25 -> 10) and the DEX penalty eases at mastery 3.
+        const lv = Math.max(0, Math.min(3, level));
+        const dmgPct = [40, 45, 50, 55][lv] || 40;
+        const dexPenalty = level >= 3 ? 10 : 20;
+        const flatCost = [40, 40, 25, 10][lv] || 40;
+        lines.push(`Damage bonus **+${dmgPct}%** (was +40% at mastery 0)`);
+        lines.push(`DEX attack penalty **-${dexPenalty}%**${level >= 3 ? ' (eased at mastery 3)' : ''}`);
+        lines.push(`Ki upkeep **${flatCost}/turn** (mastery 2: 25, mastery 3: 10)`);
+        lines.push(`Stat mods boosted by **+${MASTERY_MOD_PCT_PER_LEVEL * level}%** (flat + pct)`);
     } else {
-        if (level > 0) lines.push(`Ki costs reduced by **${level * 20}%**`);
-        else lines.push('No mastery yet — level it up to reduce Ki costs by **20%/level**');
+        // Mastery is flat + pct: the die upgrade is flat, so each level also boosts the
+        // technique's stat mods by a percentage (config.json `masteryScaling.modPctPerLevel`).
+        // A Ki-cost change is only listed for techniques that carry their OWN per-mastery ladder
+        // (`kiCosts`) — there is no blanket mastery discount.
+        const dieTable = TECHNIQUE_MASTERY_DICE[name];
+        const skillDef = COMBAT_SKILLS[name];
+        const costLadder = (skillDef && Array.isArray(skillDef.kiCosts)) ? skillDef.kiCosts.map(c => scaleKiMove(c)) : null;
+        const costLadderPct = (skillDef && Array.isArray(skillDef.kiCostsPct)) ? skillDef.kiCostsPct : null;
+        const modPct = MASTERY_MOD_PCT_PER_LEVEL * Math.max(0, Math.min(5, level));
+        if (level > 0) {
+            if (costLadder) lines.push(`Ki cost: **${costLadder[0]} → ${costLadder[Math.min(level, costLadder.length - 1)]}** (this technique's own ladder)`);
+            else if (costLadderPct) lines.push(`Ki cost: **${costLadderPct[0]}% → ${costLadderPct[Math.min(level, costLadderPct.length - 1)]}% of max Ki** (this technique's own ladder)`);
+            lines.push(`Stat mods boosted by **+${modPct}%** (flat + pct)`);
+            if (dieTable) lines.push(`Damage die: **d${dieTable[0]} → d${masteryStepValue(dieTable, level, dieTable[0])}**`);
+            if (name === 'Pump Up') lines.push(`The +STR/+CON mods also gain **+${MASTERY_PUMPUP_PCT_PER_LEVEL * level}% of your own STR/CON mod**`);
+        } else {
+            lines.push(`No mastery yet — each level boosts the technique's stat mods by **${MASTERY_MOD_PCT_PER_LEVEL}%**`);
+            if (dieTable) lines.push(`It also upgrades the damage die: **d${dieTable[0]} → d${dieTable[dieTable.length - 1]}** at full mastery`);
+            if (costLadder) lines.push(`Its Ki cost is mastery-based too: **${costLadder[0]} → ${costLadder[costLadder.length - 1]}**`);
+            else if (costLadderPct) lines.push(`Its Ki cost is mastery-based too: **${costLadderPct[0]}% → ${costLadderPct[costLadderPct.length - 1]}% of max Ki**`);
+            if (name === 'Pump Up') lines.push('Mastery also scales the mods it grants with your own STR/CON mod');
+        }
     }
     return lines;
+}
+
+// ---------- PASSIVE ABILITIES & STATUS EFFECTS (for /info) ----------
+// Style passives keyed by fighting style. These mirror EXACTLY what battleSystem.js implements —
+// if a passive isn't implemented there it isn't listed here, so /info can never drift from the
+// real rules. A style's passives are suppressed while wielding a weapon the style disallows.
+const STYLE_PASSIVES = {
+    'Swordsman': [
+        { name: 'Practiced Technique', desc: '+25% DEX mod on attack rolls.' },
+        { name: 'Sword Mastery', desc: '+1d3 attack mod when attacking with a **sword**.' }
+    ],
+    'Legionary Discipline': [
+        { name: 'Extended Reach', desc: 'Physical attacks made against you by a non-polearm fighter have **disadvantage**.' },
+        { name: 'Precision Strikes', desc: '+1d4 attack mod with a **polearm**; you may spend (5 + 5% Ki) to add 25% DEX mod to polearm damage.' },
+        { name: 'Puncture Wounds', desc: 'Attacking a **Bleeding** foe adds **1d3 + STR mod** to your attack roll. Critical polearm hits inflict 1d3 turns of Bleed.' }
+    ],
+    'Turtle': [
+        { name: 'Shell Guard', desc: '+5 + 25% DEX mod to defense rolls, **+1d10% block** damage reduction, and +4 + 20% CON mod to CON saving throws.' },
+        { name: 'Beam Proficiency', desc: 'Ki (beam) attacks gain **+6 + 25% WIL mod** and **+3 + 15% DEX mod**. Physical attacks take **-4** (Not a Snapping Turtle).' },
+        { name: 'Turtle Tenacity', desc: 'When hit by a Ki attack, absorb 1d20% of the Ki that attack cost.' }
+    ],
+    'Crane': [
+        { name: "Crane's Persistence", desc: 'Ki-based (non-physical) attacks and skills gain **+6 + 25% SPI mod** and **+4 + 25% WIL mod**.' },
+        { name: 'Ki Rejuvenation', desc: 'Regain **1d10 + 5%** of your max Ki at the start of every turn.' },
+        { name: "Crane's Marking Strike", desc: 'A connecting Ki attack marks the foe for **1d5 turns** with Crane\'s Mark (see `/info type:Status name:Crane\'s Mark`).' }
+    ],
+    'Wolf': [
+        { name: 'Heightened Instincts', desc: '+3 + 15% DEX mod to defense rolls.' },
+        { name: 'Vulnerable Pelt', desc: '**-4 - 20% CON mod** to defense rolls — your hide is soft.' }
+    ],
+    'Wrestler': [
+        { name: 'Crushing Physicality', desc: 'Unarmed physical attacks deal damage and grapple checks use **CON** instead of STR.' },
+        { name: 'Ring Fortitude', desc: 'Negate **1d3 + CON mod/2** damage whenever you take a hit.' },
+        { name: 'Sprawl', desc: 'Non-wrestlers grapple you with **disadvantage**, and a failed grapple attempt lets you counter-grapple them.' },
+        { name: 'Grapple Mastery', desc: 'Gain **advantage** on grapple attempts against an **Off-Balance** target.' }
+    ],
+    'Boxing': [
+        { name: 'Focused Iron Fist', desc: '+5 + 10% STR mod on attack rolls, and your strikes are treated as **lethal weapon damage** rather than unarmed.' },
+        { name: 'Head Movement', desc: 'Every successful dodge drains **1d5%** of the attacker\'s Ki and grants you a Rhythm stack.' },
+        { name: 'Rhythm', desc: 'Each stack grants **+1d2 DEX** on attack and defense rolls. Getting hit (even blocked) loses all stacks.' },
+        { name: 'Decisive Strikes', desc: 'Spend Ki on a reaction to crack an attacker for damage and gain **+1 Rhythm**.' }
+    ],
+    'Tiger': [
+        { name: 'Eye of the Tiger', desc: 'While **below 40% HP** you gain **+3 + 15% DEX mod** on attack rolls.' },
+        { name: 'Fearless Strikes', desc: '**+5 + 25% STR mod** damage. On a critical hit you regain your action and impose **disadvantage**.' },
+        { name: 'Iron Bone Conditioning', desc: 'Blocking an **unarmed physical** attack negates **1d3 + CON mod/2** damage.' },
+        { name: 'Spirit of the Tiger', desc: 'Reaction: take a hit for an ally, then force the attacker to save or become **Frightened**.' }
+    ],
+    'Taekwondo': [
+        { name: 'Phantom Step', desc: '+35% DEX mod on attack **and** defense rolls. After you dodge, the attacker must save or become **Hesitant**.' },
+        { name: 'Steady Base', desc: 'Once per round, roll CON vs the enemy\'s DEX to **ignore Off-Balance**.' },
+        { name: 'Flamingo Stance', desc: 'On a critical DEX attack roll you may reroll it and keep the better result.' },
+        { name: 'Wings of the Tempest', desc: 'Two consecutive kick hits grant a **free third strike** that adds DEX mod to damage.' }
+    ],
+    'Karate': [
+        { name: 'Rooted Stance', desc: '+2 defense. Once per round, a CON save vs the enemy\'s DEX lets you **ignore Off-Balance**.' },
+        { name: 'Kime', desc: 'Add your **SPI mod** to damage. A critical hit forces a WIL save or **stuns** the target for 1 turn.' },
+        { name: 'One-Strike Philosophy', desc: 'While above 60% HP your critical threshold is lowered by 25%. An unarmed critical grants a **free action** (once per turn).' }
+    ],
+    'Assassin': [
+        { name: "Shadow's Gait", desc: '**+8 initiative**, and your presence raises your side\'s chance of a surprise round (20% instead of 10%).' },
+        { name: 'Evasion Bypass', desc: 'A critical success on your DEX defense roll makes you **Invisible**.' },
+        { name: "Predator's Finish", desc: '**+15% damage** against foes below 30% HP.' },
+        { name: 'Toxic Executioner', desc: '**+1d10% damage** against a foe suffering Bleed, Poison or Rupture.' },
+        { name: "Assassin's Touch", desc: 'Critical **STR** attacks deal **double damage**.' }
+    ],
+    'Shogun': [
+        { name: 'Cleaving Swings', desc: '+30% STR mod on attack rolls.' },
+        { name: 'Masterful Parry', desc: '+5 defense while wielding a **Nodachi**.' },
+        { name: 'Traditional Teachings', desc: 'While wielding a **Nodachi** you also gain the Swordsman\'s Practiced Technique (+25% DEX mod); wearing armor adds +15% DEX mod.' },
+        { name: 'Honor Guard', desc: 'Blocking lets half the damage through, but you **counterattack**. Vs an **unarmed** attacker, force a CON save or take full damage and **Shogun-Mark** them.' },
+        { name: 'Early Morning', desc: 'Stance: drains Ki each turn; grants +DEX mod on attacks and a counterattack when you block. Auto-disables at 0 Ki.' },
+        { name: 'Bushido Code', desc: '+1 to all saving throws. This style can only be unlocked in battle, never mastered.' }
+    ],
+    'Maniac': [
+        { name: 'Sadist Limit', desc: 'A gauge that fills as you deal, take, or block damage — **1d50 + the amount**, capped by your Sadist Limit.' },
+        { name: 'Urge to Kill', desc: 'At **maximum Sadism**: +4 DEX & +50% DEX mod, +3 STR & +50% STR mod.' },
+        { name: 'Combat Addicted', desc: 'At 0 HP, roll **1d20 + (Sadism/2)** to hang on, consuming the gauge. Twice per battle.' }
+    ]
+};
+
+// Battle statuses & conditions, keyed by the name shown in battle. `short` is the one-line list
+// summary, `desc` is the full /info explanation.
+const STATUS_EFFECTS = {
+    'Off-Balance': {
+        short: 'DEX defense halved until your next turn.',
+        desc: 'You were knocked off balance — your **DEX modifier is halved on defense rolls** until your next turn. It clears early if you are hit. Karate\'s Rooted Stance and Taekwondo\'s Steady Base can save once per round to ignore it entirely.'
+    },
+    'Stunned': {
+        short: 'You lose your next turn.',
+        desc: 'You are reeling — your **next turn is consumed**. A Wrestler\'s stuns last **1 turn longer**, and some techniques gain bonuses against a stunned target (e.g. Karate crits, Assassin finishers).'
+    },
+    'Bleeding': {
+        short: 'Damage over time for 1d3 turns.',
+        desc: 'An open wound drains you at the start of each of your turns. Caused by Legionary Discipline polearm crits, Neo Wolf Fang Fist and similar slashing effects. **Bleeding foes** also trigger Puncture Wounds and Toxic Executioner.'
+    },
+    'Poisoned': {
+        short: 'Poison damage each turn for 1d4 turns.',
+        desc: 'Venom works through you, dealing damage at the start of each of your turns. **Saibamen (Plant Life)** are completely immune to poison.'
+    },
+    'Ruptured': {
+        short: 'Heavy damage over time.',
+        desc: 'Your insides are torn — you take heavy damage at the start of each of your turns until the rupture expires.'
+    },
+    "Crane's Mark": {
+        short: '-10% DEX on rolls; ki hits hurt more.',
+        desc: 'Seared onto you by a Crane\'s Ki technique for **1d5 turns**. You lose **10% of your DEX mod** on attack AND defense rolls, and **every Ki attack against you deals bonus damage** scaled off the WIL mod of whoever marked you. When it expires the marking Crane can **stun** you on a failed save.'
+    },
+    'Frightened': {
+        short: '-35% DEX mod on defense rolls.',
+        desc: 'Fear shakes you — you lose **35% of your DEX modifier on defense rolls** for 1 turn. Hunter of Legend is immune.'
+    },
+    'Hesitant': {
+        short: '-15% DEX mod on attack rolls.',
+        desc: 'Your resolve wavers — you lose **15% of your DEX modifier on attack rolls** for 1 turn.'
+    },
+    'Winded': {
+        short: '-20% DEX mod on attack rolls.',
+        desc: 'You are gasping for air — you lose **20% of your DEX modifier on attack rolls** until it expires.'
+    },
+    'Concussed': {
+        short: 'DEX mod cut to 25%, -3 HP/STR/DEX.',
+        desc: 'A head injury. Your **DEX modifier is reduced to a quarter** and the injury costs you **3 HP, 3 STR and 3 DEX**. Heals with recovery items, rest or medical care.'
+    },
+    'Disadvantage': {
+        short: 'Roll twice, take the LOWER result.',
+        desc: 'Applies to your next attack or defense roll (a failed retreat, a Shogun\'s Mark on defense, an Extended Reach polearm, a Sprawl against a Wrestler…). **Roll twice and keep the lower result.**'
+    },
+    'Grappled': {
+        short: 'Held by a grappler.',
+        desc: 'A grappler has hold of you — you cannot act freely until you break free with a contested check. Wrestlers are the best at this (Sprawl, Grapple Mastery, Crushing Physicality). A Yokai in Ghastly Structure **cannot be grappled** at all.'
+    },
+    'Invisible': {
+        short: '+50% DEX mod attacking; hard to hit.',
+        desc: 'You have faded from sight — **+50% DEX mod on attacks**, much harder to defend against, and an **Assassin\'s** attacks from invisibility are **always critical**. Cleared when you are hit.'
+    },
+    'Flying': {
+        short: 'Airborne; drains Ki each turn.',
+        desc: 'You are airborne. It costs Ki each turn (reduced by Fly mastery — **free at mastery 5**), and Fly mastery also grants defense, travel and retreat bonuses.'
+    },
+    'Ki Sharpening': {
+        short: 'Sustained: Ki drain, +damage, -DEX attack.',
+        desc: 'A sustained technique. It drains Ki each turn, adds a **% damage bonus**, and applies a **DEX attack roll penalty** while active. Ends automatically when you run out of Ki.'
+    },
+    'Pump Up': {
+        short: 'Sustained: Ki drain, stat mods.',
+        desc: 'A sustained technique. It drains Ki each turn and grants **stat modifier bonuses** while active. Ends automatically when you run out of Ki (the mods are removed with it).'
+    },
+    'Sadism': {
+        short: 'Maniac resource gauge.',
+        desc: 'The Maniac gauge. It fills as you deal, take or block damage (**1d50 + the amount**). At maximum it grants **Urge to Kill**, and it powers **Combat Addicted** (survive 0 HP on a 1d20 + Sadism/2 roll).'
+    },
+    'Limit Break': {
+        short: 'Second wind at very low HP.',
+        desc: 'Survive at **15% max HP or less for 4 consecutive turns** and you break your limits: recover **25% max HP and 50% Ki**. Only in lethal fights — never in spars or mentor battles.'
+    },
+    'Zenkai Exhausted': {
+        short: 'Ki regeneration halved.',
+        desc: 'You pushed a Zenkai boost too far — **all Ki regeneration is halved** until you recover.'
+    },
+    'Ghastly Structure': {
+        short: 'Yokai: intangible vs physical.',
+        desc: 'Yokai form. **Physical attacks pass straight through you** until a **Ki-based attack** connects and shatters the intangible form. Once exposed you take **+25% damage from all sources**, and you cannot be grappled while intangible.'
+    },
+    'Shapeshift': {
+        short: 'Enemies refuse to attack you.',
+        desc: 'Kitsune disguise — opponents will not target you for the duration (they pick someone else instead).'
+    }
+};
+
+// Every named passive in the game, tagged with where it comes from. Racial passives come from
+// raceData.js, style passives from STYLE_PASSIVES, mutation abilities from mutations.js.
+function getPassiveIndex() {
+    const list = [];
+    Object.entries(races || {}).forEach(([race, def]) => {
+        ((def && def.passives) || []).forEach(p => {
+            list.push({ name: p.name, source: `🧬 ${race} racial passive`, description: p.description || '' });
+        });
+    });
+    Object.entries(STYLE_PASSIVES).forEach(([style, passives]) => {
+        passives.forEach(p => list.push({ name: p.name, source: `🥋 ${style} style passive`, description: p.desc }));
+    });
+    Object.entries(mutations || {}).forEach(([key, m]) => {
+        if (!m || typeof m !== 'object') return;
+        const mName = m.name || key;
+        ((m.abilities) || []).forEach(a => {
+            list.push({ name: a.name, source: `🌟 ${mName} mutation ability`, description: a.description || '' });
+        });
+        if (m.formBonus && m.formBonus.description !== undefined) {
+            const fb = m.formBonus || {};
+            const parts = [];
+            if (fb.description) parts.push(fb.description);
+            const mods = Object.entries(fb.modifiers || {})
+                .filter(([, v]) => v)
+                .map(([k, v]) => `+${v} ${k.toUpperCase()}`);
+            if (mods.length) parts.push(`**Mods:** ${mods.join(', ')}`);
+            if (fb.perTurnBonus) parts.push(`**Per turn:** ${fb.perTurnBonus}`);
+            if (fb.kiGain) parts.push(`**Ki:** ${fb.kiGain}`);
+            if (fb.drain) parts.push(`**Drain:** ${fb.drain}`);
+            list.push({ name: mName, source: `🌟 ${mName} mutation form`, description: parts.join('\n') });
+        } else if (m.effect && m.effect.description) {
+            list.push({ name: `${mName} (effect)`, source: `🌟 ${mName} mutation`, description: m.effect.description });
+        }
+    });
+    return list;
+}
+
+// The passives that belong to THIS character (their race, fighting style and mutation).
+function getCharacterPassives(character) {
+    if (!character) return [];
+    const out = [];
+    const def = (races || {})[character.race];
+    ((def && def.passives) || []).forEach(p => {
+        out.push({ name: p.name, source: `🧬 ${character.race} racial passive`, description: p.description || '' });
+    });
+    (STYLE_PASSIVES[character.fightingStyle] || []).forEach(p => {
+        out.push({ name: p.name, source: `🥋 ${character.fightingStyle} style passive`, description: p.desc });
+    });
+    const m = character.mutation ? (mutations || {})[character.mutation] : null;
+    if (m) {
+        (m.abilities || []).forEach(a => {
+            out.push({ name: a.name, source: `🌟 ${character.mutation} mutation ability`, description: a.description || '' });
+        });
+        if (m.formBonus && m.formBonus.description) {
+            out.push({ name: character.mutation, source: `🌟 ${character.mutation} mutation form`, description: m.formBonus.description });
+        }
+    }
+    return out;
+}
+
+// Case-insensitive status lookup by display name.
+function findStatusInfo(name) {
+    const key = Object.keys(STATUS_EFFECTS).find(k => k.toLowerCase() === String(name || '').trim().toLowerCase());
+    return key ? { key, ...STATUS_EFFECTS[key] } : null;
+}
+
+// Discord caps messages at 2000 characters — keep /info listings safely under that.
+function clampInfoText(text, limit = 1900) {
+    if (typeof text !== 'string' || text.length <= limit) return text;
+    return text.slice(0, limit - 20) + '\n*…(truncated)*';
+}
+
+// ---------- /info type:Basics ----------
+// A plain-language "how the game works" page: what each kind of activity actually pays out.
+// `aliases` lets people type what they know (/info type:Basics name:sparring).
+const BASICS_TOPICS = {
+    training: {
+        title: '🏋️ Training (/train)',
+        aliases: ['train', 'shadow', 'shadowboxing', 'shadow boxing', 'weight', 'weights', 'meditation', 'solo'],
+        body: [
+            '**Types:** 🥊 **Shadow Boxing** → DEX · 🏋️ **Weight Training** → STR + CON · 🧘 **Meditation** → WIL + SPI (and can teach **Ki Sense**, **Ki Efficiency**, **Ki Application**) · ⚔️ **Spar** → needs an opponent (see `/info type:Basics name:spar`).',
+            '**What it gives:** stat points, spread across that type\'s stats. The payout is **power-level based** (`0.21 × PL^0.75`) plus a share of the tier\'s training dice (up to +30% of the base).',
+            '**Gravity tiers:** the highest tier your **gravity chamber** (or home **Training Room**, or the planet) allows *and* your PL qualifies for. ×1 → 1d10, ×10 → 2d10, ×20 → 4d10, ×50 → 6d10, ×100 → 1d100, ×150 → 2d100, ×200 → 4d100, ×250 → 6d100, ×300 → 10d100. Higher tiers are also worth more intrinsically (×0.4 → ×1.25).',
+            '**Multipliers:** equipped **Training Weights** ×1.25/×1.5/×2/×2.25 (they lose durability and break; meditation ignores them), a **Training Room** adds a flat % (also ignored by meditation), and mutations like **Extreme Potential** (×3) or **Prodigious Achievement** (+25%, then ×1d2+1) stack on top.',
+            '**Costs:** every session adds **+10% fatigue**, and gains are scaled down by your fatigue (10% = ×0.8 … 40% = ×0.2, 50%+ = nothing). You can\'t train past **90%** total fatigue. Children under 6 can\'t train, and 6-17 year olds gain less.'
+        ].join('\n')
+    },
+    spar: {
+        title: '⚔️ Sparring',
+        aliases: ['sparring', 'companion spar', 'companionspar', 'train spar'],
+        body: [
+            '**How to start:** `/train spar opponent:@user` (you both need to be in an active battle — the spar runs as a real fight) or the **Spar Train** button on a companion.',
+            '**What it gives:** a **power-level reward scaled by your opponent**: opposing 250%+ of you → **×1.7**, roughly even (80-125%) → **×1.4**, a bit weaker → ×1.0, a stomp → **×0.4**. Plus a share of the tier\'s spar dice (`5d10` … `10x5d100`). The **winner gets full gains, the loser half**.',
+            '**The spar must last 20 turns** before it pays out as training.',
+            '**It never costs vitals:** unlike missions, a spar (and a mentor fight) **restores your HP and Ki afterwards** — the only thing you carry out is the **+10% fatigue**.',
+            '**Companion spars** pay the owner *and* build the companion\'s own stats, +companionship, and roll the companion\'s technique mastery. If the owner is 250%+ stronger, the companion also **leeches 15%** of the owner\'s stats for that session.',
+            '**No downtime:** limiting breaks, injuries and permadeath never apply in a spar.'
+        ].join('\n')
+    },
+    missions: {
+        title: '🎯 Missions (/mission)',
+        aliases: ['mission', 'quest', 'hunt', 'enemies'],
+        // Built at call time so the listed payouts match the live tuning.
+        body: () => {
+            const value = (k) => MISSION_REWARD_SCALING[k].activityValue;
+            return [
+                `Pick a difficulty: **Casual** (×${value('casual')} payout), **Challenging** (×${value('hard')}), **Very Challenging** (×${value('very hard')}) or a **Saga Mission** (×${value('saga')}) — everything scales off **your own PL**, so a strong character never out-earns the curve.`,
+            'Enemies are generated from **your** power level (with racial passives, fighting styles, technique mastery and gear rolled in), so a mission is always a real fight. Higher difficulties spawn stronger gear and better drops.',
+            'Rewards: **stat points**, **zeni**, and item drops. Unlike spars, missions are lethal — downed players can be **killed** and sent to the afterlife, and they build up fatigue from the HP you lost (up to +25%).',
+            'Join a friend\'s mission with `/join-mission`, or bring **companions** into the fight with you.',
+            '**Full detail on how the enemies are sized, scaled and rewarded:** `/info type:Basics name:scaling`.'
+            ].join('\n');
+        }
+    },
+    scaling: {
+        title: '📐 Quest & enemy scaling',
+        aliases: ['scaling', 'enemy scaling', 'quest scaling', 'scaled', 'difficulty'],
+        // Built at call time (not module load) so the numbers on the page always match the live
+        // tuning in config.json — ratios, caps, weights, chances and reward values.
+        body: () => {
+            const ratio = (k) => ENEMY_SCALING[k].ratio;
+            const value = (k) => MISSION_REWARD_SCALING[k].activityValue;
+            const align = (k) => MISSION_ALIGNMENT_MAGNITUDE[k];
+            return [
+                `**Every foe is built from YOUR power level** — never a fixed stat block. Encounter strength: 🟢 **Casual ×${ratio('casual')}** · 🟡 **Challenging ×${ratio('hard')}** · 🟠 **Very Challenging ×${ratio('very hard')}** · 🌟 **saga-tier ×${ratio('saga')}** (canon/raid) · mentor ×${ratio('mentor')} · raid boss ×${ratio('boss')}. Story missions field Very-Challenging foes at full saga scaling. Stats are *rolled*: a floor at half the target, plus a spread.`,
+                `**Saga scaling:** story progress multiplies enemy stats by \`saga^${ENEMY_SAGA_SCALE_EXPONENT}\`, but that is **hard-capped at ×${ENEMY_SAGA_MULT_MAX}** and eased toward ×1 for players far below a difficulty's "established" power level, so newcomers aren't walled out. Scaling factors **add**: ×1.5 saga + ×2 party = ×2.5.`,
+                `**Party scaling:** the fight is generated from the **host's** PL; each companion counts for only **${Math.round(ENEMY_PARTY_COMPANION_WEIGHT * 100)}%** of theirs, and the factor caps at **×${ENEMY_PARTY_SCALING_MAX}**. \`/join-mission\` players don't inflate them.`,
+                `**A lone enemy is a boss:** one foe on Challenging/Very Challenging/Saga gets **×${SINGLE_ENEMY_STAT_MULT} stats**. Counts: **Casual 1** · **Challenging 1-3** · **Very Challenging/Saga 1-5** (each alignment rolls separately — you pick the side you fight).`,
+                `**They grow with their PL:** technique mastery (to ${ENEMY_MASTERY_MAX}), better weapons/armor and fighting styles, plus the ki disciplines (Ki Application, Ki Efficiency). Very Challenging/Saga foes have a **${ENEMY_MUTATION_CHANCE * 100}%** mutation chance, and each **reinforcement** wave adds **+11%** stat points.`,
+                `**Rewards scale off your own PL** (\`0.21 × PL^0.75\`) times the difficulty's value: **Casual ×${value('casual')} · Challenging ×${value('hard')} · Very Challenging ×${value('very hard')} · Saga ×${value('saga')}**, plus zeni, loot (**${MISSION_NORMAL_ITEM_CHANCE}%** item · **${MISSION_LEGENDARY_ITEM_CHANCE}%** legendary · **+${MISSION_DIFFICULTY_ITEM_CHANCE_BOOST}%**/step · **+${MISSION_NEGATIVE_ITEM_CHANCE_BONUS}%** and **×${MISSION_NEGATIVE_ZENI_MULT} zeni** on negative quests) and alignment **+${align('casual')}/${align('hard')}/${align('very hard')}/${align('saga')}**. Companions each take a **20%** cut of your stat points.`,
+                `**Hunts** use the same rules: the animal is sized off the hunter's PL, then the party fighting it.`
+            ].join('\n');
+        }
+    },
+    canon: {
+        title: '🌍 Canon Actions (/canon-action)',
+        aliases: ['canon', 'canon action', 'canon-action', 'frenzy', 'bounty', 'destroy'],
+        body: [
+            'Once-per-day world events (24h cooldown) that shake the whole server:',
+            '☠️ **Destroy planet** (evil) — pays `1.5×` a normal activity, kills everyone on the planet (escape pods / space-breathing races / Namekian eggs can survive) and earns a villain nickname.',
+            '🏚️ **Destroy major location** (evil) — pays `2.0×`, levels one area instead of a whole planet.',
+            '🛡️ **Intervene** — heroes get a **2-hour window** to fight the villain in a battle. Winning **saves the planet** and pays each intervening hero `2.0×` scaled by the villain\'s PL; losing lets the destruction happen.',
+            '🕊️ **Training frenzy** (good, 100+ alignment) — **50× training gains** for aligned players on that planet for **20 minutes**.',
+            '💰 **Bounty** — declare a 2-hour world bounty: beating an **opposite-alignment** player during the window pays you stat points scaled off their PL.',
+            'Canon actions are also how you earn the big **nickname** ladders (planet destroyer, planet saviour…).'
+        ].join('\n')
+    },
+    fatigue: {
+        title: '😓 Fatigue',
+        aliases: ['fatigue', 'tired', 'exhaustion'],
+        body: [
+            '**Total fatigue = stored training fatigue + missing-Ki fatigue** (every 20% of your max Ki you\'re missing adds 10%).',
+            '**Penalties (Trello tiers):** 10% → -1 STR/DEX · 20% → -2 · 30% → -3 · 40% → -4 · 50% → -5 (and disadvantage on attacks/defence) · 60% → -6 · 70% → -7 · 80% → -10 (CON saves) · 90% → -15 and you can\'t search or travel.',
+            '**Gains:** training/spar payouts are multiplied by ×1.0 (0-9%) → ×0.8 (10%) → ×0.6 (20%) → ×0.4 (30%) → ×0.2 (40%) → **nothing at 50%+**.',
+            'You can\'t train or start a spar past **90%**. Eating and resting are the way down.'
+        ].join('\n')
+    },
+    rest: {
+        title: '💤 Resting, food & healing',
+        aliases: ['rest', 'healing', 'healing pod', 'midnight', 'food', 'eat'],
+        body: [
+            '**Rest charges** refill over time: **1 per 30 minutes** (2 per 15 minutes inside a **Healing Pod**), stored up to 2 (3 with a Magic Carpet, more with a Med Bay).',
+            '**`/rest`** spends one charge: heals **d20% of max HP + 12**, restores **d20% of max Ki + 12**, and removes **d15+20% fatigue**. Your companions rest with you for the same amounts.',
+            '**Midnight** (server time) is a free full reset: full HP, full Ki, all fatigue gone, all charges back — unless you\'re in combat. **Burnout** (Hunter of Legend) only heals half of it.',
+            '**Food:** `/eat` one item, `/eat-all` eats only what you still need, and `/cook` turns raw meat/fish into edible food. Feeding a companion works the same way as `/eat-all`.',
+            'Fatigue from training/short rests can\'t go below **30% of your peak fatigue** until a real rest or midnight reset.'
+        ].join('\n')
+    },
+    custom: {
+        title: '🛠️ Creating techniques (/create)',
+        aliases: ['create', 'custom', 'technique', 'combo', 'charge', 'charged'],
+        body: [
+            'Design a signature move with a button wizard. Cost is in **stat points** (`pct of max Ki × 300`, minimum 5,000) and you can hold **5** custom techniques.',
+            '**Cost tier:** ⚡ Action · ✨ Bonus Action · ⚡✨ Action + Bonus (an **ultimate** — both actions, biggest dice).',
+            '**Effect:** damage, a no-damage **status strike** (WIL save), a **buff** to your next attack roll, or a **buff** to your next damage roll.',
+            '**Riders** (on-hit statuses like bleed/off-balance/stun) shrink the damage dice and raise the Ki cost. **Area** moves hit every enemy but deal far less to each (AOE dice are 35% of the single-target value).',
+            '**Delivery:** 🎯 **Single Strike**, 🌀 **Combo**, or 🔋 **Charged**.',
+            '🌀 **Combo:** 2-6 hits (2-3 when the move is **AOE**). The damage is **split across the hits**, and every extra hit makes the status rider **easier to resist** (-10% save DC per hit, -20% for AOE; auto-riders lose 15% chance per hit, floor 20%). An AOE combo also divides **more harshly** — each hit only gets `1/(hits+1)` of the damage. **Ultimates cannot be combos.**',
+            '🔋 **Charged:** works like the **Kamehameha** — using it starts a charge that **drains Ki every turn** while it grows (up to the configured max charge), and using it again **releases** the attack for **+2 damage per charge** on top of the normal hit. You can still use other moves, including bonus-action buffs, while charging. Charged moves can\'t be combos, and they cost extra to create.',
+            '`/forget` deletes a technique and refunds **50%** of the stat points it cost.'
+        ].join('\n')
+    }
+};
+
+// Build the /info type:Basics output (overview index, or one named topic).
+function buildBasicsInfo(name) {
+    const query = String(name || '').trim().toLowerCase();
+    if (!query) {
+        let text = '📖 **Basics — how the game works**\n\n';
+        text += 'This world runs on **stat points**, **fatigue** and **Power Level**. Here\'s what each activity actually pays out:\n\n';
+        Object.entries(BASICS_TOPICS).forEach(([key, t]) => {
+            text += `• **${t.title}** — \`/info type:Basics name:${key}\`\n`;
+        });
+        text += '\n**At a glance**\n';
+        text += '• 🏋️ **Training** — PL-based stat points, ×0.4-1.25 by gravity tier, +10% fatigue per session.\n';
+        text += '• ⚔️ **Sparring** — payout scaled by the opponent\'s PL (×1.7 stronger / ×1.4 even / ×0.4 stomp), winner full, loser half, **no HP/Ki loss** — only fatigue.\n';
+        text += '• 🎯 **Missions** — stat points + zeni + items, enemies scaled to your PL, but lethal.\n';
+        text += '• 📐 **Quest scaling** — foes are built from your PL (Casual ×0.35 → Saga ×1.3); full breakdown on the `scaling` page.\n';
+        text += '• 🌍 **Canon actions** — once-a-day world events: destroy a planet (1.5×) or location (2.0×), 20-min **50× training frenzy**, a 2-hour **bounty**, or **intervene** to save a planet (2.0×).\n';
+        text += '• 😓 **Fatigue** — stat penalty and gain multiplier; at 50%+ training pays **nothing**.\n';
+        text += '• 💤 **Rest** — 1 charge / 30 min (2 / 15 min in a Healing Pod); a rest heals d20% of max HP/Ki + 12 and removes d15+20% fatigue. **Midnight** is a free full reset.\n';
+        text += '• 🛠️ **`/create`** — craft your own technique in stat points: action/bonus/ultimate, damage/status/buff, riders, AOE, plus **combos** (2-6 hits) and **charged** moves.\n\n';
+        text += '*Jump to a topic:* `/info type:Basics name:<training|spar|missions|scaling|canon|fatigue|rest|custom>`';
+        return clampInfoText(text);
+    }
+    const found = Object.entries(BASICS_TOPICS).find(([key, t]) =>
+        key === query || t.title.toLowerCase().includes(query) || (t.aliases || []).some(a => a === query || a.includes(query)));
+    if (!found) {
+        const keys = Object.keys(BASICS_TOPICS).join(', ');
+        return `❌ Unknown topic: **"${name}"**.\nAvailable topics: ${keys}.\n\n*Omit the name for the overview.*`;
+    }
+    const [, topic] = found;
+    // A topic's `body` is either a fixed string or a function that builds it at call time (the
+    // scaling page reads the live config-driven values, which aren't initialised this early).
+    const body = typeof topic.body === 'function' ? topic.body() : topic.body;
+    return clampInfoText(`📖 **${topic.title}**\n\n${body}\n\n*All topics:* \`/info type:Basics\``);
+}
+
+// Apply a form's stat scaling + flat mod bonuses to a raw stats object. Shared by players
+// (applyFormToStats) and enemies/raid bosses, so a form grants the SAME bonuses to everyone.
+// Returns { stats, formMods } where formMods is the form's own modifier contributions.
+function applyFormStatsAndMods(stats, formName, mastery = 0) {
+    const form = FORMS[formName];
+    const out = { ...(stats || {}) };
+    const formMods = {};
+    if (!form) return { stats: out, formMods };
+    // Suppression forms (Frost Demon 1st-3rd): scale ALL stats down.
+    if (form.statScale) {
+        Object.keys(out).forEach(key => { out[key] = Math.round((out[key] || 0) * form.statScale); });
+    }
+    // Stat multipliers (most forms): multiply the combat stats (a number = all, or per-stat).
+    if (form.statMult != null) {
+        const mults = (typeof form.statMult === 'number')
+            ? { str: form.statMult, dex: form.statMult, con: form.statMult, wil: form.statMult, spi: form.statMult }
+            : form.statMult;
+        ['str', 'dex', 'con', 'wil', 'spi'].forEach(k => {
+            const m = Number(mults[k]);
+            if (m && m !== 1) out[k] = Math.round((out[k] || 0) * m);
+        });
+    }
+    // Flat mod bonuses: special forms, Super Saiyan-family mastery mods, and masteryMods.
+    const hasSsMastery = form.mastery && form.mastery.drainReduction;
+    const bonusMultiplier = hasSsMastery ? 1 : (1 + mastery * 0.1);
+    Object.entries(form.modBonus || {}).forEach(([stat, mod]) => {
+        formMods[stat] = (formMods[stat] || 0) + Math.round(mod * bonusMultiplier);
+    });
+    if (hasSsMastery) {
+        const strAtk = (form.mastery.strAtk || {})[mastery] || 0;
+        const dexAtkDef = (form.mastery.dexAtkDef || {})[mastery] || 0;
+        if (strAtk) formMods.str = (formMods.str || 0) + strAtk;
+        if (dexAtkDef) formMods.dex = (formMods.dex || 0) + dexAtkDef;
+    }
+    const mmods = (form.masteryMods || {})[mastery] || {};
+    Object.entries(mmods).forEach(([stat, mod]) => { formMods[stat] = (formMods[stat] || 0) + mod; });
+    return { stats: out, formMods };
 }
 
 function applyFormToStats(character) {
@@ -8714,38 +12795,27 @@ function applyFormToStats(character) {
     const modBonus = { str: 0, dex: 0, con: 0, wil: 0, spi: 0, int: 0 };
     let formMods = null;
     let formDrain = 0;
+    let bypassDR = 0;
+    let zenithMind = false;
     const form = character.activeForm ? FORMS[character.activeForm] : null;
     if (form) {
-        // Frost Demon suppression forms scale stats down
-        if (form.statScale) {
-            Object.keys(stats).forEach(key => {
-                stats[key] = Math.round(stats[key] * form.statScale);
-            });
-        }
         const mastery = (character.formMastery || {})[character.activeForm] || 0;
-        // Super Saiyan-family forms don't grow ALL MODS with mastery; instead mastery lowers
-        // the drain and (at 4/5) adds STR attack + DEX attack/defense mods.
-        const hasSsMastery = form.mastery && form.mastery.drainReduction;
-        const bonusMultiplier = hasSsMastery ? 1 : (1 + mastery * 0.1);
+        // Apply the form's stat scaling + flat mod bonuses (shared with enemies/raid bosses).
+        const fb = applyFormStatsAndMods(stats, character.activeForm, mastery);
+        Object.assign(stats, fb.stats);
         formMods = {};
-        Object.entries(form.modBonus || {}).forEach(([stat, mod]) => {
-            const m = Math.round(mod * bonusMultiplier);
-            modBonus[stat] = (modBonus[stat] || 0) + m;
-            formMods[stat] = m;
-        });
-        if (hasSsMastery) {
-            const strAtk = (form.mastery.strAtk || {})[mastery] || 0;
-            const dexAtkDef = (form.mastery.dexAtkDef || {})[mastery] || 0;
-            if (strAtk) { modBonus.str = (modBonus.str || 0) + strAtk; formMods.str = (formMods.str || 0) + strAtk; }
-            if (dexAtkDef) { modBonus.dex = (modBonus.dex || 0) + dexAtkDef; formMods.dex = (formMods.dex || 0) + dexAtkDef; }
-        }
-        // Ultimate Power mastery 2/4/5 grant extra STR/CON/DEX.
-        const mmods = (form.masteryMods || {})[mastery] || {};
-        Object.entries(mmods).forEach(([stat, mod]) => {
+        Object.entries(fb.formMods).forEach(([stat, mod]) => {
             modBonus[stat] = (modBonus[stat] || 0) + mod;
-            formMods[stat] = (formMods[stat] || 0) + mod;
+            formMods[stat] = mod;
         });
         formDrain = getFormDrain(character.activeForm, mastery);
+        // "Potential Unleashed"-style forms: attacks bypass damage reduction, and (at the
+        // "ultimate" mastery tier) the user becomes immune to mind effects (Zenith Mind).
+        if (form.bypassDR) {
+            bypassDR = (form.ultimateAt && mastery >= form.ultimateAt && form.ultimateBypassDR)
+                ? form.ultimateBypassDR : form.bypassDR;
+        }
+        if (form.zenithMindAt && mastery >= form.zenithMindAt) zenithMind = true;
     }
     // Third Eye mutation: +3 DEX on attack and defense rolls
     if (character.mutation === 'Third Eye') {
@@ -8760,7 +12830,7 @@ function applyFormToStats(character) {
     });
     // Shogun (Bushido Code): +20% CON mod.
     if (character.fightingStyle === 'Shogun') {
-        const baseConMod = calculateAllModifiers(character.stats).con || 0;
+        const baseConMod = calculateAllModifiers(character.stats, character.statMultipliers).con || 0;
         modBonus.con = (modBonus.con || 0) + Math.round(baseConMod * 0.2);
     }
     // Ki Efficiency is a passive ability — its SPI/WIL mods always apply if learned.
@@ -8769,6 +12839,16 @@ function applyFormToStats(character) {
         modBonus.spi = (modBonus.spi || 0) + kiEfficiency.spi;
         modBonus.wil = (modBonus.wil || 0) + kiEfficiency.wil;
     }
+    // Legendary weapons (e.g. Spear of Longinus): +CON/+WIL while wielded. Applied BEFORE the
+    // Ki Application passive below so its +1/4 WIL mod bonus tracks the wielded/worn gear.
+    const weaponConBonus = Number(character.weaponConBonus) || 0;
+    const weaponWilBonus = Number(character.weaponWilBonus) || 0;
+    const armorWilBonus = Number(character.armorWilBonus) || 0;
+    const armorSpiBonus = Number(character.armorSpiBonus) || 0;
+    if (weaponConBonus) stats.con = (stats.con || 0) + weaponConBonus;
+    if (weaponWilBonus) stats.wil = (stats.wil || 0) + weaponWilBonus;
+    if (armorWilBonus) stats.wil = (stats.wil || 0) + armorWilBonus;
+    if (armorSpiBonus) stats.spi = (stats.spi || 0) + armorSpiBonus;
     // Ki Application: active toggle until mastery 3 (then passive, free). Only apply its
     // DEX/damage at build time when it's passive; otherwise the fight toggles it on as a bonus action.
     const kiApplication = getKiApplicationEffects(character);
@@ -8792,21 +12872,25 @@ function applyFormToStats(character) {
     Object.entries(fatigueMods).forEach(([stat, mod]) => {
         if (mod !== 0) modBonus[stat] = (modBonus[stat] || 0) + mod;
     });
-    // Legendary weapons (e.g. Spear of Longinus): +CON/+WIL while wielded.
-    const weaponConBonus = Number(character.weaponConBonus) || 0;
-    const weaponWilBonus = Number(character.weaponWilBonus) || 0;
-    const armorWilBonus = Number(character.armorWilBonus) || 0;
-    const armorSpiBonus = Number(character.armorSpiBonus) || 0;
-    if (weaponConBonus) stats.con = (stats.con || 0) + weaponConBonus;
-    if (weaponWilBonus) stats.wil = (stats.wil || 0) + weaponWilBonus;
-    if (armorWilBonus) stats.wil = (stats.wil || 0) + armorWilBonus;
-    if (armorSpiBonus) stats.spi = (stats.spi || 0) + armorSpiBonus;
     // Pregnant mothers suffer -5 to every stat mod.
     applyPregnancyModPenalty(modBonus, character);
+
+    // Mastery 3 Ki Application is passive & free: +1/4 of the EFFECTIVE WIL mod — the same mod
+    // every combat roll uses (raw stat curve + stat multipliers + form scaling + wielded/worn
+    // gear + modBonus) — not the raw character WIL stat. Computed after all stat/mod tweaks.
+    let kiAppPassiveDamage = 0;
+    if (kiApplication.passive) {
+        const wilMulti = (character.statMultipliers || {}).wil;
+        const baseWilMod = wilMulti
+            ? statModifier.calculateModifiedModifier(stats.wil, wilMulti)
+            : calculateModifier(stats.wil);
+        kiAppPassiveDamage = Math.max(0, Math.floor((baseWilMod + (modBonus.wil || 0)) / 4));
+    }
     return {
         stats,
         modBonus,
-        kiAppDamage: kiApplication.passive ? kiApplication.damage : 0,
+        statMultipliers: character.statMultipliers || {},
+        kiAppDamage: kiAppPassiveDamage,
         kiApplicationLearned: hasKiApplication(character),
         kiApplicationActive: kiApplication.passive,
         kiApplicationCost: kiApplication.cost,
@@ -8817,10 +12901,16 @@ function applyFormToStats(character) {
             weapon: character.weapon || null,
             weaponType: character.weaponType || parseWeaponType(character.weapon || ''),
             weaponAttackMod: Number(character.weaponAttackMod) || 0,
+            weaponAtkPct: Number(character.weaponAtkPct) || 0,
+            weaponDexPct: Number(character.weaponDexPct) || 0,
             weaponDamageMode: character.weaponDamageMode || null,
             weaponBypass: !!character.weaponBypass,
             weaponSpiDmgPct: Number(character.weaponSpiDmgPct) || 0,
             weaponWilDmgPct: Number(character.weaponWilDmgPct) || 0,
+            weaponUnarmed: !!character.weaponUnarmed,
+            weaponPunchStrBonus: character.weaponPunchStrBonus || 0,
+            weaponBleedOnHit: character.weaponBleedOnHit || 0,
+            weaponCritRangeBonus: character.weaponCritRangeBonus || 0,
             armorReduction: Number(character.armorReduction) || 0,
             armorDexReduction: Number(character.armorDexReduction) || 0,
             armor: character.armor || null,
@@ -8832,7 +12922,9 @@ function applyFormToStats(character) {
             // Active Hera form (for per-turn Ki drain + dropping the form at 0 Ki).
             formName: character.activeForm || null,
             formDrain,
-            formMods
+            formMods,
+            bypassDR,
+            zenithMind
         }
     };
 }
@@ -8854,17 +12946,102 @@ function getFormKiRegen(character) {
     return form && form.kiRegen ? form.kiRegen : null;
 }
 
-// Ki regeneration from forms OR racial passives (Earthling Masters of Ki, Half-Saiyan Adept in Ki)
-function getBattleKiRegen(character) {
-    const formRegen = getFormKiRegen(character);
-    if (formRegen) return formRegen;
-    if (character.race === 'Earthling') {
-        const wilMod = calculateModifier(character.stats.wil);
-        return { type: 'flatValue', value: 4 + wilMod };
+// Ki regeneration from forms OR racial passives (Earthling Masters of Ki, Half-Saiyan Adept in Ki).
+// The passive % of max Ki per turn is tunable per race via config.json `racialKiRegenPct`.
+// It may be a single number (applied to every race that has a racial regen) or a map of
+// { race: pct, default: pct }. The % also scales with the WIL modifier, just like the flat base.
+const DEFAULT_RACIAL_KI_REGEN_PCT = { Earthling: 5, 'Half-Saiyan': 4, 'Frost Demon': 3 };
+const RACIAL_KI_REGEN_PCT = (() => {
+    try {
+        const cfg = require('./config/config.json');
+        if (cfg.racialKiRegenPct && typeof cfg.racialKiRegenPct === 'object') return cfg.racialKiRegenPct;
+        if (typeof cfg.racialKiRegenPct === 'number') return cfg.racialKiRegenPct;
+    } catch (e) { /* config optional */ }
+    return DEFAULT_RACIAL_KI_REGEN_PCT;
+})();
+function getRacialKiRegenPct(race) {
+    if (RACIAL_KI_REGEN_PCT && typeof RACIAL_KI_REGEN_PCT === 'object') {
+        if (typeof RACIAL_KI_REGEN_PCT[race] === 'number') return RACIAL_KI_REGEN_PCT[race];
+        if (typeof RACIAL_KI_REGEN_PCT.default === 'number') return RACIAL_KI_REGEN_PCT.default;
+        return DEFAULT_RACIAL_KI_REGEN_PCT[race] != null ? DEFAULT_RACIAL_KI_REGEN_PCT[race] : 5;
     }
-    if (character.race === 'Half-Saiyan') {
-        const wilMod = calculateModifier(character.stats.wil);
-        return { type: 'flatValue', value: 2 + Math.floor(wilMod / 2) };
+    if (typeof RACIAL_KI_REGEN_PCT === 'number') return RACIAL_KI_REGEN_PCT;
+    return DEFAULT_RACIAL_KI_REGEN_PCT[race] != null ? DEFAULT_RACIAL_KI_REGEN_PCT[race] : 5;
+}
+
+// How much of the WIL modifier is added to a racial Ki-regen PERCENTAGE, as a percentage of the
+// modifier. This used to be a flat "half the WIL mod" (50%), which at high WIL mods reached 100%+
+// of max Ki regenerated per turn — Earthlings/Half-Saiyans effectively never ran out of Ki.
+// Tunable per race via config.json `kiRegenWilPct` ({ race: n, default: n }); 50 preserves the
+// old behaviour for races that aren't listed.
+const DEFAULT_KI_REGEN_WIL_PCT = { Earthling: 4, 'Half-Saiyan': 2, default: 50 };
+const KI_REGEN_WIL_PCT = (() => {
+    try {
+        const cfg = require('./config/config.json');
+        if (cfg.kiRegenWilPct && typeof cfg.kiRegenWilPct === 'object') return cfg.kiRegenWilPct;
+        if (typeof cfg.kiRegenWilPct === 'number') return cfg.kiRegenWilPct;
+    } catch (e) { /* config optional */ }
+    return DEFAULT_KI_REGEN_WIL_PCT;
+})();
+function getKiRegenWilPct(race) {
+    if (KI_REGEN_WIL_PCT && typeof KI_REGEN_WIL_PCT === 'object') {
+        if (typeof KI_REGEN_WIL_PCT[race] === 'number') return KI_REGEN_WIL_PCT[race];
+        if (typeof KI_REGEN_WIL_PCT.default === 'number') return KI_REGEN_WIL_PCT.default;
+        return DEFAULT_KI_REGEN_WIL_PCT.default;
+    }
+    if (typeof KI_REGEN_WIL_PCT === 'number') return KI_REGEN_WIL_PCT;
+    return DEFAULT_KI_REGEN_WIL_PCT.default;
+}
+// The WIL-mod contribution to a regen percentage (rounded down, never negative).
+function wilRegenPctBonus(race, wilMod) {
+    return Math.max(0, Math.floor(Math.max(0, wilMod) * (getKiRegenWilPct(race) / 100)));
+}
+// Scale a form's regen by the WIL mod, proportional to that form's regen strength. A stronger
+// form (e.g. Frost Demon 1st Form) gets a larger WIL bonus than a weaker form (3rd Form), so the
+// effective % increases/decreases per form.
+function wilScaledFormRegen(formRegen, wilMod) {
+    if (!formRegen) return formRegen;
+    if (formRegen.type === 'flatValue') {
+        return { ...formRegen, value: (formRegen.value || 0) + wilMod };
+    }
+    if (formRegen.type === 'flat') {
+        return { ...formRegen, base: (formRegen.base || 0) + wilMod };
+    }
+    if (formRegen.type === 'pct') {
+        const base = formRegen.base || 0;
+        const dice = formRegen.dice || 0;
+        const mag = base + dice * 2; // rough regen-strength proxy
+        return { ...formRegen, base: base + Math.floor(wilMod * (mag / 50)) };
+    }
+    return formRegen;
+}
+function getBattleKiRegen(character) {
+    const wilMod = calculateModifier((character.stats || {}).wil);
+    const formRegen = getFormKiRegen(character);
+    // Form regen (Acrosian suppression forms etc.) benefits from WIL control too — the bonus is
+    // proportional to the form's regen strength, so stronger forms scale more.
+    if (formRegen) {
+        return wilScaledFormRegen(formRegen, wilMod);
+    }
+    const race = character.race;
+    const pct = getRacialKiRegenPct(race);
+    // Master of Ki (Earthling) / Adept in Ki (Half-Saiyan): a flat base + a % of max Ki, so the
+    // passive still matters as max Ki grows. The flat base keeps the passives' documented values
+    // (4 + WIL mod / d2 + WIL mod/2); the % only takes a SMALL slice of the WIL mod (config
+    // `kiRegenWilPct`), so it can no longer reach 100%+ of max Ki per turn.
+    if (race === 'Earthling') {
+        return { type: 'flatValue', value: 4 + wilMod, pct: pct + wilRegenPctBonus('Earthling', wilMod) };
+    }
+    if (race === 'Half-Saiyan') {
+        return { type: 'flatValue', value: 2 + Math.floor(wilMod / 2), pct: pct + wilRegenPctBonus('Half-Saiyan', wilMod) };
+    }
+    // Acrosians (Frost Demon) regain a % of max Ki in base form, tunable per race/form.
+    if (race === 'Frost Demon') {
+        return { type: 'flatValue', value: Math.max(0, Math.floor(wilMod / 2)), pct: pct + Math.floor(wilMod / 2) };
+    }
+    // Any other race given an explicit entry in the config map gets a racial regen too.
+    if (RACIAL_KI_REGEN_PCT && typeof RACIAL_KI_REGEN_PCT === 'object' && typeof RACIAL_KI_REGEN_PCT[race] === 'number') {
+        return { type: 'flatValue', value: Math.max(0, Math.floor(wilMod / 2)), pct: pct + Math.floor(wilMod / 2) };
     }
     return null;
 }
@@ -8873,6 +13050,62 @@ function formAllowedForRace(form, race) {
     if (!form.race) return true;
     if (Array.isArray(form.race)) return form.race.includes(race);
     return form.race === race;
+}
+
+// ---------- Potential Unlock (Trello "Potential Unlock" card #119) ----------
+// Certain people (Grand Elder Guru, Babidi) — or Ultra Divine Water — can unlock your potential.
+// Once every 3 sagas AFTER the Saiyan saga.
+function getPotentialUnlockBlock(character) {
+    if (globalSaga <= 1) {
+        return `⏳ Potential unlock is only available **after the Saiyan saga**! (You're in saga **${globalSaga}**.)`;
+    }
+    const lastUse = character.potentialUnlockSaga || character.ultraDivineWaterSaga || 0;
+    if (globalSaga < lastUse + 3) {
+        const wait = (lastUse + 3) - globalSaga;
+        return `⏳ You can only potential unlock every **3 sagas**! Wait **${wait} more saga${wait === 1 ? '' : 's'}**. (Last unlocked in saga ${lastUse}.)`;
+    }
+    return null;
+}
+
+// Roll the potential unlock: d100 = % of your stats added onto themselves. If you roll over 50
+// ("higher than d50"), you also learn the "Potential Unleashed" technique.
+function performPotentialUnlock(interaction, character, source, targetUserId) {
+    const ownerId = targetUserId || interaction.user.id;
+    const oldStats = { ...(character.stats || {}) };
+    // Racial passives modify the potential-unlock roll (Trello "Adept Potential"/"Insatiable
+    // Potential"): Earthlings roll 2d60+50; Sphinxians roll 2d80+40 (vs the standard d100).
+    let roll;
+    if (character.race === 'Sphinxian') roll = rollXdY(2, 80) + 40;
+    else if (character.race === 'Earthling') roll = rollXdY(2, 60) + 50;
+    else roll = getRandomInt(100);
+    const newStats = {};
+    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => {
+        newStats[s] = Math.max(1, Math.round((oldStats[s] || 0) * (1 + roll / 100)));
+    });
+    // INT is unaffected by potential unlock — keep the character's existing value.
+    newStats.int = oldStats.int || 1;
+    const hasUltimate = Array.isArray(character.forms) && character.forms.includes('Potential Unleashed');
+    const learnedUltimate = roll > 75 && !hasUltimate;
+    const forms = Array.isArray(character.forms) ? [...character.forms] : [];
+    if (learnedUltimate) forms.push('Potential Unleashed');
+    const modifiers = calculateAllModifiers(newStats, character.statMultipliers);
+    const vitals = recalcVitals(character, newStats);
+    characterManager.updateCharacter(ownerId, character.id, {
+        stats: newStats,
+        modifiers,
+        ...vitals,
+        currentHP: vitals.maxHP,
+        currentKi: vitals.maxKi,
+        powerLevel: characterManager.calculatePowerLevel({ ...newStats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }),
+        potentialUnlockSaga: globalSaga,
+        forms,
+        inventory: character.inventory
+    });
+    const gain = ['str', 'dex', 'con', 'wil', 'spi'].map(s =>
+        `${s.toUpperCase()} ${(oldStats[s] || 0)} → **${newStats[s]}**`).join(' | ');
+    let text = `${source} unlocks **${character.name}**'s potential!\n\n🎲 d100 = **${roll}** → all combat stats increased by **${roll}%** (INT unaffected)!\n📊 ${gain}\n⏳ Can't unlock potential again until saga **${globalSaga + 3}**.`;
+    if (learnedUltimate) text += `\n🌟 Unlocked the **Potential Unleashed** technique! Use \`/transform\` to activate it.`;
+    return text;
 }
 
 // Apply a mutation's automatable effects when it is granted
@@ -8886,13 +13119,27 @@ function applyMutationEffects(userId, character, mutationName) {
     };
 
     switch (mutationName) {
-        case 'Legendary Super Saiyan': grantForm('Legendary Super Saiyan'); break;
+        // Legendary Super Saiyan REPLACES the Super Saiyan unlock — no separate form is granted
+        // here. It is unlocked in place of Super Saiyan via the 3M-PL auto-unlock, the /mastery
+        // "Super Saiyan" roll, or an Intense Anger critical (see checkSaiyanSuperSaiyanUnlock and
+        // the MASTERY_AWAKEN / tryIntenseAnger handling).
+        case 'Legendary Super Saiyan': break;
         case '5th Transformation': grantForm('5th Form'); break;
         case 'Slug': grantForm('Slug'); break;
         case 'Dread-forged Ashen Soul': grantForm('Dark Devil'); break;
+        // Half-Saiyan "Extreme Potential" grants the "Ultimate" (Potential Unleashed) technique.
+        case 'Extreme Potential': grantForm('Potential Unleashed'); break;
         case 'Wise Old One':
             character.kiEfficiency = true;
             character.abilityMastery = { ...(character.abilityMastery || {}), 'Ki Efficiency': 3 };
+            // Ki Mastery: fully mastered Ki Sense too — grant the toggle and mark it fully mastered.
+            character.kiSense = true;
+            character.techniqueMastery = { ...(character.techniqueMastery || {}), 'Ki Sense': 5 };
+            {
+                const techs = Array.isArray(character.techniques) ? [...character.techniques] : [];
+                if (!techs.includes('Ki Sense')) techs.push('Ki Sense');
+                character.techniques = techs;
+            }
             break;
         case 'Hunter of Legend':
             // Raphael: STR, CON, and SPI gain d30+10; DEX and WIL gain d40+5 (ADDED, not replaced).
@@ -8904,7 +13151,7 @@ function applyMutationEffects(userId, character, mutationName) {
                 rStats.dex = (rStats.dex || 0) + rollXdY(1, 40) + 5;
                 rStats.wil = (rStats.wil || 0) + rollXdY(1, 40) + 5;
                 character.stats = rStats;
-                character.modifiers = calculateAllModifiers(rStats);
+                character.modifiers = calculateAllModifiers(rStats, character.statMultipliers);
                 const rVitals = recalcVitals(character, rStats);
                 character.maxHP = rVitals.maxHP;
                 character.maxKi = rVitals.maxKi;
@@ -8932,7 +13179,7 @@ function applyMutationEffects(userId, character, mutationName) {
             stats[stat] = (stats[stat] || 0) + bonus * 2;
         });
         character.stats = stats;
-        character.modifiers = calculateAllModifiers(stats);
+        character.modifiers = calculateAllModifiers(stats, character.statMultipliers);
         const vitals = recalcVitals(character, stats);
         character.maxHP = vitals.maxHP;
         character.maxKi = vitals.maxKi;
@@ -8960,7 +13207,7 @@ function migrateRaphaelStats() {
                 rStats.dex = (rStats.dex || 0) + rollXdY(1, 40) + 5;
                 rStats.wil = (rStats.wil || 0) + rollXdY(1, 40) + 5;
                 c.stats = rStats;
-                c.modifiers = calculateAllModifiers(rStats);
+                c.modifiers = calculateAllModifiers(rStats, c.statMultipliers);
                 const vitals = recalcVitals(c, rStats);
                 c.maxHP = vitals.maxHP;
                 c.maxKi = vitals.maxKi;
@@ -8970,7 +13217,33 @@ function migrateRaphaelStats() {
             }
         }
     }
-    if (changed) characterManager.saveCharacters();
+    // Startup migration — persist immediately so a crash right after boot can't lose it.
+    if (changed) characterManager.saveCharactersNow();
+    return changed;
+}
+
+// One-time migration: apply the Wise Old One "Ki Mastery" (fully mastered Ki Efficiency + Ki
+// Sense) to existing holders that predate the ability's grant logic.
+function migrateWiseOldOneKiMastery() {
+    const allChars = characterManager.characters || {};
+    let changed = false;
+    for (const userId of Object.keys(allChars)) {
+        for (const c of allChars[userId]) {
+            if (c.mutation === 'Wise Old One' && !c.wiseOldOneKiMasteryApplied) {
+                c.kiEfficiency = true;
+                c.kiSense = true;
+                c.abilityMastery = { ...(c.abilityMastery || {}), 'Ki Efficiency': 3 };
+                c.techniqueMastery = { ...(c.techniqueMastery || {}), 'Ki Sense': 5 };
+                const techs = Array.isArray(c.techniques) ? [...c.techniques] : [];
+                if (!techs.includes('Ki Sense')) techs.push('Ki Sense');
+                c.techniques = techs;
+                c.wiseOldOneKiMasteryApplied = true;
+                changed = true;
+            }
+        }
+    }
+    // Startup migration — persist immediately so a crash right after boot can't lose it.
+    if (changed) characterManager.saveCharactersNow();
     return changed;
 }
 
@@ -8980,6 +13253,24 @@ const HOME_TYPES = {
     'Large Home': { storage: 1000, restBonus: 30 }
 };
 
+// One-time migration: start the base income clock for existing homeowners so their facilities
+// begin accruing at boot instead of at their next `/base` visit.
+function migrateBaseAccrualClocks() {
+    const allChars = characterManager.characters || {};
+    let changed = false;
+    const now = Date.now();
+    for (const userId of Object.keys(allChars)) {
+        for (const c of allChars[userId]) {
+            if (c.homeLocation && !(Number(c.baseAccrualSince) > 0)) {
+                c.baseAccrualSince = now;
+                changed = true;
+            }
+        }
+    }
+    if (changed) characterManager.saveCharactersNow();
+    return changed;
+}
+
 function getHomeType(character) {
     if (!character || !character.homeLocation) return null;
     return character.homeType && HOME_TYPES[character.homeType] ? character.homeType : 'Small Home';
@@ -8987,7 +13278,469 @@ function getHomeType(character) {
 
 function getHomeStorage(character) {
     const t = getHomeType(character);
-    return t ? HOME_TYPES[t].storage : 0;
+    // A Warehouse facility adds storage slots on top of the home's base capacity.
+    return (t ? HOME_TYPES[t].storage : 0) + (character ? getBaseBonuses(character).storageBonus : 0);
+}
+
+// ---------- Base (home) facilities ----------
+// Thin wrappers over baseSystem.js so the gameplay hooks below read cleanly. `character` is the
+// raw saved character (may be null); bonuses are always zero without a home.
+function getBaseBonuses(character) {
+    if (!character || !character.homeLocation) {
+        return {
+            gravity: 0, trainingBonusPct: 0, resourcesPerHour: 0, harvestDice: 0, zeniPerHour: 0,
+            craftDiscountPct: 0, cookDiscountPct: 0, extraRestCharges: 0, regenSpeedPct: 0,
+            storageBonus: 0, foodPerDay: 0, smeltBonusPct: 0
+        };
+    }
+    return baseSystem.getBaseBonuses(BASE, character);
+}
+
+// Apply a facility's resource discount (crafting / cooking). Returns the discounted cost.
+function applyBaseDiscount(cost, discountPct) {
+    const c = Math.max(0, Number(cost) || 0);
+    const pct = Math.max(0, Math.min(90, Number(discountPct) || 0));
+    return Math.max(0, Math.round(c * (1 - pct / 100)));
+}
+
+// Apply the Workshop's smelting yield bonus: extra ingots, plus a roll for the remainder.
+function applySmeltBonus(take, bonusPct) {
+    const pct = Math.max(0, Number(bonusPct) || 0);
+    if (pct <= 0 || take <= 0) return 0;
+    const exact = take * pct / 100;
+    let bonus = Math.floor(exact);
+    if (Math.random() < (exact - bonus)) bonus += 1;
+    return bonus;
+}
+
+// ---------- Base (home) facility menu (/base) ----------
+// Same button-submenu flow as battles: a hub plus drill-down views, all keyed off the `base_`
+// customId prefix (routed at the very top of the button handler).
+
+// Count a named item across a character's backpack AND home storage.
+function countBaseItem(character, name) {
+    return countInventoryItem(character.inventory || [], name)
+        + countInventoryItem(character.homeStorage || [], name);
+}
+
+// Consume a named item, taking from the backpack first and home storage after.
+function consumeBaseItem(character, name, amount) {
+    let remaining = Math.max(0, Number(amount) || 0);
+    const inv = character.inventory || [];
+    const fromInv = Math.min(remaining, countInventoryItem(inv, name));
+    if (fromInv > 0) { removeInventoryItems(inv, name, fromInv); remaining -= fromInv; }
+    if (remaining > 0) removeInventoryItems(character.homeStorage || [], name, remaining);
+}
+
+// `✅ Name 2/3` requirement lines for an upgrade cost.
+function baseRequirementLines(character, items) {
+    return Object.entries(items || {}).map(([name, need]) => {
+        const have = countBaseItem(character, name);
+        return `${have >= need ? '✅' : '❌'} ${name} **${have}/${need}**`;
+    });
+}
+
+// "{n resource(s)} + {items}" one-liner for a cost.
+function baseCostText(cost) {
+    if (!cost) return '—';
+    const itemPart = Object.entries(cost.items || {}).map(([n, a]) => `${n} ×${a}`).join(', ');
+    return `**${baseSystem.formatNumber(cost.resources)} resources**${itemPart ? ` + ${itemPart}` : ''}`;
+}
+
+// Initialize the income clock the first time a player opens their base, so passive income starts
+// accruing from their first visit rather than from an arbitrary epoch.
+function ensureBaseClock(character, userId) {
+    if (Number(character.baseAccrualSince) > 0) return;
+    character.baseAccrualSince = Date.now();
+    character.baseFacilities = character.baseFacilities || {};
+    characterManager.updateCharacter(userId, character.id, {
+        baseAccrualSince: character.baseAccrualSince,
+        baseFacilities: character.baseFacilities
+    });
+}
+
+function buildBaseHubView(character) {
+    const bonuses = getBaseBonuses(character);
+    const saga = getEffectiveSaga();
+    const accrual = character.homeLocation
+        ? baseSystem.computeAccrual(BASE, character, Date.now(), saga)
+        : { resources: 0, zeni: 0, foodCount: 0, hours: 0, capped: false };
+    const levels = baseSystem.getFacilityLevels(character);
+    const built = Object.values(levels).filter(l => l > 0).length;
+    const totalLevels = Object.values(levels).reduce((a, b) => a + b, 0);
+
+    let content = `## 🏠 ${character.name}'s Base\n`;
+    if (!character.homeLocation) {
+        content += `You haven't built a home yet! Craft a **Small Home** (2,500 resources) or **Large Home** (7,500 resources) with \`/craft\`, then upgrade it here.\n`;
+    } else {
+        const homeType = getHomeType(character) || 'Home';
+        const storageUsed = (Array.isArray(character.homeStorage) ? character.homeStorage : []).length;
+        content += `📍 **${character.homeLocation}** · Space **${character.homeSpace || 1}** · **${homeType}**${isAtHome(character) ? ' 📍 *(you are here)*' : ''}\n`;
+        content += `📦 Storage: **${storageUsed}/${baseSystem.formatNumber(getHomeStorage(character))}**\n`;
+        content += `⏳ Banked (last ${accrual.hours.toFixed(1)}h${accrual.capped ? ', capped' : ''}): `;
+        const banked = [];
+        if (accrual.resources > 0) banked.push(`**${baseSystem.formatNumber(accrual.resources)}** resources`);
+        if (accrual.zeni > 0) banked.push(`**${baseSystem.formatNumber(accrual.zeni)}** zeni`);
+        if (accrual.foodCount > 0) banked.push(`**${accrual.foodCount}** food`);
+        content += banked.length ? banked.join(' · ') : '*nothing yet*';
+        content += `\n`;
+        if (bonuses.trainingBonusPct > 0 || bonuses.gravity > 0) content += `🏋️ Training: **+${bonuses.trainingBonusPct}%** gains${bonuses.gravity > 0 ? ` · x${bonuses.gravity} gravity` : ''}\n`;
+        if (bonuses.craftDiscountPct > 0) content += `🔧 Crafting: **-${bonuses.craftDiscountPct}%** resources\n`;
+        if (bonuses.extraRestCharges > 0 || bonuses.regenSpeedPct > 0) content += `🛏️ Rest: **+${bonuses.extraRestCharges}** charges · **+${bonuses.regenSpeedPct}%** regen\n`;
+        content += `\n🏗️ Facilities built: **${built}/${baseSystem.getFacilityList(BASE).length}** (total levels **${totalLevels}**)\n`;
+    }
+
+    const rows = [];
+    if (character.homeLocation) {
+        const hasFarm = baseSystem.getFacilityLevel(character, 'resourceFarm') > 0;
+        rows.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('base_facilities').setLabel('🏠 Facilities').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('base_claim').setLabel('💰 Collect Income').setStyle(ButtonStyle.Success)
+                .setDisabled(accrual.resources <= 0 && accrual.zeni <= 0 && accrual.foodCount <= 0),
+            new ButtonBuilder().setCustomId('base_harvest').setLabel('🌱 Harvest').setStyle(ButtonStyle.Success)
+                .setDisabled(!hasFarm)
+        ));
+    }
+    if (hasSpaceship(character)) {
+        rows.push(new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('base_ship').setLabel('🚀 Spaceship').setStyle(ButtonStyle.Primary)
+        ));
+    }
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('base_refresh').setLabel('🔄 Refresh').setStyle(ButtonStyle.Secondary)
+    ));
+    return { content: clampMessage(content), components: rows };
+}
+
+function buildBaseFacilitiesView(character) {
+    const list = baseSystem.getFacilityList(BASE);
+    let content = `## 🏠 ${character.name}'s Facilities\n`;
+    content += character.homeLocation
+        ? `Upgrade your home with resources and materials. All yields scale with your level and the saga (currently **${getEffectiveSaga()}**).\n\n`
+        : `⚠️ You have **no home** — your facilities are inactive until you craft one (\`/craft\`).\n\n`;
+    list.forEach(def => {
+        const level = baseSystem.getFacilityLevel(character, def.id);
+        const max = def.maxLevel || 0;
+        const effects = baseSystem.describeEffects(def, level);
+        content += `${def.emoji} **${def.name}** — Lv **${level}/${max}**${level === 0 ? ' *(not built)*' : ''}\n`;
+        if (effects) content += `　└ ${effects}\n`;
+    });
+
+    const components = [];
+    let row = new ActionRowBuilder();
+    list.forEach(def => {
+        if (row.components.length >= 5) { components.push(row); row = new ActionRowBuilder(); }
+        const level = baseSystem.getFacilityLevel(character, def.id);
+        row.addComponents(new ButtonBuilder()
+            .setCustomId(`base_fac_${def.id}`)
+            .setLabel(`${def.emoji} ${def.name} ${level}/${def.maxLevel || 0}`.slice(0, 80))
+            .setStyle(level === 0 ? ButtonStyle.Secondary : ButtonStyle.Primary));
+    });
+    if (row.components.length > 0) components.push(row);
+    components.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('base_home').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    ));
+    return { content: clampMessage(content), components };
+}
+
+function buildBaseFacilityView(character, id) {
+    const def = baseSystem.getFacilityDef(BASE, id);
+    if (!def) return buildBaseFacilitiesView(character);
+    const level = baseSystem.getFacilityLevel(character, id);
+    const cost = baseSystem.getUpgradeCost(BASE, character, id, getEffectiveSaga());
+    let content = `## ${def.emoji} ${def.name}\n${def.desc}\n\n`;
+    content += `**Level:** ${level}/${def.maxLevel || 0}\n`;
+    const nowEffects = baseSystem.describeEffects(def, level);
+    if (nowEffects) content += `**Current:** ${nowEffects}\n`;
+    if (cost) {
+        const nextEffects = baseSystem.describeEffects(def, cost.toLevel);
+        if (nextEffects) content += `**At Lv${cost.toLevel}:** ${nextEffects}\n`;
+        content += `\n**Upgrade to Lv${cost.toLevel}** — ${baseCostText(cost)}\n`;
+        const missing = baseRequirementLines(character, cost.items);
+        if (missing.length) content += `${missing.join('\n')}\n`;
+        const haveRes = character.resources || 0;
+        content += `📦 Resources: **${baseSystem.formatNumber(haveRes)}/${baseSystem.formatNumber(cost.resources)}**${haveRes >= cost.resources ? ' ✅' : ' ❌'}\n`;
+        if (!character.homeLocation) content += `\n⚠️ You need a **home** before you can build facilities.\n`;
+    } else {
+        content += `\n⭐ **Fully upgraded!**\n`;
+    }
+
+    const components = [];
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`base_facup_${id}`).setLabel(cost ? `⬆️ Upgrade to Lv${cost.toLevel}` : '⭐ Maxed').setStyle(ButtonStyle.Success).setDisabled(!cost),
+        new ButtonBuilder().setCustomId('base_facilities').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    );
+    components.push(row);
+    return { content: clampMessage(content), components };
+}
+
+function buildBaseShipView(character) {
+    const level = Math.max(1, Math.min(MAX_SHIP_LEVEL, character.spaceshipLevel || 1));
+    const fuel = character.fuel || 0;
+    let content = `## 🚀 ${character.name}'s Spaceship\n`;
+    content += `**Level:** ${level}/${MAX_SHIP_LEVEL}\n⚡ **Speed:** ${SHIP_LEVEL_SPEEDS[level] || 100} slots/min\n⛽ **Fuel cost:** ${SHIP_FUEL_PER_1000[level] || 10} per 1,000 slots\n🔋 **Fuel:** **${baseSystem.formatNumber(fuel)}**\n`;
+
+    const requirements = SHIP_UPGRADES[level];
+    if (level >= MAX_SHIP_LEVEL) {
+        content += `\n⭐ **Fully upgraded!**\n`;
+    } else if (requirements) {
+        content += `\n**Upgrade to Lv${level + 1}** — next: **${SHIP_LEVEL_SPEEDS[level + 1]}** slots/min, **${SHIP_FUEL_PER_1000[level + 1]}** fuel per 1,000 slots\n`;
+        content += requirements.map(req => {
+            const have = countBaseItem(character, req.name);
+            return `${have >= req.amount ? '✅' : '❌'} ${req.name} **${have}/${req.amount}**`;
+        }).join('\n') + `\n`;
+    }
+
+    // Refuel options (crafted dispensers are consumed for fuel) + a resource purchase fallback.
+    const fuelMachines = Object.entries(BASE.ship.refuel || {}).filter(([name]) => countBaseItem(character, name) > 0);
+    const buyResourceCost = Math.round((BASE.ship.buyFuelResourceCost || 0) * (1 + Math.max(0, getEffectiveSaga() - 1) * (BASE.costSagaFactor || 0)));
+    content += `\n**⛽ Refuel options:**\n`;
+    content += fuelMachines.length
+        ? fuelMachines.map(([name, amount]) => `• ${name} → **+${amount} fuel** (have **${countBaseItem(character, name)}**)`).join('\n')
+        : `• *No fuel machines in your inventory or home storage.* Craft one with \`/craft\`.`;
+    content += `\n• Buy **${BASE.ship.buyFuelAmount} fuel** for **${baseSystem.formatNumber(buyResourceCost)} resources** (you have ${baseSystem.formatNumber(character.resources || 0)})\n`;
+
+    const components = [];
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('base_shipup').setLabel(level >= MAX_SHIP_LEVEL ? '⭐ Ship Maxed' : `⬆️ Upgrade to Lv${level + 1}`).setStyle(ButtonStyle.Success).setDisabled(level >= MAX_SHIP_LEVEL),
+        new ButtonBuilder().setCustomId('base_refuel').setLabel('⛽ Refuel').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('base_home').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    );
+    components.push(row);
+    return { content: clampMessage(content), components };
+}
+
+function buildBaseRefuelView(character) {
+    const fuelMachines = Object.entries(BASE.ship.refuel || {}).filter(([name]) => countBaseItem(character, name) > 0);
+    let content = `## ⛽ Refuel — ${character.name}\n**Fuel:** **${baseSystem.formatNumber(character.fuel || 0)}**\n\n`;
+    if (fuelMachines.length) {
+        content += `Consume a fuel machine from your inventory or home storage:\n`;
+        fuelMachines.forEach(([name, amount]) => { content += `• **${name}** → **+${amount} fuel** (have **${countBaseItem(character, name)}**)\n`; });
+    } else {
+        content += `*You have no crafted fuel machines.* Craft one with \`/craft\` (Uranium Fuel Cell Charging Bank / Diesel Dispenser Machine / Gasoline Dispenser Machine).\n`;
+    }
+    const buyResourceCost = Math.round((BASE.ship.buyFuelResourceCost || 0) * (1 + Math.max(0, getEffectiveSaga() - 1) * (BASE.costSagaFactor || 0)));
+    content += `\nOr buy **${BASE.ship.buyFuelAmount} fuel** for **${baseSystem.formatNumber(buyResourceCost)} resources** (you have **${baseSystem.formatNumber(character.resources || 0)}**).\n`;
+
+    const components = [];
+    let row = new ActionRowBuilder();
+    fuelMachines.forEach(([name, amount], idx) => {
+        if (row.components.length >= 5) { components.push(row); row = new ActionRowBuilder(); }
+        row.addComponents(new ButtonBuilder().setCustomId(`base_refuel_i${idx}`).setLabel(`${name} (+${amount})`.slice(0, 80)).setStyle(ButtonStyle.Success));
+    });
+    if (row.components.length > 0) components.push(row);
+    components.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('base_refuelbuy').setLabel(`💰 Buy ${BASE.ship.buyFuelAmount} fuel`).setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('base_ship').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    ));
+    return { content: clampMessage(content), components };
+}
+
+// Grant passive income + food, then reset the accrual clock. Returns summary lines.
+function collectBaseIncome(character, userId) {
+    const now = Date.now();
+    const accrual = baseSystem.computeAccrual(BASE, character, now, getEffectiveSaga());
+    const parts = [];
+    const updates = {};
+    if (accrual.resources > 0) {
+        updates.resources = (character.resources || 0) + accrual.resources;
+        parts.push(`📦 **+${baseSystem.formatNumber(accrual.resources)} resources**`);
+    }
+    if (accrual.zeni > 0) {
+        updates.zeni = (character.zeni || 0) + accrual.zeni;
+        parts.push(`💰 **+${baseSystem.formatNumber(accrual.zeni)} zeni**`);
+    }
+    if (accrual.foodCount > 0) {
+        const inv = Array.isArray(character.inventory) ? character.inventory : [];
+        const names = [];
+        for (let i = 0; i < accrual.foodCount; i++) {
+            const name = BASE.foodPool[getRandomInt(BASE.foodPool.length) - 1];
+            names.push(name);
+            pushStackedItem(inv, name, 1);
+        }
+        updates.inventory = inv;
+        parts.push(`🍲 **${accrual.foodCount} food** (${[...new Set(names)].join(', ')})`);
+    }
+    // Only reset the clock when something was actually collected, so a sub-1-resource window
+    // keeps banking instead of being silently discarded.
+    if (parts.length > 0) updates.baseAccrualSince = now;
+    characterManager.updateCharacter(userId, character.id, updates);
+    return { parts, accrual };
+}
+
+// Handle `/base` — open the hub (creating the income clock on first use).
+function openBaseHub(interaction, character) {
+    ensureBaseClock(character, interaction.user.id);
+    const fresh = characterManager.getCharacter(interaction.user.id) || character;
+    const view = buildBaseHubView(fresh);
+    return { content: view.content, components: view.components, character: fresh };
+}
+
+// Route every `base_` button. Always re-reads the character (updateCharacter returns a NEW object,
+// so cached references go stale after a write).
+async function handleBaseButton(interaction) {
+    const userId = interaction.user.id;
+    const id = interaction.customId;
+    let character = characterManager.getCharacter(userId);
+    if (!character) {
+        return interaction.reply({ content: '❌ You need a character to use your base!', ephemeral: true });
+    }
+    ensureBaseClock(character, userId);
+    character = characterManager.getCharacter(userId) || character;
+    const showHub = () => {
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseHubView(fresh);
+        return interaction.update({ content: view.content, components: view.components });
+    };
+
+    // --- Navigation ---
+    if (id === 'base_home' || id === 'base_refresh') return showHub();
+    if (id === 'base_facilities') {
+        const view = buildBaseFacilitiesView(character);
+        return interaction.update({ content: view.content, components: view.components });
+    }
+    if (id === 'base_ship') {
+        if (!hasSpaceship(character)) return interaction.reply({ content: '❌ You don\'t have a spaceship! Craft one with `/craft`.', ephemeral: true });
+        const view = buildBaseShipView(character);
+        return interaction.update({ content: view.content, components: view.components });
+    }
+    if (id === 'base_refuel') {
+        const view = buildBaseRefuelView(character);
+        return interaction.update({ content: view.content, components: view.components });
+    }
+
+    // --- Facility detail + upgrade ---
+    if (id.startsWith('base_fac_')) {
+        const facId = id.slice('base_fac_'.length);
+        const view = buildBaseFacilityView(character, facId);
+        return interaction.update({ content: view.content, components: view.components });
+    }
+    if (id.startsWith('base_facup_')) {
+        const facId = id.slice('base_facup_'.length);
+        const def = baseSystem.getFacilityDef(BASE, facId);
+        if (!def) return interaction.reply({ content: '❌ Unknown facility!', ephemeral: true });
+        if (!character.homeLocation) {
+            return interaction.reply({ content: '❌ You need a **home** before you can build facilities! Craft a Small/Large Home with `/craft`.', ephemeral: true });
+        }
+        const cost = baseSystem.getUpgradeCost(BASE, character, facId, getEffectiveSaga());
+        if (!cost) return interaction.reply({ content: `⭐ **${def.name}** is already fully upgraded!`, ephemeral: true });
+        if ((character.resources || 0) < cost.resources) {
+            return interaction.reply({ content: `❌ **${def.name} Lv${cost.toLevel}** needs **${baseSystem.formatNumber(cost.resources)} resources**, but you only have **${baseSystem.formatNumber(character.resources || 0)}**.`, ephemeral: true });
+        }
+        const missing = Object.entries(cost.items || {}).filter(([name, need]) => countBaseItem(character, name) < need);
+        if (missing.length > 0) {
+            return interaction.reply({ content: `❌ Missing materials for **${def.name} Lv${cost.toLevel}**:\n${missing.map(([name, need]) => `• ${name} (${countBaseItem(character, name)}/${need})`).join('\n')}\n\n*(Item requirements can be pulled from your backpack or home storage.)*`, ephemeral: true });
+        }
+        // Consume materials (backpack first, then home storage) and the resources.
+        const inv = Array.isArray(character.inventory) ? character.inventory : [];
+        const home = Array.isArray(character.homeStorage) ? character.homeStorage : [];
+        character.inventory = inv;
+        character.homeStorage = home;
+        Object.entries(cost.items || {}).forEach(([name, need]) => consumeBaseItem(character, name, need));
+        const facilities = { ...(character.baseFacilities || {}) };
+        facilities[facId] = cost.toLevel;
+        characterManager.updateCharacter(userId, character.id, {
+            resources: (character.resources || 0) - cost.resources,
+            inventory: inv,
+            homeStorage: home,
+            baseFacilities: facilities
+        });
+        const effects = baseSystem.describeEffects(def, cost.toLevel);
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseFacilityView(fresh, facId);
+        return interaction.update({
+            content: clampMessage(`✅ **${def.name}** upgraded to **Lv${cost.toLevel}**!${effects ? `\n✨ ${effects}` : ''}\n\n${view.content}`),
+            components: view.components
+        });
+    }
+
+    // --- Passive income + harvest ---
+    if (id === 'base_claim') {
+        const { parts } = collectBaseIncome(character, userId);
+        const head = parts.length > 0 ? `💰 **Collected:** ${parts.join(' · ')}\n\n` : `ℹ️ Nothing banked yet — check back later.\n\n`;
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseHubView(fresh);
+        return interaction.update({ content: clampMessage(head + view.content), components: view.components });
+    }
+    if (id === 'base_harvest') {
+        const level = baseSystem.getFacilityLevel(character, 'resourceFarm');
+        if (level <= 0) return interaction.reply({ content: '❌ You need a **Resource Farm** before you can harvest!', ephemeral: true });
+        const cooldownMs = Math.max(1, BASE.harvestCooldownMinutes || 240) * 60000;
+        const remaining = (character.baseHarvestAt || 0) + cooldownMs - Date.now();
+        if (remaining > 0) {
+            return interaction.reply({ content: `⏳ Your farm is still recovering — harvest again in **${formatDuration(remaining)}**.`, ephemeral: true });
+        }
+        const bonuses = getBaseBonuses(character);
+        const gained = baseSystem.getHarvestYield(BASE, character, getRandomInt);
+        const newTotal = (character.resources || 0) + gained;
+        characterManager.updateCharacter(userId, character.id, { resources: newTotal, baseHarvestAt: Date.now() });
+        const questText = processNpcCollectionQuest(interaction, characterManager.getCharacter(userId) || character, 'gather', gained);
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseHubView(fresh);
+        return interaction.update({
+            content: clampMessage(`🌱 **${character.name}** harvested **${baseSystem.formatNumber(gained)} resources**! (Lv${level} farm: 1d${bonuses.harvestDice} × ${Math.max(1, (character.stats || {}).int || 0)} INT)\n📦 Total resources: **${baseSystem.formatNumber(newTotal)}**${questText}\n\n${view.content}`),
+            components: view.components
+        });
+    }
+
+    // --- Spaceship upgrade + refuel ---
+    if (id === 'base_shipup') {
+        if (!hasSpaceship(character)) return interaction.reply({ content: '❌ You don\'t have a spaceship!', ephemeral: true });
+        const level = Math.max(1, Math.min(MAX_SHIP_LEVEL, character.spaceshipLevel || 1));
+        if (level >= MAX_SHIP_LEVEL) return interaction.reply({ content: '⭐ Your spaceship is already at max level!', ephemeral: true });
+        const requirements = SHIP_UPGRADES[level];
+        if (!requirements) return interaction.reply({ content: '❌ No further upgrades available!', ephemeral: true });
+        const missing = requirements.filter(req => countBaseItem(character, req.name) < req.amount);
+        if (missing.length > 0) {
+            return interaction.reply({ content: `❌ Missing materials for **Ship Lv${level} → ${level + 1}**:\n${missing.map(req => `• ${req.name} (${countBaseItem(character, req.name)}/${req.amount})`).join('\n')}\n\n*(Materials can come from your backpack or home storage.)*`, ephemeral: true });
+        }
+        // Consume the materials (backpack first, then home storage) and raise the ship level.
+        const inv = Array.isArray(character.inventory) ? character.inventory : [];
+        const home = Array.isArray(character.homeStorage) ? character.homeStorage : [];
+        character.inventory = inv;
+        character.homeStorage = home;
+        requirements.forEach(req => consumeBaseItem(character, req.name, req.amount));
+        const newLevel = level + 1;
+        characterManager.updateCharacter(userId, character.id, { inventory: inv, homeStorage: home, spaceshipLevel: newLevel });
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseShipView(fresh);
+        return interaction.update({
+            content: `🔧 **${character.name}'s spaceship upgraded to level ${newLevel}!**\n⚡ Speed: **${SHIP_LEVEL_SPEEDS[level]}** → **${SHIP_LEVEL_SPEEDS[newLevel]}** slots/min\n⛽ Fuel cost: **${SHIP_FUEL_PER_1000[level]}** → **${SHIP_FUEL_PER_1000[newLevel]}** per 1,000 slots\n\n${view.content}`,
+            components: view.components
+        });
+    }
+    if (id.startsWith('base_refuel_i')) {
+        const idx = parseInt(id.slice('base_refuel_i'.length), 10);
+        const machines = Object.entries(BASE.ship.refuel || {}).filter(([name]) => countBaseItem(character, name) > 0);
+        const entry = machines[idx];
+        if (!entry) return interaction.reply({ content: '❌ That fuel machine is no longer in your inventory!', ephemeral: true });
+        const [name, amount] = entry;
+        consumeBaseItem(character, name, 1);
+        const newFuel = (character.fuel || 0) + amount;
+        characterManager.updateCharacter(userId, character.id, {
+            fuel: newFuel,
+            inventory: character.inventory,
+            homeStorage: character.homeStorage
+        });
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseRefuelView(fresh);
+        return interaction.update({ content: `⛽ Consumed **${name}** → **+${amount} fuel** (now **${baseSystem.formatNumber(newFuel)}**).\n\n${view.content}`, components: view.components });
+    }
+    if (id === 'base_refuelbuy') {
+        const sagaMult = 1 + Math.max(0, getEffectiveSaga() - 1) * (BASE.costSagaFactor || 0);
+        const cost = Math.round((BASE.ship.buyFuelResourceCost || 0) * sagaMult);
+        if ((character.resources || 0) < cost) {
+            return interaction.reply({ content: `❌ Buying **${BASE.ship.buyFuelAmount} fuel** costs **${baseSystem.formatNumber(cost)} resources**, but you only have **${baseSystem.formatNumber(character.resources || 0)}**.`, ephemeral: true });
+        }
+        const newFuel = (character.fuel || 0) + BASE.ship.buyFuelAmount;
+        characterManager.updateCharacter(userId, character.id, { fuel: newFuel, resources: (character.resources || 0) - cost });
+        const fresh = characterManager.getCharacter(userId) || character;
+        const view = buildBaseRefuelView(fresh);
+        return interaction.update({ content: `💰 Bought **${BASE.ship.buyFuelAmount} fuel** for **${baseSystem.formatNumber(cost)} resources** (now **${baseSystem.formatNumber(newFuel)} fuel**).\n\n${view.content}`, components: view.components });
+    }
+
+    // Unknown base_ button — fall back to the hub.
+    return showHub();
 }
 
 function getHomeRestBonus(character) {
@@ -9000,15 +13753,23 @@ function isAtHome(character) {
 }
 
 // ---------- Resting/healing ----------
-// The Magic Carpet grants an extra rest charge (max 3 instead of 2).
+// The Magic Carpet grants an extra rest charge (max 3 instead of 2); a Med Bay adds more.
 function getMaxRestCharges(character) {
-    return ownsItem(character, 'Magic Carpet') ? 3 : 2;
+    const base = ownsItem(character, 'Magic Carpet') ? 3 : 2;
+    return base + (character ? getBaseBonuses(character).extraRestCharges : 0);
+}
+
+// Milliseconds between rest charges (a Healing Pod halves it; a Med Bay speeds it up further).
+function getRestChargeIntervalMs(character) {
+    const pod = character && character.healingPod === true && !hasActiveShell(character);
+    const rawIntervalMs = pod ? 7.5 * 60000 : 30 * 60000;
+    const regenPct = Math.min(90, getBaseBonuses(character).regenSpeedPct || 0);
+    return Math.max(60000, Math.round(rawIntervalMs * (1 - regenPct / 100)));
 }
 
 function updateRestCharges(userId, character) {
     const now = Date.now();
-    const pod = character.healingPod === true && !hasActiveShell(character); // Tortles can't use pods while shelled
-    const intervalMs = pod ? 7.5 * 60000 : 30 * 60000; // 1 charge per 7.5 min (pod, = 2 per 15 min) or 30 min
+    const intervalMs = getRestChargeIntervalMs(character);
     const max = getMaxRestCharges(character);
     // If the refill clock was never set, start it now. (Before this, `lastRestChargeTime || now`
     // always defaulted to "now" so charges could never accumulate over real time.)
@@ -9030,16 +13791,33 @@ function updateRestCharges(userId, character) {
     }
 }
 
+// Short-rest recovery (Trello "Healing" card): a d20(%) roll of max HP and max Ki, PLUS the flat
+// base every short rest has always granted (REST_HEAL_BASE), and a d15+20 fatigue reduction.
+// Every short rest in the game — the /rest command, the Magic Carpet auto-rest and companions
+// resting — rolls this ONE formula, so a companion's rest can never be weaker than its owner's.
+const REST_HEAL_BASE = 12;
+const REST_MIN_HEAL = 20;
+function rollRestRecovery(maxHP, maxKi, bonus = 0) {
+    const pct = Math.min(20, getRandomInt(20) + (bonus || 0));
+    return {
+        pct,
+        hpHeal: Math.max(REST_MIN_HEAL, Math.floor((maxHP || 1) * pct / 100)) + REST_HEAL_BASE,
+        kiHeal: Math.max(REST_MIN_HEAL, Math.floor((maxKi || 1) * pct / 100)) + REST_HEAL_BASE,
+        fatigueReduction: getRandomInt(15) + 20 + (bonus || 0)
+    };
+}
+
 // Magic Carpet: traveling automatically uses a Free Rest charge (heal, 30-min cooldown).
 function magicCarpetFreeRest(userId, character) {
     if (!ownsItem(character, 'Magic Carpet')) return '';
     const now = Date.now();
     if ((character.carpetFreeRestAt || 0) > now - 30 * 60000) return ''; // on cooldown
-    const hpHeal = Math.max(20, Math.floor((character.maxHP || 1) * getRandomInt(20) / 100)) + 12;
-    let kiHeal = Math.max(20, Math.floor((character.maxKi || 1) * getRandomInt(20) / 100)) + 12;
+    const rec = rollRestRecovery(character.maxHP, character.maxKi);
+    const hpHeal = rec.hpHeal;
+    let kiHeal = rec.kiHeal;
     // Zenkai exhaustion halves Ki recovery for 24h.
     if ((character.zenkaiExhaustedUntil || 0) > Date.now()) kiHeal = Math.floor(kiHeal / 2);
-    const fatigueReduction = getRandomInt(15) + 20;
+    const fatigueReduction = rec.fatigueReduction;
     characterManager.modifyHP(userId, character.id, hpHeal);
     characterManager.modifyKi(userId, character.id, kiHeal);
     characterManager.modifyFatigue(userId, character.id, -fatigueReduction, { full: true });
@@ -9051,7 +13829,7 @@ function magicCarpetFreeRest(userId, character) {
 // Daily midnight reset: full heal, full Ki, no fatigue (not while in combat)
 // Burnout (Hunter of Legend): at midnight you only recover half your HP instead of all.
 function applyMidnightReset(userId, character) {
-    const today = new Date().toDateString();
+    const today = centralDateString();
     if (character.lastDailyReset === today) return false;
     character.lastDailyReset = today;
     const burnout = character.mutation === 'Hunter of Legend';
@@ -9091,25 +13869,38 @@ function updateCompanionRestCharges(cmp) {
     }
 }
 
-// Spend a companion rest charge to clear fatigue once it exceeds 20%. Returns a log line (or '').
-function companionRestIfNeeded(cmp) {
+// Spend a companion rest charge exactly like the owner's /rest spends theirs: the same
+// percent-of-max + flat-base recovery, and the same fatigue reduction. Companions used to clear
+// fatigue only (no HP/Ki at all), which made "my companion rested" far weaker than resting.
+function companionRestIfNeeded(cmp, ownerChar = null) {
     if (!cmp) return '';
     updateCompanionRestCharges(cmp);
-    if ((cmp.fatigue || 0) <= 20) return '';
-    if ((cmp.restCharges || 0) < 1) {
-        return `\n😴 **${cmp.name}** is too tired to train (fatigue ${Math.round(cmp.fatigue || 0)}%) — but has **no rest charges**!`;
-    }
-    cmp.restCharges -= 1;
-    cmp.fatigue = 0;
-    return `\n😴 **${cmp.name}** rested (fatigue cleared, **1 rest charge** used).`;
+    const v = getCompanionVitals(cmp, ownerChar);
+    // Rest when it actually matters: too tired for training, or badly hurt/drained.
+    const needsRest = (cmp.fatigue || 0) > 20 || v.curHP <= v.maxHP * 0.5 || v.curKi <= v.maxKi * 0.5;
+    if (!needsRest) return '';
+    return `\n${companionRest(cmp, ownerChar)}`;
 }
 
-// Explicitly rest a companion: spend a rest charge to recover some fatigue (like `/rest`, but
-// without the midnight/healing-pod bonuses). Returns a log line (or '').
-function companionRest(cmp) {
+// A companion's current/max HP and Ki, derived the same way the /companions card and the battle
+// engine derive them (so rest heals the HP the player can actually see).
+function getCompanionVitals(cmp, ownerChar) {
+    const cStats = getCompanionBattleStats(cmp, ownerChar || {});
+    const cMult = cmp.statMultipliers || {};
+    const maxHP = Math.max(1, calculateHP(cStats.con, cmp.race || null, cMult, cmp));
+    const maxKi = Math.max(1, calculateKi(cStats.spi, cmp.race || null, cMult, cmp));
+    const curHP = cmp.currentHP != null ? Math.max(0, Math.min(cmp.currentHP, maxHP)) : maxHP;
+    const curKi = cmp.currentKi != null ? Math.max(0, Math.min(cmp.currentKi, maxKi)) : maxKi;
+    return { maxHP, maxKi, curHP, curKi };
+}
+
+// Explicitly rest a companion: spend a rest charge to recover the SAME short-rest recovery the
+// owner's /rest rolls (d20(%) max HP/Ki + flat base, d15+20 fatigue). Returns a log line (or '').
+function companionRest(cmp, ownerChar) {
     if (!cmp) return '';
     updateCompanionRestCharges(cmp);
-    if ((cmp.fatigue || 0) <= 0) {
+    const v = getCompanionVitals(cmp, ownerChar);
+    if ((cmp.fatigue || 0) <= 0 && v.curHP >= v.maxHP && v.curKi >= v.maxKi) {
         return `😴 **${cmp.name}** is already fully rested — no rest charge needed.`;
     }
     if ((cmp.restCharges || 0) < 1) {
@@ -9119,11 +13910,106 @@ function companionRest(cmp) {
         return `😴 **${cmp.name}** has no rest charges left — the next one comes in ~**${formatDuration(remainingMs)}**.`;
     }
     cmp.restCharges -= 1;
-    const reduction = getRandomInt(15) + 20;
+    const rec = rollRestRecovery(v.maxHP, v.maxKi);
     const before = Math.round(cmp.fatigue || 0);
-    cmp.fatigue = Math.max(0, (cmp.fatigue || 0) - reduction);
+    cmp.fatigue = Math.max(0, (cmp.fatigue || 0) - rec.fatigueReduction);
     const after = Math.round(cmp.fatigue || 0);
-    return `😴 **${cmp.name}** rested (fatigue: ${before}% → ${after}%, **1 rest charge** used).`;
+    const hpHeal = Math.min(v.maxHP - v.curHP, rec.hpHeal);
+    const kiHeal = Math.min(v.maxKi - v.curKi, rec.kiHeal);
+    cmp.currentHP = Math.min(v.maxHP, v.curHP + rec.hpHeal);
+    cmp.currentKi = Math.min(v.maxKi, v.curKi + rec.kiHeal);
+    return `😴 **${cmp.name}** rested (fatigue: ${before}% → ${after}%, HP +${hpHeal}, Ki +${kiHeal}, **1 rest charge** used).`;
+}
+
+// Feed a companion cooked food from the owner's inventory / fishing tackle / hunting bag. Works like
+// the player's /eat-all: it keeps eating until the companion is topped up (HP full, Ki full, fatigue
+// 0), only consuming food that actually replenishes something still missing, and stops the instant
+// nothing more is needed — so a feed never wastes a stack on a nearly-full companion.
+function feedCompanion(cmp, ownerChar) {
+    if (!cmp || !ownerChar) return '❌ No companion found to feed!';
+    const inventory = Array.isArray(ownerChar.inventory) ? ownerChar.inventory : (ownerChar.inventory = []);
+    const tackle = getFishTackle(ownerChar);
+    const bag = getHuntingBag(ownerChar);
+    const v = getCompanionVitals(cmp, ownerChar);
+    const maxHP = v.maxHP;
+    const maxKi = v.maxKi;
+
+    // Simulated vitals while we eat, so we can stop the moment nothing more is needed.
+    let simHP = v.curHP;
+    let simKi = v.curKi;
+    let simFatigue = Math.max(0, cmp.fatigue || 0);
+    const needsHP = () => simHP < maxHP;
+    const needsKi = () => simKi < maxKi;
+    const needsFatigue = () => simFatigue > 0;
+    const stillNeedsFood = () => needsHP() || needsKi() || needsFatigue();
+    // A food only "helps" if it replenishes something still missing — this stops an HP-only food
+    // from being burned when only Ki or fatigue is missing (and vice versa).
+    const foodHelps = (effect) =>
+        (effect.hpHeal > 0 && needsHP()) ||
+        (effect.kiHeal > 0 && needsKi()) ||
+        ((effect.fatigueDelta || 0) < 0 && needsFatigue());
+
+    let totalHP = 0, totalKi = 0, totalFatigue = 0, eaten = 0, skippedRaw = 0;
+    const eatenList = [];
+
+    const processSource = (source) => {
+        for (let i = source.length - 1; i >= 0; i--) {
+            if (!stillNeedsFood()) return; // topped up — stop eating
+            const item = source[i];
+            if (isUncookedFood(item)) { skippedRaw++; continue; }
+            const p = parseItemName(item);
+            const spec = FOOD_ITEMS[p.name];
+            if (!spec) continue; // not food
+            const qty = Math.max(1, p.quantity || 1);
+            let slotEaten = 0;
+            for (let k = 0; k < qty; k++) {
+                if (!stillNeedsFood()) break; // stop mid-stack too
+                const effect = computeConsumableEffect(spec, { maxHP, maxKi, race: cmp.race || null });
+                if (!foodHelps(effect)) break; // this food can't help the remaining need — save it
+                simHP = Math.min(maxHP, simHP + (effect.hpHeal || 0));
+                simKi = Math.min(maxKi, simKi + (effect.kiHeal || 0));
+                simFatigue = Math.max(0, simFatigue + (effect.fatigueDelta || 0));
+                totalHP += effect.hpHeal || 0;
+                totalKi += effect.kiHeal || 0;
+                totalFatigue += effect.fatigueDelta || 0;
+                slotEaten++;
+                consumeInventorySlot(source, i);
+            }
+            if (slotEaten > 0) {
+                eaten += slotEaten;
+                eatenList.push(`${p.name} ×${slotEaten}`);
+            }
+        }
+    };
+
+    processSource(inventory);
+    processSource(tackle);
+    processSource(bag);
+
+    if (eaten === 0) {
+        const hasCookedFood = [...inventory, ...tackle, ...bag]
+            .some(item => !isUncookedFood(item) && FOOD_ITEMS[parseItemName(item).name]);
+        if (!hasCookedFood) {
+            return `❌ **${cmp.name}** is hungry but you have no cooked food to feed them! (Checked your inventory, hunting bag and fishing tackle — cook raw meat/fish with \`/cook\`.)`;
+        }
+        if (!stillNeedsFood()) {
+            return `✅ **${cmp.name}** is already fully rested and fed — nothing to eat!`;
+        }
+        return `🤔 None of your cooked food can replenish what **${cmp.name}** is missing right now.`;
+    }
+
+    cmp.currentHP = simHP;
+    cmp.currentKi = simKi;
+    cmp.fatigue = simFatigue;
+    ownerChar.inventory = inventory;
+    const healedHP = Math.max(0, Math.min(v.maxHP, v.curHP + totalHP) - v.curHP);
+    const healedKi = Math.max(0, Math.min(v.maxKi, v.curKi + totalKi) - v.curKi);
+    return `🍖 **${cmp.name}** ate **${eaten}** food item${eaten === 1 ? '' : 's'} (only what was needed)`
+        + `${skippedRaw > 0 ? ` — skipped **${skippedRaw}** raw item${skippedRaw === 1 ? '' : 's'}` : ''}!\n`
+        + `🥡 ${eatenList.join(', ')}\n`
+        + `❤️ HP +${healedHP} → **${cmp.currentHP}/${maxHP}**\n`
+        + `💙 Ki +${healedKi} → **${cmp.currentKi}/${maxKi}**\n`
+        + `😓 Fatigue: → **${Math.round(cmp.fatigue)}%**`;
 }
 
 // ---------- Character aging ----------
@@ -9150,50 +14036,260 @@ function applyAging(userId, character) {
     }
 }
 
-// Calculate stat modifier: +1 per 20 up to 200, +1 per 200 up to 2000, +1 per 2000 up to 20000, etc.
+// Stat -> modifier conversions now use the tiered scaling from statModifier.js
+// (tunable via config.json's `statModifierTiers`). `calculateAllModifiers` and every
+// in-game roll route through this single helper, so the whole game uses one curve.
 function calculateModifier(stat) {
-    let modifier = 0;
-    let remaining = stat;
-    
-    // Tier system: each tier multiplies the threshold by 10
-    // Tier 1: 0-200 (+1 per 20) = max +10
-    // Tier 2: 201-2000 (+1 per 200) = max +9
-    // Tier 3: 2001-20000 (+1 per 2000) = max +9
-    // Tier 4: 20001-200000 (+1 per 20000) = max +9
-    // And so on...
-    
-    let threshold = 20;
-    let tierCap = 200;
-    
-    while (remaining > 0) {
-        if (remaining <= tierCap) {
-            // Within current tier
-            modifier += Math.floor(remaining / threshold);
-            remaining = 0;
-        } else {
-            // Complete current tier and move to next
-            modifier += Math.floor(tierCap / threshold);
-            remaining -= tierCap;
-            
-            // Next tier: multiply thresholds by 10
-            threshold *= 10;
-            tierCap *= 10;
-        }
-    }
-    
-    return modifier;
+    return statModifier.calculateModifier(stat);
 }
 
-// Calculate all modifiers for a character
-function calculateAllModifiers(stats) {
+// Convert allocated stat-multiplier points into a multiplier (1.0 base; +STAT_MULT_PER_POINT each).
+function getStatMultiplierForPoints(points) {
+    const p = Number.isFinite(points) ? points : 0;
+    return Math.max(STAT_MULT_MIN, 1 + STAT_MULT_PER_POINT * p);
+}
+
+// Total stat-multiplier points used by an allocation (positive across all stats).
+function getStatMultiplierUsed(statMultipliers) {
+    if (!statMultipliers) return 0;
+    return STAT_MULT_STATS.reduce((sum, s) => sum + (statMultipliers[s] || 0), 0);
+}
+
+// Native stat multiplier points a race receives (config override -> race data -> default).
+function getRaceStatMultiplierPoints(race) {
+    const overrides = (STAT_MULTIPLIER_CONFIG && STAT_MULTIPLIER_CONFIG.racePoints) || {};
+    if (typeof overrides[race] === 'number') return overrides[race];
+    if (races[race] && typeof races[race].statMultiplierPoints === 'number') return races[race].statMultiplierPoints;
+    return STAT_MULT_DEFAULT_POINTS;
+}
+
+// Format an allocation as e.g. "1.3×".
+function formatStatMultiplier(points) {
+    return getStatMultiplierForPoints(points).toFixed(1) + '×';
+}
+
+// Roll a random stat-multiplier allocation for an NPC (or any entity without a fixed one).
+// The race's stat-multiplier points are spread randomly across the five multiplier stats,
+// so each NPC gets a unique spread that respects its race's stat multiplier budget.
+function rollRandomStatMultipliers(race = null) {
+    const pool = getRaceStatMultiplierPoints(race);
+    const sm = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
+    let remaining = pool;
+    while (remaining > 0) {
+        const stat = STAT_MULT_STATS[getRandomInt(STAT_MULT_STATS.length) - 1];
+        sm[stat] = (sm[stat] || 0) + 1;
+        remaining--;
+    }
+    return sm;
+}
+
+// Resolve a participant's stat multipliers, rolling a random race-based spread when the value is
+// missing or empty (so enemies/NPCs always participate in the stat-multiplier system).
+function resolveStatMultipliers(statMultipliers, race = null) {
+    if (statMultipliers && Object.keys(statMultipliers).length > 0) return statMultipliers;
+    return rollRandomStatMultipliers(race);
+}
+
+// The effective modifier for a stat after applying its stat-multiplier points (rounded down).
+function calculateStatModifier(stat, points = 0) {
+    const base = calculateModifier(stat);
+    const mult = getStatMultiplierForPoints(points);
+    return Math.floor(base * mult);
+}
+
+// Calculate all modifiers for a character (optionally applying stat-multiplier points).
+// INT is excluded from the stat-multiplier system, so it always uses the raw curve.
+function calculateAllModifiers(stats, statMultipliers = {}) {
+    const sm = statMultipliers || {};
     return {
-        str: calculateModifier(stats.str),
-        dex: calculateModifier(stats.dex),
-        con: calculateModifier(stats.con),
-        wil: calculateModifier(stats.wil),
-        spi: calculateModifier(stats.spi),
+        str: calculateStatModifier(stats.str, sm.str),
+        dex: calculateStatModifier(stats.dex, sm.dex),
+        con: calculateStatModifier(stats.con, sm.con),
+        wil: calculateStatModifier(stats.wil, sm.wil),
+        spi: calculateStatModifier(stats.spi, sm.spi),
         int: calculateModifier(stats.int)
     };
+}
+
+// Recompute a pending character's modifiers, HP/Ki, and power level after its stat
+// multiplier allocation changes (so the preview/crit numbers always reflect the multiplier).
+function refreshPendingWithStatMultipliers(pending) {
+    if (!pending || !pending.data) return;
+    const data = pending.data;
+    const sm = data.statMultipliers || (data.statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 });
+    data.modifiers = calculateAllModifiers(data.stats, sm);
+    data.maxHP = calculateHP(data.stats.con, data.race, sm, data);
+    data.maxKi = calculateKi(data.stats.spi, data.race, sm, data);
+    data.powerLevel = characterManager.calculatePowerLevel({ ...data.stats, maxHP: data.maxHP, maxKi: data.maxKi });
+}
+
+// Build the stat-multiplier allocation screen (message + buttons).
+function buildStatMultiplierView(pending) {
+    if (!pending || !pending.data) return { content: 'No pending character found!', components: [] };
+    const data = pending.data;
+    const sm = data.statMultipliers || (data.statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 });
+    const pool = data.statMultiplierPoints || getRaceStatMultiplierPoints(data.race);
+    const used = getStatMultiplierUsed(sm);
+    const free = pool - used;
+    const labels = { str: '⚔️ STR', dex: '🏃 DEX', con: '🛡️ CON', wil: '🧠 WIL', spi: '✨ SPI' };
+
+    let content = `🎯 **Stat Multipliers** — ${data.race} (${pool} points)\n\n`;
+    content += `Each **+1** point adds **+0.1×** to that stat's modifier gain (rounded down). You can lower a stat to **0.7×** to free up points for other stats. **INT** is excluded.\n\n`;
+    STAT_MULT_STATS.forEach(s => {
+        const pts = sm[s] || 0;
+        const eff = (data.modifiers || {})[s] || 0;
+        content += `${labels[s]}: **${formatStatMultiplier(pts)}** (${pts >= 0 ? '+' : ''}${pts}) → mod **${eff >= 0 ? '+' : ''}${eff}**\n`;
+    });
+    content += `\n**Points in use:** ${used} · **Remaining:** ${free}`;
+
+    const canInc = used < pool;
+    const decOk = (s) => (sm[s] || 0) > STAT_MULT_MIN_POINTS;
+
+    const rows = [];
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sm_dec_str').setLabel('− STR').setStyle(ButtonStyle.Danger).setDisabled(!decOk('str')),
+        new ButtonBuilder().setCustomId('sm_inc_str').setLabel('+ STR').setStyle(ButtonStyle.Success).setDisabled(!canInc),
+        new ButtonBuilder().setCustomId('sm_dec_dex').setLabel('− DEX').setStyle(ButtonStyle.Danger).setDisabled(!decOk('dex')),
+        new ButtonBuilder().setCustomId('sm_inc_dex').setLabel('+ DEX').setStyle(ButtonStyle.Success).setDisabled(!canInc),
+        new ButtonBuilder().setCustomId('sm_dec_con').setLabel('− CON').setStyle(ButtonStyle.Danger).setDisabled(!decOk('con'))
+    ));
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sm_inc_con').setLabel('+ CON').setStyle(ButtonStyle.Success).setDisabled(!canInc),
+        new ButtonBuilder().setCustomId('sm_dec_wil').setLabel('− WIL').setStyle(ButtonStyle.Danger).setDisabled(!decOk('wil')),
+        new ButtonBuilder().setCustomId('sm_inc_wil').setLabel('+ WIL').setStyle(ButtonStyle.Success).setDisabled(!canInc),
+        new ButtonBuilder().setCustomId('sm_dec_spi').setLabel('− SPI').setStyle(ButtonStyle.Danger).setDisabled(!decOk('spi')),
+        new ButtonBuilder().setCustomId('sm_inc_spi').setLabel('+ SPI').setStyle(ButtonStyle.Success).setDisabled(!canInc)
+    ));
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sm_reset').setLabel('♻️ Reset').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('sm_back').setLabel('⬅️ Done').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('confirm_character').setLabel('✅ Confirm Character').setStyle(ButtonStyle.Success)
+    ));
+
+    return { content, components: rows };
+}
+
+// Rebuild the character-preview message from the current pending state so returning from the
+// stat-multiplier screen shows freshly-recomputed modifiers/HP/Ki/PL (not a stale snapshot).
+function rebuildPendingPreviewContent(pending) {
+    if (!pending || !pending.data) return 'No pending character found!';
+    const data = pending.data;
+    const raceInfo = races[data.race];
+    const racialMods = getRaceStatModifiers(data.race, data);
+    const raceRollConfig = getRaceStatRolls(data.race);
+
+    let statRollDesc = `1d${raceRollConfig.diceSize}`;
+    if (raceRollConfig.bonus > 0) statRollDesc += `+${raceRollConfig.bonus}`;
+    statRollDesc += ' per stat';
+    let intRollDesc = '1d10';
+    if (data.race === 'Earthling') intRollDesc = '1d10+1';
+    else if (data.race === 'Tuffle') intRollDesc = '1d12+3';
+
+    let message = `✨ **Character Preview!** ✨\n\n`;
+    message += `**${data.name}** - ${data.race} (Age ${data.age})\n`;
+    if (data.class) {
+        message += `⭐ **Class:** ${data.class}\n`;
+        if (data.class === 'Elite Class' && data.eliteBonus) {
+            message += `⭐ **Elite Class bonus:** +1d40 → **${data.eliteBonus.stat.toUpperCase()} +${data.eliteBonus.roll}**\n`;
+        }
+    }
+    if (data.clan) {
+        message += `🧬 **Clan:** ${data.clan}\n`;
+    }
+    message += `📍 **Spawn:** ${data.location} - Space ${data.space}\n`;
+    message += `**Power Level:** ${formatPL(data.powerLevel)}\n\n`;
+    message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
+    message += `STR: ${data.stats.str} (${data.modifiers.str >= 0 ? '+' : ''}${data.modifiers.str})${racialMods.str !== 0 ? `(${racialMods.str >= 0 ? '+' : ''}${racialMods.str})` : ''} | DEX: ${data.stats.dex} (${data.modifiers.dex >= 0 ? '+' : ''}${data.modifiers.dex})${racialMods.dex !== 0 ? `(${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex})` : ''} | CON: ${data.stats.con} (${data.modifiers.con >= 0 ? '+' : ''}${data.modifiers.con})${racialMods.con !== 0 ? `(${racialMods.con >= 0 ? '+' : ''}${racialMods.con})` : ''}\n`;
+    message += `WIL: ${data.stats.wil} (${data.modifiers.wil >= 0 ? '+' : ''}${data.modifiers.wil})${racialMods.wil !== 0 ? `(${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil})` : ''} | SPI: ${data.stats.spi} (${data.modifiers.spi >= 0 ? '+' : ''}${data.modifiers.spi})${racialMods.spi !== 0 ? `(${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi})` : ''} | INT: ${data.stats.int} (${data.modifiers.int >= 0 ? '+' : ''}${data.modifiers.int})${racialMods.int !== 0 ? `(${racialMods.int >= 0 ? '+' : ''}${racialMods.int})` : ''}\n`;
+
+    const hasRacialMods = Object.values(racialMods).some(mod => mod !== 0);
+    if (hasRacialMods) {
+        message += `\n**Racial Modifiers:** ${formatRacialModLine(racialMods, data)}\n`;
+    }
+
+    message += `\nHP: ${data.maxHP}${racialMods.con !== 0 ? ` (includes ${racialMods.con >= 0 ? '+' : ''}${racialMods.con * 10} from CON racial bonus)` : ''} | Ki: ${data.maxKi}${racialMods.spi !== 0 ? ` (includes ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi * 10} from SPI racial bonus)` : ''}\n\n`;
+
+    if (raceInfo && raceInfo.passives && raceInfo.passives.length > 0) {
+        message += `**Racial Passives:**\n`;
+        raceInfo.passives.forEach(passive => {
+            message += `• **${passive.name}**: ${passive.description}\n`;
+        });
+        message += `\n`;
+    }
+
+    if (pending.chosenPath === 'boost') {
+        message += `⚠️ You gave up mutation eligibility for these boosted stats.\n✅ Click **Confirm** to create this character.`;
+    } else if (pending.chosenPath === 'mutation') {
+        message += `🧬 Mutation path chosen. ${pending.mutationRolled && pending.mutationRoll >= 19 ? 'Select a mutation, then confirm.' : 'Confirm to create this character.'}`;
+    } else if (pending.hasRerolled) {
+        message += `⚠️ This is your final roll! Click **Confirm** to create the character.\n🧬 Choose ONE: Roll for mutation (1d20, need 19+) OR boost all stats (5d100+20)!`;
+    } else {
+        message += `⚠️ You can reroll stats **once** or confirm to create this character.\n🧬 Choose ONE: Roll for mutation (1d20, need 19+) OR boost all stats (5d100+20)!\n`;
+        message += `🎯 **Stat Multipliers:** Allocate **${data.statMultiplierPoints || getRaceStatMultiplierPoints(data.race)}** points to boost your stat modifier gains (each +1 = +0.1×, min 0.7×, INT excluded).`;
+    }
+    return message;
+}
+
+// Rebuild the character-preview buttons (including the stat-multiplier open button) based on
+// the pending creation state. Used when returning from the stat-multiplier screen.
+function buildPendingPreviewComponents(pending) {
+    if (!pending) return [];
+    const openBtn = () => new ButtonBuilder()
+        .setCustomId('open_stat_multipliers')
+        .setLabel('🎯 Stat Multipliers')
+        .setStyle(ButtonStyle.Primary);
+
+    const rows = [];
+    if (pending.chosenPath === 'boost') {
+        rows.push(new ActionRowBuilder().addComponents(
+            openBtn(),
+            new ButtonBuilder().setCustomId('confirm_character').setLabel('✅ Confirm Character').setStyle(ButtonStyle.Success)
+        ));
+        return rows;
+    }
+
+    if (pending.chosenPath === 'mutation') {
+        if (pending.mutationSelected) {
+            const availableMutations = getAvailableMutations(pending.data.race, pending.data.clan);
+            const selectButtons = availableMutations.map((mut, idx) =>
+                new ButtonBuilder().setCustomId(`mselect_${idx}`).setLabel(mut.name).setStyle(ButtonStyle.Secondary).setDisabled(true)
+            );
+            selectButtons.push(new ButtonBuilder().setCustomId('mselect_custom').setLabel('✍️ Create Custom (Chilly)').setStyle(ButtonStyle.Primary).setDisabled(true));
+            for (let i = 0; i < selectButtons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(selectButtons.slice(i, i + 5)));
+        } else if (pending.mutationRolled && pending.mutationRoll >= 19) {
+            // Mutation rolled & eligible but not yet selected: keep the selection buttons live.
+            const availableMutations = getAvailableMutations(pending.data.race, pending.data.clan);
+            const selectButtons = availableMutations.map((mut, idx) =>
+                new ButtonBuilder().setCustomId(`mselect_${idx}`).setLabel(mut.name).setStyle(ButtonStyle.Secondary)
+            );
+            selectButtons.push(new ButtonBuilder().setCustomId('mselect_custom').setLabel('✍️ Create Custom (Chilly)').setStyle(ButtonStyle.Primary));
+            for (let i = 0; i < selectButtons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(selectButtons.slice(i, i + 5)));
+        }
+        rows.push(new ActionRowBuilder().addComponents(
+            openBtn(),
+            new ButtonBuilder().setCustomId('confirm_character').setLabel('✅ Confirm Character').setStyle(ButtonStyle.Success)
+        ));
+        return rows;
+    }
+
+    if (pending.hasRerolled) {
+        rows.push(new ActionRowBuilder().addComponents(
+            openBtn(),
+            new ButtonBuilder().setCustomId('roll_mutation').setLabel('🧬 Roll Mutation (1d20)').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('boost_stats').setLabel('💪 Boost Stats (5d100+20)').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('confirm_character').setLabel('✅ Confirm Character').setStyle(ButtonStyle.Success)
+        ));
+        return rows;
+    }
+
+    rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('reroll_stats').setLabel('🎲 Reroll Stats').setStyle(ButtonStyle.Primary),
+        openBtn(),
+        new ButtonBuilder().setCustomId('roll_mutation').setLabel('🧬 Roll Mutation (1d20)').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('boost_stats').setLabel('💪 Boost Stats (5d100+20)').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('confirm_character').setLabel('✅ Confirm Character').setStyle(ButtonStyle.Success)
+    ));
+    return rows;
 }
 
 function getRandomInt(max){
@@ -9204,42 +14300,67 @@ function getRandomInt(max){
 const ENEMY_RACES = Object.keys(races).filter(race => races[race].type === 'birth');
 
 // How common each race is as a natural enemy on each planet. Higher weight = more common.
-// Fall back to the 'Space' mix for any unknown/unspecified location.
+// Every planet a player can fight on needs an entry (unknown locations fall back to the 'Space'
+// mix) and every table lists ALL 14 birth races, so no race is impossible to meet as an enemy.
 const PLANET_RACE_WEIGHTS = {
     'Earth': {
         'Earthling': 60, 'Saiyan': 6, 'Half-Saiyan': 6, 'Tortle': 4, 'Namekian': 3,
         'Cerealian': 3, 'Hera': 3, 'Tuffle': 3, 'Saibamen': 2,
-        'Konatsian': 2, 'Oni': 2, 'Frost Demon': 1
+        'Konatsian': 2, 'Sphinxian': 2, 'Oni': 2, 'Frost Demon': 1, 'Alien': 3
     },
     'Namek': {
-        'Namekian': 50, 'Frost Demon': 10, 'Saiyan': 6, 'Saibamen': 8,
+        'Namekian': 50, 'Frost Demon': 10, 'Saibamen': 8, 'Saiyan': 6, 'Alien': 4,
         'Earthling': 4, 'Half-Saiyan': 3, 'Cerealian': 2, 'Tuffle': 2, 'Hera': 2,
-        'Konatsian': 1, 'Oni': 1, 'Tortle': 1
+        'Konatsian': 1, 'Sphinxian': 1, 'Oni': 1, 'Tortle': 1
     },
     'Frieza Planet': {
         'Frost Demon': 45, 'Alien': 12, 'Saiyan': 8, 'Saibamen': 8, 'Namekian': 5,
         'Half-Saiyan': 4, 'Earthling': 4, 'Cerealian': 3, 'Tuffle': 3, 'Hera': 2,
-        'Oni': 1, 'Konatsian': 1, 'Tortle': 1
+        'Oni': 1, 'Konatsian': 1, 'Sphinxian': 1, 'Tortle': 1
+    },
+    // Saiyan homeworld — the Tuffle population is still there after the Saiyan takeover.
+    'Vegeta': {
+        'Saiyan': 45, 'Tuffle': 20, 'Alien': 8, 'Half-Saiyan': 6, 'Frost Demon': 5,
+        'Hera': 3, 'Oni': 3, 'Earthling': 2, 'Namekian': 2, 'Cerealian': 1,
+        'Saibamen': 1, 'Tortle': 1, 'Konatsian': 1, 'Sphinxian': 1
+    },
+    // Konats — ancient sword world of the Konatsians.
+    'Konats': {
+        'Konatsian': 45, 'Alien': 12, 'Oni': 8, 'Earthling': 6, 'Saiyan': 6,
+        'Namekian': 4, 'Frost Demon': 4, 'Sphinxian': 4, 'Half-Saiyan': 3,
+        'Tuffle': 3, 'Cerealian': 2, 'Hera': 2, 'Tortle': 1, 'Saibamen': 1
+    },
+    // Cereal — Cerealian homeworld (the last of them).
+    'Cereal': {
+        'Cerealian': 45, 'Alien': 12, 'Earthling': 7, 'Saiyan': 6, 'Namekian': 5,
+        'Tuffle': 4, 'Half-Saiyan': 4, 'Frost Demon': 4, 'Oni': 3, 'Hera': 2,
+        'Tortle': 2, 'Konatsian': 2, 'Saibamen': 2, 'Sphinxian': 1
     },
     "King Kai's Planet": {
         'Earthling': 40, 'Saiyan': 20, 'Half-Saiyan': 10, 'Namekian': 5, 'Alien': 4,
         'Tortle': 3, 'Hera': 2, 'Cerealian': 2, 'Frost Demon': 2, 'Tuffle': 1,
-        'Saibamen': 1, 'Konatsian': 1, 'Oni': 1
+        'Saibamen': 1, 'Konatsian': 1, 'Oni': 1, 'Sphinxian': 1
     },
     'Otherworld': {
         'Earthling': 40, 'Saiyan': 20, 'Oni': 10, 'Half-Saiyan': 8, 'Alien': 4,
         'Tortle': 3, 'Hera': 2, 'Cerealian': 2, 'Frost Demon': 2, 'Tuffle': 1,
-        'Saibamen': 1, 'Konatsian': 1, 'Namekian': 1,
+        'Saibamen': 1, 'Konatsian': 1, 'Namekian': 1, 'Sphinxian': 1
+    },
+    // Hell — the wicked dead, watched over by the Oni.
+    'Hell': {
+        'Oni': 30, 'Saiyan': 14, 'Frost Demon': 12, 'Earthling': 10, 'Alien': 8,
+        'Half-Saiyan': 6, 'Namekian': 5, 'Tuffle': 4, 'Cerealian': 3, 'Konatsian': 3,
+        'Hera': 2, 'Tortle': 1, 'Saibamen': 1, 'Sphinxian': 1
     },
     'Yardrat': {
         'Alien': 50, 'Earthling': 8, 'Saiyan': 8, 'Namekian': 6, 'Half-Saiyan': 4,
         'Tuffle': 4, 'Frost Demon': 4, 'Cerealian': 3, 'Hera': 2, 'Tortle': 2,
-        'Saibamen': 2, 'Konatsian': 1, 'Oni': 1
+        'Saibamen': 2, 'Konatsian': 1, 'Sphinxian': 1, 'Oni': 1
     },
     'Space': {
         'Alien': 30, 'Frost Demon': 15, 'Saiyan': 10, 'Namekian': 8, 'Earthling': 6,
         'Saibamen': 6, 'Half-Saiyan': 4, 'Cerealian': 3, 'Tuffle': 3, 'Hera': 2,
-        'Tortle': 2, 'Konatsian': 1, 'Oni': 1
+        'Tortle': 2, 'Sphinxian': 2, 'Konatsian': 1, 'Oni': 1
     }
 };
 
@@ -9351,52 +14472,384 @@ const ENEMY_ALIGNMENT_BANDS = {
     'very hard': [19001, 34500]
 };
 
-// Per-difficulty enemy scaling. `ratio` is the enemy's power level as a fraction of the
-// player's power level, so foes scale CONTINUOUSLY with the player's growth (no more
-// hard-coded PL tier caps). `minRoll` keeps brand-new players facing a sane minimum dice.
-// `maxStat` is the CEILING on the base (pre-saga) enemy stat: player-PL scaling stops here,
-// and the globalSaga multiplier (applied where stats are rolled) is what pushes enemies
-// beyond it — so the saga always meaningfully influences difficulty. Tune here.
-const ENEMY_SCALING = {
-    casual:     { ratio: 0.35, minRoll: 20, maxStat: 1000 },
-    hard:       { ratio: 0.7,  minRoll: 40, maxStat: 2000 },
-    'very hard':{ ratio: 1.0,  minRoll: 60, maxStat: 4000 },
-    mentor:     { ratio: 1.4,  minRoll: 80, maxStat: 8500 },
-    boss:       { ratio: 2.2,  minRoll: 120, maxStat: 17000 }
+// Per-difficulty enemy scaling.
+//   ratio    — the enemy's power level as a MULTIPLE of the player's (0.35 = the foe is ~35% of
+//              the player's PL). Because this multiplies the PLAYER's power level, enemy power
+//              levels now grow exponentially as the strongest player's PL (and therefore the
+//              auto-derived saga) grows. Previously each difficulty ALSO had a hard `maxStat`
+//              ceiling, which froze enemies at roughly 6k–105k PL no matter how strong players
+//              became (a 7-billion-PL player still fought ~100k-PL foes). There is no ceiling now.
+//   minRoll  — minimum stat spread, so brand-new players still face sane dice.
+//   easeStat — the PL-derived stat at which a player counts as "established" for that difficulty
+//              and receives the FULL saga multiplier (see getEffectiveEnemySagaMult). Below it,
+//              saga scaling is eased toward 1 so late-joining newcomers aren't walled out. This is
+//              a separate concept from the (removed) stat cap.
+//   maxStat  — OPTIONAL absolute ceiling on the base enemy stat. Unset by default; set it via
+//              config.json `enemyScaling` only if you deliberately want a hard cap.
+// Override any field per difficulty via config.json `enemyScaling` (partial merges allowed).
+const ENEMY_SCALING_DEFAULTS = {
+    casual:      { ratio: 0.35, minRoll: 20,  easeStat: 1000 },
+    hard:        { ratio: 0.7,  minRoll: 40,  easeStat: 2000 },
+    'very hard': { ratio: 1.0,  minRoll: 60,  easeStat: 4000 },
+    saga:        { ratio: 1.3,  minRoll: 70,  easeStat: 6000 },
+    mentor:      { ratio: 1.4,  minRoll: 80,  easeStat: 8500 },
+    boss:        { ratio: 2.2,  minRoll: 120, easeStat: 17000 }
 };
+const ENEMY_SCALING = Object.fromEntries(
+    Object.entries(ENEMY_SCALING_DEFAULTS).map(([k, v]) => [k, { ...v }])
+);
+if (enemyScaling && typeof enemyScaling === 'object') {
+    Object.entries(enemyScaling).forEach(([k, v]) => {
+        if (v && typeof v === 'object') ENEMY_SCALING[k] = { ...(ENEMY_SCALING[k] || {}), ...v };
+    });
+}
 
 // Approximate power level contributed by one average point of each stat (from
 // calculatePowerLevel's coefficients plus a small HP/Ki overhead). Used to invert a target
 // enemy power level into a target average stat.
 const ENEMY_STAT_PER_PL = 6.2;
 
-// Stat-point rewards from missions/quests scale with the player's power level, mirroring how
-// enemy stats scale (see ENEMY_SCALING). Higher-PL players earn proportionally more stat points.
+// How enemy stats scale off the player's power level. `exponent` 1 (default) makes the enemy's
+// power level directly proportional to the player's, which already means ENEMY PL grows
+// exponentially as the (exponentially-growing) top PL / saga rises. Raise it above 1 to make the
+// gap widen at high power levels. Tunable via config.json `enemyPLExponent`.
+const ENEMY_PL_EXPONENT = (typeof enemyPLExponent === 'number' && enemyPLExponent > 0) ? enemyPLExponent : 1;
+function getEnemyScalingPL(powerLevel) {
+    const pl = Math.max(1, Number(powerLevel) || 1);
+    return ENEMY_PL_EXPONENT === 1 ? pl : Math.pow(pl, ENEMY_PL_EXPONENT);
+}
+
+// ----- Central progression scaling -----
+// EVERY stat-point reward from a progression activity (missions, quests, training, sparring,
+// canon actions) is computed here so all systems share ONE diminishing-returns curve instead of
+// each multiplying by the saga. Power Level is the PRIMARY input. `activityValue` is the intrinsic
+// worth/difficulty of the activity (1.0 = a standard worthwhile activity, <1 weak/basic, >1
+// significant/risky). `opponentPL` (for fights) rewards matches around your own strength over
+// stomping a much weaker foe. `saga` is only a MINOR contextual modifier and can never dominate.
+function getProgressionReward(playerPL, activityValue = 1, opponentPL = null, saga = getEffectiveSaga()) {
+    const pl = Math.max(1, Number(playerPL) || 0);
+    // Diminishing returns: reward ∝ PL^0.75, so relative gain ∝ PL^-0.25 — fast early, slower
+    // later, but never stagnant. A brand-new character and a top-end character both progress
+    // sensibly, and a fresh character cannot exploit a high saga.
+    const scaled = Math.pow(pl, 0.75);
+    // Fights: reward an even/outmatched match more than stomping a much weaker foe.
+    let relative = 1;
+    if (opponentPL != null && opponentPL > 0) {
+        const ratio = opponentPL / pl;
+        if (ratio >= 1.25) relative = 1.7;        // fighting someone stronger
+        else if (ratio >= 0.8) relative = 1.4;    // roughly even
+        else if (ratio >= 0.5) relative = 1.0;    // a bit weaker
+        else relative = 0.4;                       // stomp
+    }
+    // Minor saga modifier: up to +20% at high saga, then flattens (never dominates).
+    const sagaMod = 1 + Math.min(0.2, Math.max(0, (saga - 1)) * 0.008);
+    const raw = 0.21 * scaled * activityValue * relative * sagaMod;
+    return Math.max(1, Math.round(raw));
+}
+
+// Canon actions are high-stakes, so their activity value sits above a standard activity (1.0).
+// Thwarting a villain is the high-value POSITIVE-alignment equivalent (so good players have a real
+// progression path, not just the training frenzy). Destroying a major location (2.0) pays more
+// than destroying a planet (1.5) — planet rewards were intentionally halved.
+function getCanonReward(playerPL, type, opponentPL = null) {
+    const value = type === 'blow-planet' ? 1.5
+        : type === 'blow-location' ? 2.0
+        : type === 'thwart' ? 2.0
+        : 1.5;
+    return getProgressionReward(playerPL, value, opponentPL, getEffectiveSaga());
+}
+
+// Stat-point rewards from missions/quests scale with the player's power level. The mission TYPE
+// sets the activity's intrinsic worth; the return is a fixed proportion of the player's power
+// level (via getProgressionReward), NOT a multiple of the saga.
+// Calibration (activityValue units, 1.0 = the base `0.21 × PL^0.75`):
+//   a gravity-tier training session is 0.4-1.25 and a spar is 1.0-1.2 × a relative-strength band
+//   — both RISK-FREE and repeatable. Quests are LETHAL, cost fatigue and (harder tiers) field
+//   several foes at or above the player's own PL, so they must pay well above the safe
+//   activities, and the jump per difficulty has to match how much deadlier the tier is
+//   (Casual 1 foe at ×0.35 PL → Very Challenging/Saga 1-5 foes at ×1.0 PL + full saga scaling).
+// Tunable via config.json `missionRewardScaling` — either plain numbers or `{ activityValue }`.
 const MISSION_REWARD_SCALING = {
-    casual: { ratio: 0.35, maxStat: 1000, base: 5 },
-    hard: { ratio: 0.7, maxStat: 2000, base: 8 },
-    'very hard': { ratio: 1.0, maxStat: 4000, base: 10 },
-    saga: { ratio: 1.4, maxStat: 8500, base: 30 }
+    casual: { activityValue: 1.5 },
+    hard: { activityValue: 2.5 },
+    'very hard': { activityValue: 3.75 },
+    saga: { activityValue: 4.75 },
+    // NPC quests (special-area NPCs / socialising): 1-hour cooldown, usually a long collection
+    // task or a dinosaur hunt, with no enemy-strength tier of their own.
+    npcQuest: { activityValue: 1.75 }
 };
-function getMissionStatReward(powerLevel, missionType, saga = 1) {
+if (missionRewardScaling && typeof missionRewardScaling === 'object') {
+    Object.entries(missionRewardScaling).forEach(([k, v]) => {
+        const n = typeof v === 'number' ? v : (v && typeof v.activityValue === 'number' ? v.activityValue : null);
+        if (n !== null && n > 0) MISSION_REWARD_SCALING[String(k).toLowerCase()] = { activityValue: n };
+    });
+}
+// Base zeni for completing a quest (saga missions roll 500d100 instead). Shared by the payout and
+// the quest preview so the advertised number can't drift from what is actually paid.
+const MISSION_ZENI_REWARDS = { casual: 5000, hard: 10000, 'very hard': 15000 };
+function getMissionStatReward(powerLevel, missionType, saga = getEffectiveSaga()) {
     const cfg = MISSION_REWARD_SCALING[String(missionType || '').toLowerCase()] || MISSION_REWARD_SCALING.casual;
-    const targetStat = Math.min(Math.max(1, powerLevel) * cfg.ratio / ENEMY_STAT_PER_PL, cfg.maxStat);
-    return Math.max(1, Math.round((cfg.base + targetStat / 4) * (saga || 1)));
+    return getProgressionReward(powerLevel, cfg.activityValue, null, saga);
+}
+
+// One-line payout summary for the quest preview: stat points are per SURVIVOR and scale to that
+// player's own power level, so the host's number is shown as the example.
+function describeMissionReward(missionType, powerLevel) {
+    const type = String(missionType || 'casual').toLowerCase();
+    const points = getMissionStatReward(powerLevel || 0, type, getEffectiveSaga());
+    const zeni = type === 'saga'
+        ? '500d100 zeni'
+        : `${(MISSION_ZENI_REWARDS[type] || MISSION_ZENI_REWARDS.casual).toLocaleString()} zeni`;
+    return `\n💰 **Victory reward (each survivor): ~${points.toLocaleString()} stat points** (scaled to your own PL) + **${zeni}**.`;
+}
+
+// Apply a character's "more stats when sparring" bonuses to a spar-stat-points value.
+// Sphinxian "Spoiled" gives +10% on spar rewards; Prodigious Achievement "Abnormal Growth"
+// adds +25% then multiplies by 1d2+1 (mirrors the training-roll bonus). Returns { points, notes }.
+function applySparBonus(points, character) {
+    if (!character) return { points, notes: [] };
+    const notes = [];
+    if (character.race === 'Sphinxian') {
+        points = Math.floor(points * 1.10);
+        notes.push('😼 Sphinxian **Spoiled**: spar gains **+10%**!');
+    }
+    if (character.mutation === 'Prodigious Achievement') {
+        points = Math.round(points * 1.25);
+        const growthBoost = getRandomInt(2) + 1;
+        points = points * growthBoost;
+        notes.push(`🧬 Prodigious Achievement: **+25%**, then ×${growthBoost}!`);
+    }
+    return { points, notes };
+}
+
+// Mission item-loot tuning. Config-driven via config.json: `missionNormalItemChance` (45%),
+// `missionLegendaryItemChance` (3%), `missionDifficultyItemChanceBoost` (+3%/difficulty),
+// `missionNegativeItemChanceBonus` (+10% for negative-alignment missions),
+// `missionNegativeZeniMult` (1.5× zeni for negative-alignment missions).
+const MISSION_NORMAL_ITEM_CHANCE = missionNormalItemChance !== undefined ? missionNormalItemChance : 45;
+const MISSION_LEGENDARY_ITEM_CHANCE = missionLegendaryItemChance !== undefined ? missionLegendaryItemChance : 3;
+const MISSION_DIFFICULTY_ITEM_CHANCE_BOOST = missionDifficultyItemChanceBoost !== undefined ? missionDifficultyItemChanceBoost : 3;
+const MISSION_NEGATIVE_ITEM_CHANCE_BONUS = missionNegativeItemChanceBonus !== undefined ? missionNegativeItemChanceBonus : 10;
+const MISSION_NEGATIVE_ZENI_MULT = missionNegativeZeniMult !== undefined ? missionNegativeZeniMult : 1.5;
+
+const MISSION_DIFFICULTY_INDEX = { casual: 0, hard: 1, 'very hard': 2, saga: 3 };
+
+// Item-drop chances for a mission. Difficulty adds +3% per step and negative-alignment missions
+// get a flat bonus. Normal and legendary are rolled INDEPENDENTLY, so a quest can drop both.
+function getMissionItemChances(missionType, alignment) {
+    const idx = MISSION_DIFFICULTY_INDEX[String(missionType || '').toLowerCase()] ?? 0;
+    const boost = idx * MISSION_DIFFICULTY_ITEM_CHANCE_BOOST;
+    const neg = alignment === 'negative' ? MISSION_NEGATIVE_ITEM_CHANCE_BONUS : 0;
+    return {
+        normal: Math.min(100, MISSION_NORMAL_ITEM_CHANCE + boost + neg),
+        legendary: Math.min(100, MISSION_LEGENDARY_ITEM_CHANCE + boost + neg)
+    };
+}
+
+// Roll a mission's item loot. Normal items grant 1-3 items from SEARCH_ITEMS; legendary uses the
+// legendary table. Returns { items, text, zeniBonus, resourceBonus }. Items that grant their
+// effect immediately (treasure / resources) are returned as bonuses rather than inventory items.
+function rollMissionItemLoot(missionType, alignment, location, space) {
+    const { normal, legendary } = getMissionItemChances(missionType, alignment);
+    const items = [];
+    let text = '';
+    let zeniBonus = 0;
+    let resourceBonus = 0;
+
+    const hadNormal = getRandomInt(100) <= normal;
+    const hadLegendary = getRandomInt(100) <= legendary;
+
+    if (hadNormal) {
+        const amount = getRandomInt(3); // 1-3 normal items
+        const names = [];
+        for (let i = 0; i < amount; i++) names.push(SEARCH_ITEMS[getRandomInt(22) - 1]);
+        items.push(...names);
+        text += `\n📦 **Loot ×${amount}:** ${names.map(n => `**${n}**`).join(', ')}!`;
+    }
+    if (hadLegendary) {
+        // Dragon Balls are handled by the global state tracker / search, not mission loot.
+        let item = rollLegendaryItem(location || 'Earth', space || 1);
+        let tries = 0;
+        while (parseItemName(item).name === 'Dragon Ball' && tries < 5) {
+            item = rollLegendaryItem(location || 'Earth', space || 1);
+            tries++;
+        }
+        const baseName = parseItemName(item).name;
+        if (baseName === 'Huge Treasure (1500000 zeni)') zeniBonus += 1500000;
+        else if (baseName === 'Small Wallet (1000 zeni)') zeniBonus += 1000;
+        else if (baseName === "One Man's Trash") resourceBonus += 12500;
+        else if (baseName === '5x Resources') resourceBonus += 50;
+        else items.push(item);
+        text += `\n💎 **LEGENDARY LOOT:** **${item}**!`;
+    }
+    return { items, text, zeniBonus, resourceBonus };
 }
 
 // Derive a dice `roll` + flat `mod` for an enemy's five stats from the player's power level
 // and the encounter difficulty. Continuous (no tiers): the higher the player's PL, the
-// proportionally stronger the enemy.
+// proportionally stronger the enemy — with NO absolute stat ceiling by default, so enemy power
+// levels keep growing with the players instead of flatlining at a fixed cap.
 function getEnemyStatRollMod(powerLevel, type) {
     const cfg = ENEMY_SCALING[String(type).toLowerCase()] || ENEMY_SCALING.casual;
-    const rawStat = Math.max(1, powerLevel) * cfg.ratio / ENEMY_STAT_PER_PL;
-    // Ceiling on the base stat: beyond `maxStat` the player-PL component stops growing, so
-    // the globalSaga multiplier is what scales enemies further (keeps the saga meaningful).
-    const targetStat = Math.min(rawStat, cfg.maxStat);
-    // Keep the old "floor + spread" model: `mod` is the floor, `roll` the spread above it.
+    const rawStat = getEnemyScalingPL(powerLevel) * cfg.ratio / ENEMY_STAT_PER_PL;
+    // An admin can still impose a hard cap via config.json `enemyScaling.<difficulty>.maxStat`.
+    const targetStat = (typeof cfg.maxStat === 'number' && cfg.maxStat > 0)
+        ? Math.min(rawStat, cfg.maxStat)
+        : rawStat;
+    // Keep the "floor + spread" model: `mod` is the floor, `roll` the spread above it.
     const mod = Math.floor(targetStat * 0.5);
     const roll = Math.max(cfg.minRoll, Math.round((targetStat - mod) * 2));
     return { roll, mod };
+}
+
+// Effective saga multiplier for an encounter, eased for brand-new players. A player whose PL puts
+// them far below a difficulty's `easeStat` is eased toward ×1 — letting late-joining newcomers
+// actually win fights instead of being walled out by the top player's saga. Established players
+// get the full multiplier. It is ALSO hard-capped at `enemySagaMultMax`, so enemy difficulty stays
+// anchored to the player's OWN power level (via the difficulty ratio) instead of being multiplied
+// into impossibility at high sagas.
+function getEffectiveEnemySagaMult(powerLevel, type, saga = getEffectiveSaga()) {
+    // The full saga multiplier is capped: it can't exceed `enemySagaMultMax` no matter the saga.
+    const full = Math.min(getEnemySagaMult(saga), ENEMY_SAGA_MULT_MAX);
+    if (!ENEMY_SAGA_EASE || full <= 1) return full;
+    const cfg = ENEMY_SCALING[String(type).toLowerCase()] || ENEMY_SCALING.casual;
+    const rawStat = Math.max(1, powerLevel || 1) * cfg.ratio / ENEMY_STAT_PER_PL;
+    // 0 = brand new (far below the "established" threshold), 1 = at/above it (full saga mult).
+    const easeRef = (typeof cfg.easeStat === 'number' && cfg.easeStat > 0)
+        ? cfg.easeStat
+        : ((typeof cfg.maxStat === 'number' && cfg.maxStat > 0) ? cfg.maxStat : 1);
+    const capProximity = Math.max(0, Math.min(1, rawStat / easeRef));
+    const ease = Math.pow(capProximity, ENEMY_SAGA_DAMPEN_POWER);
+    return 1 + (full - 1) * ease;
+}
+
+// 0.2% chance (config `enemyMutationChance`) that an enemy in a very-challenging/saga mission is
+// born with one of its race's applicable mutations ("when applicable" — races with no mutations,
+// and clan-restricted ones like Namekian Slug/Wise Old One, never roll). Returns the mutation or null.
+function rollEnemyMutation(race, type) {
+    if (!(ENEMY_MUTATION_CHANCE > 0)) return null;
+    const band = String(type || '').toLowerCase();
+    if (band !== 'very hard' && band !== 'saga') return null;
+    if (Math.random() >= ENEMY_MUTATION_CHANCE) return null;
+    // Enemies have no clan, so clan-restricted mutations can't apply to them.
+    const available = getAvailableMutations(race, null);
+    if (!available || available.length === 0) return null;
+    return available[getRandomInt(available.length) - 1];
+}
+
+// Apply a mutation's automatable effects to a generated enemy (stat bonuses + the passives battle
+// code reads via participant.mutation, e.g. Hunter of Legend's eye reroll/Vital Strike, Red
+// Saibamen's stats). Mirrors the player-facing applyMutationEffects() where it applies.
+function applyMutationToEnemy(enemy, mutation) {
+    if (!enemy || !mutation) return;
+    enemy.mutation = mutation.name;
+    // Permanent stat bonuses (players convert each modifier point into 2 raw stat points).
+    if (mutation.statBonus) {
+        Object.entries(mutation.statBonus).forEach(([stat, bonus]) => {
+            if (stat === 'intRoll') { enemy.int = (enemy.int || 0) + bonus; return; }
+            if (['str', 'dex', 'con', 'wil', 'spi'].includes(stat)) enemy[stat] = (enemy[stat] || 0) + bonus * 2;
+        });
+    }
+    // Hunter of Legend (Cerealian) rolls Raphael stats: STR/CON/SPI d30+10, DEX/WIL d40+5.
+    if (mutation.name === 'Hunter of Legend') {
+        enemy.str = (enemy.str || 0) + rollXdY(1, 30) + 10;
+        enemy.con = (enemy.con || 0) + rollXdY(1, 30) + 10;
+        enemy.spi = (enemy.spi || 0) + rollXdY(1, 30) + 10;
+        enemy.dex = (enemy.dex || 0) + rollXdY(1, 40) + 5;
+        enemy.wil = (enemy.wil || 0) + rollXdY(1, 40) + 5;
+    }
+    // Wise Old One grants fully-mastered Ki abilities (clan-gated, so normally excluded for enemies).
+    if (mutation.name === 'Wise Old One') {
+        enemy.kiSense = true;
+        enemy.kiEfficiency = true;
+    }
+}
+
+// ---------- Enemy technique mastery (scales with power level) ----------
+// Enemies are not frozen at mastery 0: as their power level rises they sharpen the techniques they
+// know, and they pick up the ki disciplines. At high power Ki Application is simply ON (mastery 3 =
+// passive & free, worth 1/4 of their WIL mod in damage), which is what makes a late-game NPC fight
+// like a trained fighter instead of a stat block. Tunable via config.json `enemyMastery`.
+const ENEMY_MASTERY_CFG = enemyMastery || {};
+const ENEMY_PL_PER_MASTERY = (typeof ENEMY_MASTERY_CFG.plPerLevel === 'number') ? ENEMY_MASTERY_CFG.plPerLevel : 12000;
+const ENEMY_MASTERY_MAX = (typeof ENEMY_MASTERY_CFG.maxLevel === 'number') ? ENEMY_MASTERY_CFG.maxLevel : 5;
+const ENEMY_KI_APP_CFG = ENEMY_MASTERY_CFG.kiApplication || {};
+const ENEMY_KI_APP_LEARN_PL = (typeof ENEMY_KI_APP_CFG.learnPL === 'number') ? ENEMY_KI_APP_CFG.learnPL : 3000;
+const ENEMY_KI_APP_TIER2_PL = (typeof ENEMY_KI_APP_CFG.tier2PL === 'number') ? ENEMY_KI_APP_CFG.tier2PL : 20000;
+const ENEMY_KI_APP_TIER3_PL = (typeof ENEMY_KI_APP_CFG.tier3PL === 'number') ? ENEMY_KI_APP_CFG.tier3PL : 75000;
+const ENEMY_KI_EFF_CFG = ENEMY_MASTERY_CFG.kiEfficiency || {};
+const ENEMY_KI_EFF_LEARN_PL = (typeof ENEMY_KI_EFF_CFG.learnPL === 'number') ? ENEMY_KI_EFF_CFG.learnPL : 2000;
+const ENEMY_KI_EFF_TIER2_PL = (typeof ENEMY_KI_EFF_CFG.tier2PL === 'number') ? ENEMY_KI_EFF_CFG.tier2PL : 15000;
+const ENEMY_KI_EFF_TIER3_PL = (typeof ENEMY_KI_EFF_CFG.tier3PL === 'number') ? ENEMY_KI_EFF_CFG.tier3PL : 50000;
+
+// Mastery 0 below `learnPL`, then 1 -> 2 -> 3 at the two higher tiers.
+function enemyAbilityMastery(powerLevel, learnPL, tier2PL, tier3PL) {
+    const pl = Math.max(0, Number(powerLevel) || 0);
+    if (pl < learnPL) return 0;
+    if (pl >= tier3PL) return 3;
+    if (pl >= tier2PL) return 2;
+    return 1;
+}
+
+// The mastery profile an enemy of this power level fights with.
+function getEnemyMasteryProfile(powerLevel, enemy = {}) {
+    const pl = Math.max(0, Number(powerLevel) || 0);
+    const level = ENEMY_PL_PER_MASTERY > 0
+        ? Math.max(0, Math.min(ENEMY_MASTERY_MAX, Math.floor(pl / ENEMY_PL_PER_MASTERY)))
+        : ENEMY_MASTERY_MAX;
+    const techniqueMastery = {};
+    if (level > 0) {
+        // Each technique is capped at the number of mastery tiers it defines (a 4-entry table means
+        // levels 0-3), so an enemy only reaches a level the technique actually has effects for.
+        (Array.isArray(enemy.techniques) ? enemy.techniques : []).forEach(t => {
+            const cap = getTechniqueMaxMastery(t);
+            const lvl = Math.min(level, cap);
+            if (lvl > 0) techniqueMastery[t] = lvl;
+        });
+    }
+    const kiApplication = enemyAbilityMastery(pl, ENEMY_KI_APP_LEARN_PL, ENEMY_KI_APP_TIER2_PL, ENEMY_KI_APP_TIER3_PL);
+    const kiEfficiency = enemyAbilityMastery(pl, ENEMY_KI_EFF_LEARN_PL, ENEMY_KI_EFF_TIER2_PL, ENEMY_KI_EFF_TIER3_PL);
+    const abilityMastery = {};
+    if (kiApplication > 0) abilityMastery['Ki Application'] = kiApplication;
+    if (kiEfficiency > 0) abilityMastery['Ki Efficiency'] = kiEfficiency;
+    return { level, techniqueMastery, abilityMastery, kiApplication, kiEfficiency };
+}
+
+// The ki-discipline participant fields for an enemy at its power level — the enemy equivalent of
+// what applyFormToStats computes for players. Ki Efficiency's SPI/WIL mods are folded into
+// `modBonus`; Ki Application at mastery 3 is passive (free, 1/4 WIL mod damage).
+function buildEnemyKiAbilityFields(profile, stats, modBonus, enemy = {}) {
+    const sm = (enemy && enemy.statMultipliers) || {};
+    const wilMod = sm.wil ? statModifier.calculateModifiedModifier(stats.wil, sm.wil) : calculateModifier(stats.wil);
+    const effWilMod = Math.max(0, wilMod + (modBonus.wil || 0));
+    const fields = {
+        techniqueMastery: profile.techniqueMastery,
+        abilityMastery: profile.abilityMastery,
+        kiApplicationLearned: false,
+        kiApplicationActive: false,
+        kiAppDamage: Number(enemy.kiAppDamage) || 0,
+        kiApplicationBaseDamage: 0,
+        kiApplicationCost: 0,
+        kiApplicationDex: 0,
+        kiEfficiency: false
+    };
+    // A Cerealian's innate ki mastery, or a ki discipline learned as the enemy grew stronger.
+    if ((enemy.race === 'Cerealian' || profile.kiApplication > 0) && profile.kiApplication > 0) {
+        fields.kiApplicationLearned = true;
+        const eff = getKiApplicationEffects({ kiApplication: true, abilityMastery: { 'Ki Application': profile.kiApplication }, stats }, effWilMod);
+        fields.kiAppDamage = Math.max(fields.kiAppDamage, eff.damage);
+        fields.kiApplicationBaseDamage = fields.kiAppDamage;
+        fields.kiApplicationActive = eff.passive === true;
+        fields.kiApplicationCost = eff.cost;
+        fields.kiApplicationDex = eff.dex;
+    }
+    if (profile.kiEfficiency > 0) {
+        const eff = getKiEfficiencyEffects({ kiEfficiency: true, abilityMastery: { 'Ki Efficiency': profile.kiEfficiency } });
+        fields.kiEfficiency = true;
+        modBonus.spi = (modBonus.spi || 0) + eff.spi;
+        modBonus.wil = (modBonus.wil || 0) + eff.wil;
+    }
+    return fields;
 }
 
 function generateEnemiesForMission(powerLevel, type, count, location = 'Earth', alignment = 'positive', saga = false) {
@@ -9410,20 +14863,39 @@ function generateEnemiesForMission(powerLevel, type, count, location = 'Earth', 
     ({ roll, mod } = getEnemyStatRollMod(powerLevel, type));
     style = type.toLowerCase() !== 'casual';
     const rank = getEnemyDifficultyRank(type);
+    // A lone enemy on a challenging/very-challenging/saga mission fights like a boss: buff its
+    // stats (only when a mission fields a single foe — a squad of the same difficulty is its own
+    // challenge). Tunable via config.json `singleEnemyStatMult`.
+    const soloBoost = (count === 1 && ['hard', 'very hard', 'saga'].includes(String(type).toLowerCase()))
+        ? SINGLE_ENEMY_STAT_MULT
+        : 1;
+    // Enemy stats scale super-linearly with the global saga (higher saga = tougher foes), eased
+    // for brand-new players so late-joining newcomers can still start. See getEnemySagaMult() /
+    // getEffectiveEnemySagaMult() / config.json `enemySagaScaleExponent` + `enemySagaEase`.
+    const sagaMult = getEffectiveEnemySagaMult(powerLevel, type);
+    // Enemy scaling multipliers ADD instead of compounding: saga scaling and the single-enemy boost
+    // combine into ONE factor (a ×1.5 saga enemy with a ×2 backline boost is ×2.5, not ×3). The
+    // factor is stored on the enemy so party-size scaling can fold into it additively later.
+    const enemyScaleMult = statModifier.combineMultipliers(sagaMult, soloBoost);
 
     const enemies = [];
     for (let i = 0; i < count; i++) {
         const race = rollEnemyRace(location);
         const loadout = buildEnemyLoadout(race, type);
+        // 0.2% chance (very-challenging/saga only) the enemy carries one of its race's mutations.
+        const mutationObj = rollEnemyMutation(loadout.race, type);
         const enemy = {
             // Enemy stats scale with the global saga number (higher saga = stronger foes).
-            str: (getRandomInt(roll) + mod) * globalSaga,
-            dex: (getRandomInt(roll) + mod) * globalSaga,
-            con: (getRandomInt(roll) + mod) * globalSaga,
-            wil: (getRandomInt(roll) + mod) * globalSaga,
-            spi: (getRandomInt(roll) + mod) * globalSaga,
+            str: Math.round((getRandomInt(roll) + mod) * enemyScaleMult),
+            dex: Math.round((getRandomInt(roll) + mod) * enemyScaleMult),
+            con: Math.round((getRandomInt(roll) + mod) * enemyScaleMult),
+            wil: Math.round((getRandomInt(roll) + mod) * enemyScaleMult),
+            spi: Math.round((getRandomInt(roll) + mod) * enemyScaleMult),
+            // Remembered so party-size scaling can ADD to it instead of multiplying on top.
+            baseScaleMult: enemyScaleMult,
             int: rollIntelligence(loadout.race),
             race: loadout.race,
+            mutation: mutationObj ? mutationObj.name : null,
             gender: genders[getRandomInt(2) - 1],
             // Hidden alignment — enemies OPPOSE the mission alignment the player chose.
             alignment: alignment === 'negative' ? 'Positive' : 'Negative',
@@ -9433,14 +14905,17 @@ function generateEnemiesForMission(powerLevel, type, count, location = 'Earth', 
             kiSense: loadout.kiSense,
             kiAppDamage: loadout.kiAppDamage,
             kiEfficiency: loadout.kiEfficiency,
-            techniques: loadout.techniques
+            techniques: loadout.techniques,
+            // NPCs roll their race's stat-multiplier points randomly (see statMultiplier system).
+            statMultipliers: rollRandomStatMultipliers(loadout.race)
         };
+        if (mutationObj) applyMutationToEnemy(enemy, mutationObj);
 
         // Scale the hidden alignment by difficulty band + enemy power level:
         // stronger enemies are more likely to have a higher (stronger) alignment.
         const band = ENEMY_ALIGNMENT_BANDS[type.toLowerCase()] || ENEMY_ALIGNMENT_BANDS.casual;
-        const enemyMaxHP = calculateHP(enemy.con, enemy.race || null);
-        const enemyMaxKi = calculateKi(enemy.spi, enemy.race || null);
+        const enemyMaxHP = calculateHP(enemy.con, enemy.race || null, enemy.statMultipliers, enemy);
+        const enemyMaxKi = calculateKi(enemy.spi, enemy.race || null, enemy.statMultipliers, enemy);
         const enemyPL = characterManager.calculatePowerLevel({
             str: enemy.str, dex: enemy.dex, con: enemy.con, wil: enemy.wil, spi: enemy.spi,
             maxHP: enemyMaxHP, maxKi: enemyMaxKi
@@ -9482,8 +14957,13 @@ function generateEnemiesForMission(powerLevel, type, count, location = 'Earth', 
 
 // Build a battle participant from a generated enemy (used by mission start and reinforcements).
 function buildEnemyParticipant(enemy, index) {
-    const maxHP = calculateHP(enemy.con, enemy.race || null);
-    const maxKi = calculateKi(enemy.spi, enemy.race || null);
+    const maxHP = calculateHP(enemy.con, enemy.race || null, enemy.statMultipliers, enemy);
+    const maxKi = calculateKi(enemy.spi, enemy.race || null, enemy.statMultipliers, enemy);
+    // Racial stat mods (Oni bulk, Tortle shell, Hera physique, ...) apply in combat for enemies too.
+    const modBonus = getRacialCombatMods(enemy.race || null, enemy);
+    modBonus.dex = (modBonus.dex || 0) - (enemy.weaponDexPenalty || 0);
+    // Technique mastery + ki disciplines scale with the enemy's power level.
+    const kiFields = buildEnemyKiAbilityFields(getEnemyMasteryProfile(enemy.powerLevel || 0, enemy), { wil: enemy.wil || 0 }, modBonus, enemy);
     return {
         userId: `enemy_${index}`,
         username: `Enemy ${index}`,
@@ -9502,17 +14982,18 @@ function buildEnemyParticipant(enemy, index) {
         ki: maxKi,
         fatigue: 0,
         stats: { str: enemy.str, dex: enemy.dex, con: enemy.con, wil: enemy.wil, spi: enemy.spi, int: enemy.int || rollIntelligence(enemy.race || null) },
+        statMultipliers: resolveStatMultipliers(enemy.statMultipliers, enemy.race || null),
         flying: enemy.flying || false,
         kiSense: enemy.kiSense || false,
-        kiAppDamage: enemy.kiAppDamage || 0,
-        kiEfficiency: enemy.kiEfficiency || false,
-        kiApplicationLearned: enemy.race === 'Cerealian',
+        ...kiFields,
         techniques: (enemy.techniques || []).concat((enemy.race === 'Cerealian' && !(enemy.techniques || []).includes('Vital Strike')) ? ['Vital Strike'] : []),
         fightingStyle: enemy.style || null,
         invisible: enemy.style === 'Assassin' && getRandomInt(100) <= 50,
         weapon: enemy.weapon || null,
         weaponType: enemy.weaponType || null,
         weaponAttackMod: enemy.weaponAttackMod || 0,
+        weaponAtkPct: enemy.weaponAtkPct || 0,
+        weaponDexPct: enemy.weaponDexPct || 0,
         weaponDamageMode: enemy.weaponDamageMode || null,
         weaponBypass: enemy.weaponBypass || false,
         weaponConBonus: enemy.weaponConBonus || 0,
@@ -9520,8 +15001,53 @@ function buildEnemyParticipant(enemy, index) {
         armor: enemy.armor || null,
         armorReduction: enemy.armorReduction || 0,
         armorDexReduction: enemy.armorDexReduction || 0,
-        modBonus: { dex: -(enemy.weaponDexPenalty || 0) }
+        modBonus
     };
+}
+
+// Build a player battle participant (used by duels, spars, companion spars, and canon battles).
+function buildPlayerBattleParticipant(userId, character) {
+    const bs = applyFormToStats(character);
+    return {
+        userId,
+        username: character.name,
+        race: character.race,
+        mutation: character.mutation || null,
+        hp: character.maxHP,
+        ki: character.maxKi,
+        currentHP: Math.max(character.currentHP, 0),
+        currentKi: character.currentKi || 0,
+        fatigue: getTotalFatigue(character),
+        stats: bs.stats,
+        modBonus: bs.modBonus,
+        statMultipliers: bs.statMultipliers,
+        kiAppDamage: bs.kiAppDamage,
+        ...kiAppParticipantFields(bs),
+        ...bs.gear,
+        talismanActive: bs.talismanActive,
+        kiRegen: getBattleKiRegen(character),
+        lssjActive: character.activeForm === 'Legendary Super Saiyan',
+        royalClass: character.class === 'Royal Class',
+        fightingStyle: character.fightingStyle || null,
+        pseudoImmortality: character.pseudoImmortality === true,
+        porungaPseudo: character.porungaPseudo === true,
+        zenkaiExhausted: (character.zenkaiExhaustedUntil || 0) > Date.now()
+    };
+}
+
+// Build an ALLIED NPC helper for a canon-intervene battle: the same shape as an enemy participant,
+// but flagged `isAlly` so the auto-resolver plays them on the heroes' side (and so they can never
+// be targeted by the heroes themselves).
+function buildAllyParticipant(ally, index) {
+    const p = buildEnemyParticipant(ally, index);
+    p.userId = `ally_${index}`;
+    p.isNPC = false;
+    p.isAlly = true;
+    p.username = `Ally ${index}`;
+    p.alignment = 'Positive';
+    p.alignmentValue = Math.abs(Number(p.alignmentValue) || 0);
+    p.saga = false;
+    return p;
 }
 
 // Append reinforcement participants to a battle without disrupting the current turn order
@@ -9627,13 +15153,19 @@ const MISSION_ALIGNMENT_MAGNITUDE = {
     saga: 100
 };
 
-// Generate both alignment presets for a mission
-function generateMissionPresets(powerLevel, missionType, location = 'Earth') {
+// Generate both alignment presets for a mission.
+// `party` (optional) is the participant-shaped group that will actually fight (host + companions);
+// the presets are scaled for it HERE, at generation, so the preview matches the fight and nothing
+// changes when the battle starts. Companions only nudge the difficulty (see companionWeight).
+function generateMissionPresets(powerLevel, missionType, location = 'Earth', party = null) {
     const counts = getAlignmentEnemyCounts(missionType);
-    return {
+    const presets = {
         positive: generateEnemiesForMission(powerLevel, missionType, counts.positive, location, 'positive'),
         negative: generateEnemiesForMission(powerLevel, missionType, counts.negative, location, 'negative')
     };
+    const factor = scalePresetsForParty(presets, party, powerLevel);
+    void factor;
+    return presets;
 }
 
 // Scale enemy stats by the global saga (saga missions)
@@ -9643,11 +15175,122 @@ function scaleEnemyStats(enemies) {
     return enemies;
 }
 
+// ---------- Party-size enemy scaling ----------
+// Enemies are generated from ONE reference power level (the initiating player's), but a player can
+// fight alongside up to 4 companions (and a mission can still be joined by others). Companions are
+// meant to nudge the difficulty, NOT decide it, so their power counts for only `companionWeight`
+// of a player's when computing the party total.
+// Tunable via config.json `enemyPartyScaling` ({ enabled, exponent, maxMult, companionWeight }).
+const ENEMY_PARTY_SCALING_CFG = enemyPartyScaling || {};
+const ENEMY_PARTY_SCALING_ENABLED = ENEMY_PARTY_SCALING_CFG.enabled !== false;
+const ENEMY_PARTY_SCALING_EXPONENT = (typeof ENEMY_PARTY_SCALING_CFG.exponent === 'number' && ENEMY_PARTY_SCALING_CFG.exponent > 0)
+    ? ENEMY_PARTY_SCALING_CFG.exponent
+    : 1;
+const ENEMY_PARTY_SCALING_MAX = (typeof ENEMY_PARTY_SCALING_CFG.maxMult === 'number' && ENEMY_PARTY_SCALING_CFG.maxMult > 1)
+    ? ENEMY_PARTY_SCALING_CFG.maxMult
+    : 10;
+// How much of a companion's power level counts toward the party total (0 = companions don't affect
+// enemy strength at all, 1 = they count as much as a player).
+const ENEMY_PARTY_COMPANION_WEIGHT = (typeof ENEMY_PARTY_SCALING_CFG.companionWeight === 'number' && ENEMY_PARTY_SCALING_CFG.companionWeight >= 0)
+    ? ENEMY_PARTY_SCALING_CFG.companionWeight
+    : 0.25;
+
+// Combined power level of a battle's player side (players + companions). Player participants don't
+// always carry `powerLevel`, so fall back to their character record. Allies/companions are counted
+// at `companionWeight` so they only slightly raise the enemies.
+function getPartyPowerPL(participants) {
+    return (participants || []).reduce((sum, p) => {
+        if (!p) return sum;
+        let pl = Number(p.powerLevel);
+        if (!Number.isFinite(pl) || pl <= 0) {
+            const ch = p.userId ? characterManager.getCharacter(p.userId) : null;
+            pl = (ch && ch.powerLevel) || 0;
+        }
+        if (!(pl > 0)) return sum;
+        return sum + pl * (p.isAlly ? ENEMY_PARTY_COMPANION_WEIGHT : 1);
+    }, 0);
+}
+
+// How much to scale the enemies for the party actually fighting, relative to `referencePL` (the
+// power level the enemies were generated from). 1 = no scaling.
+function getPartyScalingFactor(participants, referencePL) {
+    if (!ENEMY_PARTY_SCALING_ENABLED) return 1;
+    const ref = Math.max(1, Number(referencePL) || 0);
+    const partyPL = getPartyPowerPL(participants);
+    if (partyPL <= ref) return 1;
+    const factor = Math.pow(partyPL / ref, ENEMY_PARTY_SCALING_EXPONENT);
+    return Math.max(1, Math.min(ENEMY_PARTY_SCALING_MAX, factor));
+}
+
+// The participant-shaped party used for mission scaling: the host (resolved from their character)
+// plus whoever of their companions would actually join the fight.
+function buildMissionPartyForScaling(userId, character) {
+    return [{ userId }, ...buildCompanionRoster(userId, character)];
+}
+
+// Scale a { positive, negative } preset pair for the party that will fight it. Returns the factor.
+function scalePresetsForParty(presets, party, referencePL) {
+    const factor = party ? getPartyScalingFactor(party, referencePL) : 1;
+    if (factor > 1.0001 && presets) {
+        ['positive', 'negative'].forEach(k => {
+            if (Array.isArray(presets[k])) applyPartyScalingToEnemies(presets[k], factor);
+        });
+    }
+    return factor;
+}
+
+// Multiply a generated enemy batch's combat stats by `factor` and recompute their power level so
+// displays/checks (examine, persuade, boss form gates) match the boosted stats.
+function applyPartyScalingToEnemies(enemies, factor) {
+    if (!Array.isArray(enemies) || !(factor > 1.0001)) return enemies;
+    enemies.forEach(e => {
+        if (!e) return;
+        // Party-size scaling ADDS to the enemy's own scaling factor rather than stacking on top of
+        // it (×1.5 saga scaling + ×2 party scaling = ×2.5). `step` is the leftover to apply now.
+        const baseMult = Number(e.baseScaleMult) || 1;
+        const combined = statModifier.combineMultipliers(baseMult, factor);
+        const step = baseMult > 0 ? combined / baseMult : 1;
+        e.baseScaleMult = combined;
+        ['str', 'dex', 'con', 'wil', 'spi'].forEach(k => {
+            if (typeof e[k] === 'number') e[k] = Math.max(1, Math.round(e[k] * step));
+        });
+        const sm = e.statMultipliers || {};
+        const maxHP = calculateHP(e.con, e.race || null, sm, e);
+        const maxKi = calculateKi(e.spi, e.race || null, sm, e);
+        e.powerLevel = characterManager.calculatePowerLevel({
+            str: e.str, dex: e.dex, con: e.con, wil: e.wil, spi: e.spi, maxHP, maxKi
+        });
+    });
+    return enemies;
+}
+
+// Same idea for a single hunt animal (built by buildHuntEnemy).
+function applyPartyScalingToHuntEnemy(enemy, factor) {
+    if (!enemy || !(factor > 1.0001)) return enemy;
+    // Additive, exactly like applyPartyScalingToEnemies: the party factor joins the animal's own
+    // scaling factor instead of multiplying on top of it.
+    const baseMult = Number(enemy.baseScaleMult) || 1;
+    const combined = statModifier.combineMultipliers(baseMult, factor);
+    const step = baseMult > 0 ? combined / baseMult : 1;
+    enemy.baseScaleMult = combined;
+    ['str', 'dex', 'con', 'wil', 'spi'].forEach(k => {
+        if (typeof enemy.stats[k] === 'number') enemy.stats[k] = Math.max(1, Math.round(enemy.stats[k] * step));
+    });
+    const sm = enemy.statMultipliers || {};
+    enemy.maxHP = calculateHP(enemy.stats.con, null, sm);
+    enemy.maxKi = calculateKi(enemy.stats.spi, null, sm);
+    enemy.powerLevel = characterManager.calculatePowerLevel({
+        ...enemy.stats, maxHP: enemy.maxHP, maxKi: enemy.maxKi
+    });
+    return enemy;
+}
+
 // Format a preset of enemies for display
 function formatEnemyPreset(enemies) {
     return enemies.map((enemy, index) => {
         let line = `**ENEMY ${index + 1}:** STR ${enemy.str} | DEX ${enemy.dex} | CON ${enemy.con} | WIL ${enemy.wil} | SPI ${enemy.spi}`;
         if (enemy.race) line += ` | ${enemy.race}`;
+        if (enemy.mutation) line += ` | 🧬 MUTATION: ${enemy.mutation}`;
         if (enemy.gender) line += ` | ${enemy.gender}`;
         if (enemy.style) line += ` | STYLE ${enemy.style}`;
         if (enemy.weapon) line += ` | ⚔️ ${enemy.weapon}`;
@@ -9659,12 +15302,16 @@ function formatEnemyPreset(enemies) {
     }).join('\n');
 }
 
-// Build the quest preview text showing both alignment presets
-function buildMissionPreviewText(missionLabel, presets, selectedAlignment, prefixText) {
+// Build the quest preview text showing both alignment presets. `rewardInfo` ({ missionType,
+// powerLevel }) appends the actual payout so players can weigh the risk before starting.
+function buildMissionPreviewText(missionLabel, presets, selectedAlignment, prefixText, rewardInfo = null) {
     const posHeader = selectedAlignment === 'positive' ? '😇 **Positive Alignment** ✅ (selected)' : '😇 **Positive Alignment**';
     const negHeader = selectedAlignment === 'negative' ? '😈 **Negative Alignment** ✅ (selected)' : '😈 **Negative Alignment**';
     const isSaga = /saga/i.test(missionLabel);
     let text = `${prefixText || ''}⚔️ Found a **${missionLabel}**!\n\n${posHeader}:\n${formatEnemyPreset(presets.positive)}\n\n${negHeader}:\n${formatEnemyPreset(presets.negative)}\n\nTap an alignment to switch, then press **Start**.`;
+    if (rewardInfo && rewardInfo.missionType) {
+        text += describeMissionReward(rewardInfo.missionType, rewardInfo.powerLevel);
+    }
     if (isSaga) {
         text += `\n\n☠️ **DEATH WARNING:** Saga missions are deadly if you lose!\n• 😇 Positive alignment: enemies **always** kill you.\n• 😈 Negative alignment: enemies kill you on a **d20 roll of 11+**.`;
     } else {
@@ -9709,6 +15356,31 @@ function huntMeatQty(key) {
     return getRandomInt(20) + 3;
 }
 
+// Animals scale toward the hunter's power level so they stay a real threat, while each tier keeps
+// its place in the food chain via its own PL ratio (a rabbit is ALWAYS weaker than a dinosaur, but
+// both keep growing with the hunter). The base ratio is `huntAnimalPLRatio` (config, default 0.6)
+// and each tier multiplies it. Tunable via config.json `huntAnimalPLRatio` +
+// `huntAnimalTierRatios`. The old per-tier `maxStat` ceilings froze animals at roughly 2k–93k PL
+// no matter how strong the hunter was.
+let huntAnimalPLRatio = 0.6;
+try { const cfg = require('./config/config.json'); if (typeof cfg.huntAnimalPLRatio === 'number') huntAnimalPLRatio = cfg.huntAnimalPLRatio; } catch (e) { /* config optional */ }
+const HUNT_ANIMAL_PL_RATIO = huntAnimalPLRatio;
+const HUNT_ANIMAL_TIER_RATIO_DEFAULTS = {
+    rabbit: 0.35,
+    deer: 0.55,
+    wolfStrong: 0.8,
+    bear: 1.0,
+    dinosaur: 1.35
+};
+const HUNT_ANIMAL_TIER_RATIOS = { ...HUNT_ANIMAL_TIER_RATIO_DEFAULTS };try {
+    const cfg = require('./config/config.json');
+    if (cfg.huntAnimalTierRatios && typeof cfg.huntAnimalTierRatios === 'object') {
+        Object.entries(cfg.huntAnimalTierRatios).forEach(([k, v]) => {
+            if (typeof v === 'number' && v > 0) HUNT_ANIMAL_TIER_RATIOS[k] = v;
+        });
+    }
+} catch (e) { /* config optional */ }
+
 // Build a hunt animal object for a given spec key (used by /hunt and NPC quests).
 function makeHuntAnimal(key, d20) {
     const spec = HUNT_ANIMAL_SPECS[key];
@@ -9728,22 +15400,45 @@ function rollHuntAnimal() {
 }
 
 // Build the animal enemy's battle stats (STR/DEX/CON/WIL/SPI all use the same roll).
-function buildHuntEnemy(animal) {
-    const stats = {};
-    const mult = animal.multiplier || 1;
+// `playerPL` (optional) scales the animal up so it remains a threat as the hunter grows.
+function buildHuntEnemy(animal, playerPL = 0) {
+    // Rolled base FIRST, so the animal's own tier multiplier and the PL-based scaling can be
+    // combined ADDITIVELY into one factor instead of compounding on top of each other.
+    const baseStats = {};
     ['str', 'dex', 'con', 'wil', 'spi'].forEach(k => {
-        stats[k] = (rollXdY(animal.diceCount, animal.diceSides) + animal.bonus) * mult;
+        baseStats[k] = rollXdY(animal.diceCount, animal.diceSides) + animal.bonus;
     });
-    const maxHP = calculateHP(stats.con, null);
-    const maxKi = calculateKi(stats.spi, null);
+    const mult = animal.multiplier || 1;
+    // Chase a target average stat derived from the hunter's PL (× the animal tier's ratio), with
+    // no absolute ceiling, so a high-PL hunter still faces a real animal.
+    let plScale = 1;
+    if (playerPL && playerPL > 0) {
+        const tierRatio = HUNT_ANIMAL_TIER_RATIOS[animal.key] || 1;
+        const targetAvg = Math.max(1, playerPL) * HUNT_ANIMAL_PL_RATIO * tierRatio / ENEMY_STAT_PER_PL;
+        const baseAvg = Math.round((baseStats.str + baseStats.dex + baseStats.con + baseStats.wil + baseStats.spi) / 5);
+        if (targetAvg > baseAvg && baseAvg > 0) plScale = targetAvg / baseAvg;
+    }
+    const scaleMult = statModifier.combineMultipliers(mult, plScale);
+    const stats = {};
+    ['str', 'dex', 'con', 'wil', 'spi'].forEach(k => { stats[k] = Math.max(1, Math.round(baseStats[k] * scaleMult)); });
+    // Stored so hunt party-size scaling can ADD to this factor rather than multiplying on top.
+    const baseScaleMult = scaleMult;
+    // Hunt animals do NOT use the stat-multiplier system. Their stats are already scaled toward
+    // the hunter's PL, and stacking a random multiplier spread on top compounded it — a Dinosaur
+    // with a 20-point pool could land up to ~3x on its key stats AND inflate its HP/Ki, making it
+    // far stronger than its stats implied. An explicit all-zero spread (not an empty object) is
+    // used so `resolveStatMultipliers` can never re-roll a spread for them.
+    const statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
+    const maxHP = calculateHP(stats.con, null, statMultipliers);
+    const maxKi = calculateKi(stats.spi, null, statMultipliers);
     const powerLevel = characterManager.calculatePowerLevel({ ...stats, maxHP, maxKi });
-    return { stats, maxHP, maxKi, powerLevel };
+    return { stats, maxHP, maxKi, powerLevel, statMultipliers, baseScaleMult };
 }
 
 // Assemble the player + companions + animal into participants and start the hunt battle.
 // `reward` (optional) is an NPC quest reward { statPoints, zeni } granted on victory.
 async function startHuntBattle(interaction, character, animal, reward = null) {
-    const enemy = buildHuntEnemy(animal);
+    const enemy = buildHuntEnemy(animal, character.powerLevel);
     const playerBattleStats = applyFormToStats(character);
     const participants = [
         {
@@ -9758,6 +15453,7 @@ async function startHuntBattle(interaction, character, animal, reward = null) {
             fatigue: getTotalFatigue(character),
             stats: playerBattleStats.stats,
             modBonus: playerBattleStats.modBonus,
+            statMultipliers: playerBattleStats.statMultipliers,
             kiAppDamage: playerBattleStats.kiAppDamage,
             ...kiAppParticipantFields(playerBattleStats),
             ...playerBattleStats.gear,
@@ -9770,6 +15466,9 @@ async function startHuntBattle(interaction, character, animal, reward = null) {
         }
     ];
     participants.push(...buildCompanionRoster(interaction.user.id, character));
+    // Companion scaling: the animal was sized off the HUNTER's PL alone, so scale it for the whole
+    // party actually fighting (the hunter + any companions that joined the hunt).
+    applyPartyScalingToHuntEnemy(enemy, getPartyScalingFactor(participants, character.powerLevel || 0));
     participants.push({
         userId: 'enemy_hunt',
         username: `${animal.emoji} ${animal.name}`,
@@ -9780,6 +15479,7 @@ async function startHuntBattle(interaction, character, animal, reward = null) {
         ki: enemy.maxKi,
         fatigue: 0,
         stats: enemy.stats,
+        statMultipliers: resolveStatMultipliers(enemy.statMultipliers, enemy.race || null),
         flying: false,
         kiSense: false,
         kiAppDamage: 0,
@@ -9800,9 +15500,44 @@ const activeRaid = { active: false, startedAt: 0, expiresAt: 0, channelId: null 
 const activeRaidBattles = new Map(); // battleId -> { userId }
 const RAID_INTERVAL_MS = 30 * 60000; // check every 30 min
 const RAID_DURATION_MS = 15 * 60000; // raid lasts 15 min
-const RAID_START_CHANCE = 35;        // % chance per 30-min tick
+const RAID_START_CHANCE = 22;        // % chance per 30-min tick
 const RAID_AMBUSH_CHANCE = 50;       // % per travel
 const RAID_ENEMY_MIN = 4, RAID_ENEMY_MAX = 9;
+const RAID_BOSS_CHANCE = 30;         // % for a boss ambush (extremely strong, 3 actions, transforms)
+const RAID_BOSS_ACTIONS = 3;         // actions the raid boss takes per turn
+const RAID_BOSS_STAT_MULT = 1.6;     // extra stat boost on top of a saga-tier boss
+// Raid boss power-up stages per race — forms only within that race (a Namekian boss can never
+// become a Super Saiyan). Gated by power level, and each stage applies the SAME bonuses a player
+// would get from that form (its `statMult` + `modBonus`, see applyFormStatsAndMods). Form bonuses
+// are tunable in config.json `forms`. Races without an entry here can't power up.
+const RAID_BOSS_FORM_TIERS = {
+    'Saiyan': [
+        { plReq: 20000, name: 'Super Saiyan' },
+        { plReq: 100000, name: 'Super Saiyan 2' },
+        { plReq: 500000, name: 'Super Saiyan 3' }
+    ],
+    'Half-Saiyan': [
+        { plReq: 20000, name: 'Super Saiyan' },
+        { plReq: 100000, name: 'Super Saiyan 2' },
+        { plReq: 500000, name: 'Super Saiyan 3' }
+    ],
+    'Frost Demon': [
+        { plReq: 20000, name: '100% 4th Form' },
+        { plReq: 100000, name: '5th Form' }
+    ],
+    'Namekian': [
+        { plReq: 20000, name: 'Great Namekian' },
+        { plReq: 100000, name: 'Slug' },
+        { plReq: 500000, name: 'Super Namekian' }
+    ],
+    'Hera': [
+        { plReq: 20000, name: 'Ultra Power' },
+        { plReq: 100000, name: 'Ultimate Power' }
+    ],
+    'Oni': [
+        { plReq: 20000, name: 'Dark Devil' }
+    ]
+};
 
 function getRaidActive() { return activeRaid.active && Date.now() < activeRaid.expiresAt; }
 
@@ -9825,6 +15560,188 @@ function getCanonActionChannel() {
     return getRaidChannel();
 }
 
+// The text channel matching a planet (e.g. "Earth" -> #earth, "Vegeta" -> #vegeta), so events
+// tied to a specific planet (like the canon-defense gauntlet) can run in that planet's channel.
+function getPlanetChannel(planet) {
+    const expected = PLANET_CHANNELS[planet];
+    if (!expected) return null;
+    for (const guild of client.guilds.cache.values()) {
+        const ch = guild.channels.cache.find(c => c.type === 0 && channelMatchesPlanet(c.name, expected) && c.permissionsFor(client.user)?.has(PermissionsBitField.Flags.SendMessages));
+        if (ch) return ch;
+    }
+    return null;
+}
+
+// The dedicated #saga channel, where the current saga number is pinned/updated.
+function getSagaChannel() {
+    for (const guild of client.guilds.cache.values()) {
+        const ch = guild.channels.cache.find(c => c.type === 0 && String(c.name || '').toLowerCase() === 'saga' && c.permissionsFor(client.user)?.has(PermissionsBitField.Flags.SendMessages));
+        if (ch) return ch;
+    }
+    return null;
+}
+
+// id of the saga message (adopted from an existing bot-owned "## **SAGA ...**" post, else sent fresh).
+let sagaMsgId = null;
+// Set once if a HUMAN-authored saga post is found, so we only log the hint a single time.
+let sagaForeignPostNoted = false;
+
+// Post (or edit) the current saga number in the #saga channel.
+// IMPORTANT: a bot can only edit its OWN messages. Adopting an admin/human post would silently
+// fail on every edit (Discord 403) while still being marked as "tracked" — which left the saga
+// message frozen forever. So only bot-authored posts are adopted/edited, and any failed edit
+// clears the tracked id so the next run posts a fresh, bot-owned message instead of giving up.
+async function updateSagaChannelMessage() {
+    const ch = getSagaChannel();
+    if (!ch) return;
+    const content = `## **SAGA ${getEffectiveSaga()}**`;
+    const botId = client.user ? client.user.id : null;
+    const isSagaPost = (m) => !!m && !!m.author && m.author.id === botId && /^\s*#{0,3}\s*\*{0,2}\s*SAGA\b/i.test(String(m.content || ''));
+
+    // 1) Edit the message we're already tracking.
+    if (sagaMsgId) {
+        try {
+            const msg = await ch.messages.fetch(sagaMsgId);
+            if (msg && msg.author && msg.author.id === botId) {
+                try { await msg.edit({ content }); return; }
+                catch (e) { console.log(`[saga] could not edit saga message ${sagaMsgId}: ${e && e.message ? e.message : e}`); }
+            }
+        } catch (_) { /* deleted or missing — re-post below */ }
+        sagaMsgId = null;
+    }
+
+    // 2) Adopt an existing BOT-authored saga post. Check pinned messages too, since our post may
+    //    be older than the most recent page of the channel.
+    try {
+        let existing = null;
+        try {
+            const pinned = await ch.messages.fetchPinned();
+            existing = pinned.find(isSagaPost) || null;
+        } catch (_) { /* pinned fetch can fail on very large channels */ }
+        if (!existing) {
+            const recent = await ch.messages.fetch({ limit: 50 });
+            existing = recent.find(isSagaPost) || null;
+            // Diagnose the "stale saga message" case: a human posted/pinned the saga post, which we
+            // cannot edit — we'll post our own below, but note it so an admin can unpin the old one.
+            if (!existing && !sagaForeignPostNoted) {
+                const foreign = recent.find(m => m.author && m.author.id !== botId && /^\s*#{0,3}\s*\*{0,2}\s*SAGA\b/i.test(String(m.content || '')));
+                if (foreign) {
+                    sagaForeignPostNoted = true;
+                    console.log('[saga] found a saga post authored by someone else (not the bot) — it cannot be edited; posting a bot-owned one. Unpin/delete the old post to avoid confusion.');
+                }
+            }
+        }
+        if (existing) {
+            sagaMsgId = existing.id;
+            try { await existing.edit({ content }); return; }
+            catch (e) {
+                console.log(`[saga] could not edit adopted saga message ${existing.id}: ${e && e.message ? e.message : e}`);
+                sagaMsgId = null;
+            }
+        }
+    } catch (_) { /* ignore scan errors */ }
+
+    // 3) Nothing usable — post a fresh, bot-owned saga message.
+    try {
+        const msg = await ch.send(content);
+        if (msg) sagaMsgId = msg.id;
+    } catch (_) { /* no permission etc. */ }
+}
+
+// ---------- Full game wipe (/wipe-game, admin) ----------
+// Nukes EVERY piece of game state — every player's characters, world state (saga, dragon balls,
+// destroyed planets/locations, caves), character-creation cooldowns and all in-memory
+// queues/battles — so the server behaves like a fresh install. Memory is reset FIRST and then
+// flushed to disk, because the debounced savers serialize whatever the live objects hold:
+// clearing only the files would be immediately overwritten by the next flush. Returns a summary
+// object the caller can show the admin.
+async function resetAllGameState() {
+    const summary = {
+        players: Object.keys(characterManager.characters || {}).length,
+        characters: 0,
+        battles: 0,
+        cooldowns: Object.keys(creationCooldowns).length,
+        planets: destroyedPlanets.size,
+        locations: destroyedLocations.size,
+        saga: globalSaga
+    };
+    Object.values(characterManager.characters || {}).forEach(list => {
+        summary.characters += (list || []).length;
+    });
+
+    // 1) Battles: end each one and blank its message so nobody is left with stale buttons, an
+    //    armed auto-resolve timer, or a "you are in a battle" lock against a deleted character.
+    for (const battle of battleManager.getActiveBattles()) {
+        const messageId = battleMessages.get(battle.id);
+        const channelId = battle.channelId;
+        battleManager.endBattle(battle.id);
+        summary.battles++;
+        const channel = channelId ? client.channels.cache.get(channelId) : null;
+        if (!messageId || !channel) continue;
+        try {
+            const msg = await channel.messages.fetch(messageId);
+            await msg.edit({ content: '🛑 **Battle ended** — an administrator wiped the game.', components: [] });
+        } catch (e) {
+            console.log(`[wipe] could not clear battle message ${messageId}: ${e && e.message ? e.message : e}`);
+        }
+    }
+    for (const timer of battleTurnTimers.values()) clearTimeout(timer);
+    battleTurnTimers.clear();
+    battleManager.battles.clear();
+    battleManager.userBattles.clear();
+
+    // 2) Every transient in-memory queue (pending missions, mentor offers, shop stock, ...).
+    [
+        battleMessages, duelExecutions, pendingCharacters, activeCreations,
+        zenkaiNoticeQueue, birthNoticeQueue, procreationRequests,
+        pendingMissions, activeMissions, activeMentorFights, activeHunts,
+        pendingMentors, pendingMentorTeach, pendingNpcOffers, pendingRivalResolutions,
+        pendingMentorRewards, pendingGives, pendingSpars, pendingVampirism,
+        pendingTeach, pendingTrueCapsule, pendingCustomSkills, pendingCanonBattles,
+        pendingNicknameNotices, saleStock, gearStock, shopStock,
+        recentDepartures, travelCountdowns, activeRaidBattles
+    ].forEach(map => map.clear());
+
+    // 3) Characters (every player, every character) + the auto-saga cache.
+    characterManager.characters = {};
+    plCache.dirty = true; // with no players left the derived saga falls back to 1
+
+    // 4) Character-creation cooldowns.
+    for (const userId of Object.keys(creationCooldowns)) delete creationCooldowns[userId];
+
+    // 5) World: saga, both dragon-ball sets (re-scattered, unfound), destroyed planets and
+    //    locations, the Dungeon Master, the world raid, and today's caves.
+    globalSaga = 1;
+    dragonBallState = randomDragonBallSlots().map(key => ({ key, foundBy: null }));
+    namekianDragonBallState = randomNamekianDragonBallSlots().map(key => ({ key, foundBy: null }));
+    destroyedPlanets.clear();
+    destroyedLocations.clear();
+    dungeonMasterId = null;
+    activeRaid.active = false;
+    activeRaid.startedAt = 0;
+    activeRaid.expiresAt = 0;
+    activeRaid.channelId = null;
+    caveState.date = ''; // blank the day so the next area access re-rolls caves from scratch
+    caveState.caves = {};
+
+    // 6) Persist all three files immediately — a wipe must survive a crash a second later.
+    //    Each saver must be marked dirty FIRST: saver.flush() only writes PENDING changes, so a
+    //    direct in-memory reset (which never goes through the normal save() call sites) would
+    //    otherwise leave the old data on disk.
+    characterManager.saveCharacters();
+    saveCreationCooldowns();
+    saveGlobalSaga();
+    await Promise.all([
+        characterManager.flushCharacters(),
+        creationCooldownSaver.flush(),
+        worldSaver.flush()
+    ]);
+
+    // 7) Reflect the reset saga in the #saga channel.
+    await updateSagaChannelMessage();
+    return summary;
+}
+
 function startRaidTick() {  
     if (getRaidActive()) return;
     if (getRandomInt(100) <= RAID_START_CHANCE) {
@@ -9834,8 +15751,131 @@ function startRaidTick() {
         activeRaid.startedAt = Date.now();
         activeRaid.expiresAt = Date.now() + RAID_DURATION_MS;
         activeRaid.channelId = ch.id;
-        ch.send('@everyone ⚔️ **A WORLD RAID IS UNDERWAY!** A raid of enemies has descended while it lasts (**15 min**): **every time you travel there is a 50% chance** you\'ll be ambushed by a pack of enemies! Fight them off for **2× stat gain**!').catch(() => {});
+        ch.send('@everyone ⚔️ **A WORLD RAID IS UNDERWAY!** A raid of enemies has descended while it lasts (**15 min**): **every time you travel there is a 50% chance** you\'ll be ambushed by a pack of enemies! Fight them off for **8× stat gain**!').catch(() => {});
     }
+}
+
+// Out-of-combat form maintenance: while a character is transformed and NOT in combat, each tick
+// (every `formTickMinutes`, default 10) they pay the form's normal per-turn Ki drain and gain a
+// mastery roll for the active form (d50 vs 50, mirroring `/mastery` but without consuming
+// `masteryReady`). If their Ki hits 0, they drop back to base form.
+async function runTransformationDowntime() {
+    const userIds = Object.keys(characterManager.characters || {});
+    for (const userId of userIds) {
+        const chars = characterManager.characters[userId] || [];
+        for (const character of chars) {
+            if (!character || !character.activeForm) continue;
+            const formName = character.activeForm;
+            if (!FORMS[formName]) continue;
+            // In-combat drain is handled by the Battle loop, so skip characters in battle.
+            if (battleManager.getBattleForUser(userId)) continue;
+
+            const mastery = (character.formMastery || {})[formName] || 0;
+            const drain = getFormDrain(formName, mastery);
+            const kiBefore = Number(character.currentKi) || 0;
+            const kiAfter = Math.max(0, kiBefore - drain);
+            // A draining form is dropped if it runs the character's Ki to zero (free/no-drain
+            // forms are unaffected), matching the in-combat drop behavior.
+            const dropped = drain > 0 && kiAfter <= 0;
+            character.formMastery = character.formMastery || {};
+            character.masteryBonus = character.masteryBonus || {};
+
+            // Passive mastery roll for the active form (same mechanics as `/mastery`).
+            const maxLevel = FORMS[formName] && (FORMS[formName].mastery ? 5 : Math.max(3, ...Object.keys(FORMS[formName].masteryMods || {}).map(Number))) || 3;
+            const currentLevel = character.formMastery[formName] || 0;
+            let masteryMsg = '';
+            if (currentLevel < maxLevel) {
+                const roll = getRandomInt(50);
+                let save = 50;
+                if (character.mutation === 'Hunter of Legend') save = Math.max(1, Math.floor(save * 0.75));
+                const bonus = character.masteryBonus[formName] || 0;
+                const total = roll + bonus;
+                if (total >= save) {
+                    const newLevel = Math.min(maxLevel, currentLevel + 1);
+                    character.formMastery[formName] = newLevel;
+                    delete character.masteryBonus[formName];
+                    masteryMsg = `✅ **${formName}** mastery reached **${newLevel}**!`;
+                } else {
+                    character.masteryBonus[formName] = bonus + 1;
+                    masteryMsg = `❌ Mastery roll for **${formName}** failed (d50 **${roll}** +${bonus} vs **${save}**).`;
+                }
+            } else {
+                masteryMsg = '';
+            }
+
+            const update = {
+                currentKi: kiAfter,
+                formMastery: character.formMastery,
+                masteryBonus: character.masteryBonus
+            };
+            if (dropped) update.activeForm = null;
+            characterManager.updateCharacter(userId, character.id, update);
+
+            // Notify the owner (only if anything meaningful changed this tick).
+            if (drain > 0 || dropped || masteryMsg) {
+                try {
+                    const owner = await client.users.fetch(userId);
+                    if (owner) {
+                        let dm = `⏳ **${character.name}** maintains **${formName}**${dropped ? ' but runs dry and drops back to base form' : ''}.\n`;
+                        dm += `🔋 Ki: **${kiBefore}** → **${kiAfter}**${drain > 0 ? ` (**-${drain}**)` : ''}`;
+                        if (masteryMsg) dm += `\n${masteryMsg}`;
+                        await owner.send(dm);
+                    }
+                } catch (_) { /* DM may be closed — silently ignore. */ }
+            }
+        }
+    }
+}
+
+// Generate a raid boss enemy: an extremely strong saga-tier foe that has a style, many passives,
+// three actions per turn, and can power up into forms gated by its own power level.
+function generateRaidBoss(playerPL, location) {
+    const base = (generateEnemiesForMission(playerPL || 0, 'saga', 1, location || 'Earth', 'negative', false)[0]) || {};
+    const stats = { str: 100, dex: 100, con: 100, wil: 100, spi: 100 };
+    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => {
+        stats[s] = Math.max(1, Math.round((base[s] || 100) * RAID_BOSS_STAT_MULT));
+    });
+    const boss = {
+        ...base,
+        ...stats,
+        int: base.int || rollIntelligence(base.race || null),
+        race: base.race || 'Earthling',
+        gender: base.gender || 'Male',
+        alignment: 'Negative',
+        alignmentValue: -(100 + getRandomInt(900)),
+        saga: true,
+        flying: true,
+        kiSense: true,
+        kiEfficiency: true,
+        kiAppDamage: Math.max(base.kiAppDamage || 0, 50 + Math.round((playerPL || 0) * 0.001)),
+        statMultipliers: resolveStatMultipliers(base.statMultipliers, base.race),
+        techniques: Array.isArray(base.techniques) ? [...base.techniques] : [],
+        style: base.style || null,
+        weapon: base.weapon || null,
+        isRaidBoss: true
+    };
+    // Give the boss a fighting style if it doesn't have one, plus its signature moves.
+    if (!boss.style) {
+        const styleKeys = Object.keys(MENTOR_STYLES || {});
+        boss.style = styleKeys[getRandomInt(styleKeys.length) - 1];
+        const mentor = MENTOR_STYLES[boss.style];
+        if (mentor && Array.isArray(mentor.moves)) {
+            boss.techniques = [...(boss.techniques || []), ...mentor.moves];
+        }
+        boss.weapon = rollStyleWeapon(boss.style, 4);
+    }
+    applyEnemyWeaponMods(boss);
+    const pl = (base.powerLevel || characterManager.calculatePowerLevel({
+        str: boss.str, dex: boss.dex, con: boss.con, wil: boss.wil, spi: boss.spi,
+        maxHP: calculateHP(boss.con, boss.race, boss.statMultipliers, boss),
+        maxKi: calculateKi(boss.spi, boss.race, boss.statMultipliers, boss)
+    }));
+    boss.powerLevel = pl;
+    // Which power-up stages the boss can transform into, based on its (high) power level and
+    // limited to forms valid for the boss's race (never a Namekian going Super Saiyan).
+    const bTiers = RAID_BOSS_FORM_TIERS[boss.race] || [];
+    boss.bossForms = bTiers.filter(t => pl >= t.plReq).map(t => ({ ...t }));
+    return boss;
 }
 
 // Start a raid ambush battle for a travelling player (4-9 casual enemies).
@@ -9855,6 +15895,7 @@ async function startRaidBattle(interaction, character) {
         fatigue: getTotalFatigue(character),
         stats: playerBattleStats.stats,
         modBonus: playerBattleStats.modBonus,
+        statMultipliers: playerBattleStats.statMultipliers,
         kiAppDamage: playerBattleStats.kiAppDamage,
         ...kiAppParticipantFields(playerBattleStats),
         ...playerBattleStats.gear,
@@ -9866,11 +15907,50 @@ async function startRaidBattle(interaction, character) {
         zenkaiExhausted: (character.zenkaiExhaustedUntil || 0) > Date.now()
     }];
     participants.push(...buildCompanionRoster(interaction.user.id, character));
+    // Companion scaling: the ambush was sized off the traveller's PL alone — scale it for the whole
+    // party (the traveller + any companions that fight with them).
+    const raidPartyFactor = getPartyScalingFactor(participants, character.powerLevel || 0);
+    applyPartyScalingToEnemies(enemies, raidPartyFactor);
     enemies.forEach((enemy, i) => participants.push(buildEnemyParticipant(enemy, i + 1)));
+    // 30% chance a RAID BOSS is waiting — it only appears once every other enemy has been defeated.
+    let raidBoss = null;
+    if (getRandomInt(100) <= RAID_BOSS_CHANCE) {
+        const bossEnemy = generateRaidBoss(character.powerLevel || 0, character.location || 'Earth');
+        applyPartyScalingToEnemies([bossEnemy], raidPartyFactor);
+        const boss = buildEnemyParticipant(bossEnemy, enemies.length + 1);
+        boss.username = `☠️ RAID BOSS: ${bossEnemy.race || 'Unknown'}`;
+        boss.isRaidBoss = true;
+        boss.bossStage = 0;
+        boss.bossActionsLeft = RAID_BOSS_ACTIONS - 1;
+        boss.bossForms = bossEnemy.bossForms || [];
+        boss.kiAppDamage = bossEnemy.kiAppDamage || 0;
+        boss.kiSense = bossEnemy.kiSense || false;
+        boss.kiEfficiency = bossEnemy.kiEfficiency || false;
+        boss.flying = bossEnemy.flying || false;
+        raidBoss = boss;
+    }
     const battle = battleManager.createBattle(interaction.channelId, participants);
     battle.rollInitiative();
-    activeRaidBattles.set(battle.id, { userId: interaction.user.id });
+    activeRaidBattles.set(battle.id, { userId: interaction.user.id, hasBoss: !!raidBoss, boss: raidBoss, bossSpawned: false });
     return battle;
+}
+
+// The raid boss only enters the fight once every other enemy has been defeated. Adds it to the
+// battle (and resumes it if it had been ended by a minion wipe).
+function maybeSpawnRaidBoss(battle) {
+    const rb = activeRaidBattles.get(battle.id);
+    if (!rb || !rb.hasBoss || !rb.boss || rb.bossSpawned) return;
+    const aliveEnemies = battle.turnOrder.filter(p => isNPC(p) && !p.isAlly && !p.isDead && !p.isIncapacitated);
+    if (aliveEnemies.length > 0) return;
+    const cur = battle.getCurrentTurn();
+    battle.addParticipant(rb.boss);
+    battle.active = true; // a new foe appeared — the fight resumes
+    rb.bossSpawned = true;
+    // addParticipant re-sorts by initiative — restore the current combatant's index.
+    if (cur) {
+        const idx = battle.turnOrder.indexOf(cur);
+        if (idx !== -1) battle.currentTurnIndex = idx;
+    }
 }
 
 // During an active raid, travelling has a chance to trigger an ambush battle. Returns true if
@@ -9879,27 +15959,279 @@ async function maybeRaidAmbushReply(interaction, character) {
     if (!getRaidActive()) return false;
     if (battleManager.hasBattleForUser(interaction.user.id)) return false;
     if (getRandomInt(100) > RAID_AMBUSH_CHANCE) return false;
-    const battle = await startRaidBattle(interaction, character);
     const header = `🐉 **RAID AMBUSH!** ${character.name} is ambushed during travel!`;
-    let logText = await resolveNPCTurns(battle, '');
-    if (await maybeShowReactionReply(interaction, battle, logText)) return true;
-    const over = checkBattleOver(battle);
-    if (over) {
-        await interaction.reply({ content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}\n\n${over.content}`), components: over.components });
+    let battle = null;
+    let deferred = false;
+    try {
+        // Acknowledge quickly so slow NPC-turn resolution can't invalidate the interaction
+        // (Discord 10062 "Unknown interaction" after the 3-second window). If another ack
+        // path (e.g. the auto-ack watchdog) already deferred it, don't defer again.
+        if (!interaction.deferred && !interaction.replied) await interaction.deferReply();
+        deferred = true;
+        battle = await startRaidBattle(interaction, character);
+        let logText = await resolveNPCTurns(battle, '');
+        if (await maybeShowReactionReply(interaction, battle, logText, true)) return true;
+        let over = checkBattleOver(battle);
+        // A raid boss can spawn on a companion/NPC's pending turn — resume their auto-resolution.
+        if (!over) {
+            logText = await resumeNpcTurnsAfterBoss(battle, logText);
+            over = checkBattleOver(battle);
+        }
+        if (over) {
+            await interaction.editReply({ content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}\n\n${over.content}`), components: over.components });
+            return true;
+        }
+        const msg = await interaction.editReply({ content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}`), components: buildTurnComponents(battle, interaction.user) });
+        battleMessages.set(battle.id, msg && msg.id ? msg.id : null);
         return true;
+    } catch (e) {
+        // If the raid ambush battle can't be established or the message can't be sent, unregister
+        // the player so they're not left "in battle" with a fight they can't see or interact with.
+        const toEnd = battle || battleManager.getBattleForUser(interaction.user.id);
+        if (toEnd) {
+            clearBattleTurnTimer(toEnd);
+            battleManager.endBattle(toEnd.id);
+            activeRaidBattles.delete(toEnd.id);
+            battleMessages.delete(toEnd.id);
+        }
+        console.error('[raid] ambush failed:', e && e.message ? e.message : e);
+        // If we already deferred the reply, close it out so the player isn't left hanging.
+        if (deferred) {
+            await interaction.editReply({ content: clampMessage(`${header}\n\n⚠️ The raid ambush failed to start — try traveling again!`), components: [] }).catch(() => {});
+            return true;
+        }
+        // Don't throw — the travel continues so the player still gets a response.
+        return false;
     }
-    const cb = await interaction.reply({ content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}`), components: buildTurnComponents(battle, interaction.user), withResponse: true }).catch(() => null);
-    const reply = cb && cb.resource ? cb.resource.message : null;
-    battleMessages.set(battle.id, reply ? reply.id : null);
-    return true;
 }
 
 // ---------- Canon actions (world events: planet/location destruction, training frenzy) ----------
 const CANON_ACTION_CD_MS = 24 * 60 * 60 * 1000;   // 1-day cooldown
-const CANON_ACTION_WINDOW_MS = 2 * 60 * 1000;     // 2-min intervention window
+const CANON_ACTION_WINDOW_MS = 2 * 60 * 60 * 1000; // 2-hour intervention window
 const TRAINING_FRENZY_MS = 20 * 60 * 1000;        // 20-min training frenzy
 const pendingCanonAction = { villainUserId: null, type: null, planet: null, space: null, expiresAt: 0, interveners: [] };
+// Canon-defense battles: when a blow-planet/location canon action goes unopposed, the villain
+// must defeat 6 saga defenders; the destruction only completes if they win. battleId -> info.
+const pendingCanonBattles = new Map();
+// Canon-INTERVENE battles: when a canon action IS opposed, the intervening players (plus allied
+// NPC helpers) actually fight the villain. The hero team always numbers `teamSize` (1 intervener
+// -> 5 NPC allies, 2 -> 4, 3 -> 3, ...) so a lone defender isn't steamrolled. Tunable via
+// config.json `canonIntervene`. The battle is resolved in checkBattleOver (pendingCanonBattles).
+const CANON_INTERVENE_CFG = canonIntervene || {};
+const CANON_INTERVENE_TEAM_SIZE = (typeof CANON_INTERVENE_CFG.teamSize === 'number' && CANON_INTERVENE_CFG.teamSize > 0)
+    ? Math.floor(CANON_INTERVENE_CFG.teamSize)
+    : 6;
+const CANON_INTERVENE_ALLY_DIFFICULTY = (typeof CANON_INTERVENE_CFG.allyDifficulty === 'string' && CANON_INTERVENE_CFG.allyDifficulty)
+    ? CANON_INTERVENE_CFG.allyDifficulty
+    : 'hard';
 const trainingFrenzy = { active: false, expiresAt: 0, planet: null };
+// Bounty canon event: during the window, defeating an opposite-alignment player in battle grants
+// the winner stat points (scaled by the defeated player's power level).
+const bountyEvent = { active: false, expiresAt: 0, startedBy: null };
+
+// ---------- Tree of Might (Seed of Might) ----------
+// The Seed of Might plants the legendary Tree of Might. It can only grow on a planet with an
+// atmosphere (Earth/Namek/Yardrat), takes a full saga to bear fruit, and each planet can only
+// harbor the tree once. Earth is destroyed once the tree fully blossoms.
+const TREE_OF_MIGHT_PLANETS = ['Earth', 'Namek', 'Yardrat'];
+const TREE_OF_MIGHT_FRUITS = 3;              // fruits a blossom yields (eating a 3rd is risky)
+const TREE_HARVEST_ALIGNMENT = -250;         // planting/harvesting is an evil act (like destroying a planet)
+const TREE_SAVE_ALIGNMENT = 250;             // destroying the tree to save the planet is heroic
+const treeOfMight = { planet: null, plantedBy: null, expiresAt: 0, status: 'none', earthDestroyed: false };
+const treeOfMightUsedPlanets = [];
+
+// ---------- NICKNAMES ----------
+// Deeds automatically earn a character a nickname. Each pool is an ordered LADDER: the first
+// matching deed grants tier 1, the next grants tier 2, and so on, so repeat offenders end up
+// with grander titles. Nicknames live on the character (per-life) and one is marked active.
+const NICKNAME_POOLS = {
+    destroyPlanet: [
+        { id: 'world-breaker', emoji: '🪐', text: 'World Breaker' },
+        { id: 'planet-cracker', emoji: '☄️', text: 'Planet Cracker' },
+        { id: 'destroyer-of-worlds', emoji: '💥', text: 'Destroyer of Worlds' },
+        { id: 'the-apocalypse', emoji: '🌌', text: 'The Apocalypse' }
+    ],
+    destroyLocation: [
+        { id: 'ruinbringer', emoji: '🏚️', text: 'Ruinbringer' },
+        { id: 'scourge-of-cities', emoji: '🔥', text: 'Scourge of Cities' },
+        { id: 'the-leveler', emoji: '☠️', text: 'The Leveler' }
+    ],
+    savePlanet: [
+        { id: 'the-guardian', emoji: '🛡️', text: 'The Guardian' },
+        { id: 'world-protector', emoji: '💫', text: 'World Protector' },
+        { id: 'savior-of-worlds', emoji: '🌟', text: 'Savior of Worlds' },
+        { id: 'the-legend', emoji: '✨', text: 'The Legend' }
+    ],
+    plantTree: [
+        { id: 'sower-of-ruin', emoji: '🌱', text: 'Sower of Ruin' },
+        { id: 'verdant-doom', emoji: '🌳', text: 'The Verdant Doom' }
+    ],
+    fellTree: [
+        { id: 'tree-feller', emoji: '🪓', text: 'Tree Feller' },
+        { id: 'warden-of-the-wild', emoji: '🌿', text: 'Warden of the Wild' }
+    ],
+    trainingFrenzy: [
+        { id: 'the-tireless', emoji: '🏋️', text: 'The Tireless' },
+        { id: 'zen-master', emoji: '🕊️', text: 'Zen Master' },
+        { id: 'the-unbroken', emoji: '🧘', text: 'The Unbroken' }
+    ],
+    bounty: [
+        { id: 'the-huntmaster', emoji: '💰', text: 'The Huntmaster' },
+        { id: 'head-hunter', emoji: '🎯', text: 'Head Hunter' }
+    ],
+    evil: [
+        { id: 'dark-heart', emoji: '😈', text: 'Dark Heart' },
+        { id: 'the-vile', emoji: '🩸', text: 'The Vile' },
+        { id: 'herald-of-evil', emoji: '👿', text: 'Herald of Evil' },
+        { id: 'the-damned', emoji: '🔥', text: 'The Damned' }
+    ],
+    heroic: [
+        { id: 'beacon-of-hope', emoji: '😇', text: 'Beacon of Hope' },
+        { id: 'the-kind', emoji: '🌞', text: 'The Kind' },
+        { id: 'paragon-of-virtue', emoji: '👼', text: 'Paragon of Virtue' },
+        { id: 'the-blessed', emoji: '🕊️', text: 'The Blessed' }
+    ]
+};
+
+// Crossing an alignment threshold hands out the next evil/heroic ladder nickname. Four tiers →
+// four nicknames per ladder (500 / 2,000 / 10,000 / 50,000).
+const NICKNAME_ALIGNMENT_TIERS = [500, 2000, 10000, 50000];
+const NICKNAME_MAX = 24; // keep the list bounded
+
+function getNicknameList(character) {
+    return (character && Array.isArray(character.nicknames)) ? character.nicknames : [];
+}
+
+// The nickname shown on sheets (the chosen one, else the most recently earned).
+function getActiveNickname(character) {
+    const list = getNicknameList(character);
+    if (!list.length) return null;
+    return list.find(n => n.id === character.activeNickname) || list[list.length - 1];
+}
+
+// Pure: work out which nickname a deed grants and the character updates to persist.
+function resolveNicknameAward(character, poolKey) {
+    const pool = NICKNAME_POOLS[poolKey];
+    if (!pool || !pool.length || !character) return null;
+    const list = getNicknameList(character);
+    const owned = new Set(list.map(n => n.id));
+    const next = pool.find(n => !owned.has(n.id));
+    if (!next) return null;
+    const entry = { id: next.id, emoji: next.emoji, text: next.text, pool: poolKey, earnedAt: Date.now() };
+    const updates = { nicknames: [...list, entry].slice(-NICKNAME_MAX) };
+    if (!character.activeNickname) updates.activeNickname = entry.id;
+    return { entry, updates };
+}
+
+// Grant the next unearned nickname from a pool. Returns the entry, or null if the pool is done.
+function awardNickname(userId, character, poolKey) {
+    const award = resolveNicknameAward(character, poolKey);
+    if (!award) return null;
+    characterManager.updateCharacter(userId, character.id, award.updates);
+    queueNicknameNotice(userId, award.entry);
+    return award.entry;
+}
+
+// Pure: which evil/heroic ladder pool (if any) a character's alignment has just unlocked.
+function getNextAlignmentNicknamePool(character, value) {
+    if (!character) return null;
+    const abs = Math.abs(Number(value) || 0);
+    const tierIndex = NICKNAME_ALIGNMENT_TIERS.filter(t => abs >= t).length;
+    if (tierIndex <= 0) return null;
+    const poolKey = value < 0 ? 'evil' : 'heroic';
+    const owned = new Set(getNicknameList(character).map(n => n.id));
+    const unearned = NICKNAME_POOLS[poolKey].slice(0, tierIndex).some(n => !owned.has(n.id));
+    return unearned ? poolKey : null;
+}
+
+// Award the evil/heroic ladder nickname a character's alignment has unlocked (if any).
+function checkAlignmentNicknames(userId, character, value) {
+    const poolKey = getNextAlignmentNicknamePool(character, value);
+    return poolKey ? awardNickname(userId, character, poolKey) : null;
+}
+
+const pendingNicknameNotices = new Map(); // userId -> [entry, ...]
+function queueNicknameNotice(userId, entry) {
+    if (!entry) return;
+    const list = pendingNicknameNotices.get(userId) || [];
+    list.push(entry);
+    pendingNicknameNotices.set(userId, list);
+}
+// Consume queued "new nickname" notices (surfaced by /character-view).
+function takeNicknameNotice(userId) {
+    const list = pendingNicknameNotices.get(userId);
+    if (!list || !list.length) return '';
+    pendingNicknameNotices.delete(userId);
+    return list.map(e => `🏷️ **New nickname earned: ${e.emoji} ${e.text}!**`).join('\n') + '\n';
+}
+
+// One-line nickname list for character sheets.
+function formatNicknameList(character) {
+    const list = getNicknameList(character);
+    if (!list.length) return 'None yet — great deeds earn a name.';
+    const active = getActiveNickname(character);
+    return list.map(n => `${n.emoji} ${n.text}${active && active.id === n.id ? ' ⬅️' : ''}`).join(' · ');
+}
+
+// Shift a player's hidden alignment by `delta` (clamped).
+function changePlayerAlignment(userId, char, delta) {
+    if (!char) return getPlayerAlignmentValue(char);
+    const cur = getPlayerAlignmentValue(char);
+    const newVal = clampAlignmentValue(cur + delta);
+    if (newVal !== cur) {
+        const updated = characterManager.updateCharacter(userId, char.id, { alignmentValue: newVal, alignment: newVal >= 0 ? 'Positive' : 'Negative' });
+        // Crossing an alignment threshold earns the next evil/heroic nickname.
+        checkAlignmentNicknames(userId, updated || characterManager.getCharacter(userId), newVal);
+    }
+    return newVal;
+}
+
+// Check whether a planted Tree of Might has matured (a canon window passed) and bear fruit.
+function checkTreeOfMight() {
+    if (treeOfMight.status !== 'growing') return '';
+    if (Date.now() < treeOfMight.expiresAt) return '';
+    treeOfMight.status = 'blossomed';
+    let text = `🌳 **${treeOfMight.planet}'s Tree of Might has BLOOMED!**`;
+    if (treeOfMight.planet === 'Earth') {
+        // The tree's roots erupt through the planet — everyone on the planet is either killed or
+        // relocated (including the planter, who is NOT spared), exactly like a canon-action planet
+        // destruction. Any survivors (protected / Space Pod / Namekian egg) are relocated to safety.
+        destroyPlanet('Earth');
+        treeOfMight.earthDestroyed = true;
+        text += `\n🌍 **Earth** was destroyed by the tree's root!`;
+        text += killPlanetPopulation('Earth');
+        // Relocate any survivors still on the planet (major-location dwellers, space-breathing
+        // races) to safety, exactly as a canon-action planet destruction does.
+        const relocated = relocateFromDestroyedPlanet('Earth');
+        if (relocated.length) text += `\n🚀 ${relocated.join(', ')} escaped the destruction and were relocated to safety!`;
+    }
+    const planter = characterManager.getCharacter(treeOfMight.plantedBy);
+    if (planter) {
+        const inv = Array.isArray(planter.inventory) ? planter.inventory : [];
+        for (let i = 0; i < TREE_OF_MIGHT_FRUITS; i++) inv.push({ name: 'Fruit of Might', type: 'fruit' });
+        characterManager.updateCharacter(treeOfMight.plantedBy, planter.id, { inventory: inv });
+        const alignVal = changePlayerAlignment(treeOfMight.plantedBy, planter, TREE_HARVEST_ALIGNMENT);
+        text += `\n🍎 **${planter.name}** harvests **${TREE_OF_MIGHT_FRUITS} Fruit of Might**! (alignment **${alignVal}**)`;
+        const nick = awardNickname(treeOfMight.plantedBy, planter, 'plantTree');
+        if (nick) text += `\n🏷️ **${planter.name}** is now known as **${nick.emoji} ${nick.text}**!`;
+    }
+    // Announce the bloom in the canon-actions channel.
+    try {
+        const ch = getCanonActionChannel();
+        if (ch) ch.send(`🌳 **A Tree of Might has BLOOMED!**\n${text}`).catch(() => {});
+    } catch (_) {}
+    // The seed redevelops after the tree grows — it can be planted again on another planet.
+    treeOfMight.planet = null;
+    treeOfMight.status = 'none';
+    return text;
+}
+
+// Human-readable intervention window, e.g. "2 hours", "45 minutes".
+function formatCanonActionWindow() {
+    const mins = Math.round(CANON_ACTION_WINDOW_MS / 60000);
+    if (mins >= 60 && mins % 60 === 0) return `${mins / 60} hour${mins / 60 === 1 ? '' : 's'}`;
+    return `${mins} minute${mins === 1 ? '' : 's'}`;
+}
 
 function getTrainingFrenzyActive() { return trainingFrenzy.active && Date.now() < trainingFrenzy.expiresAt; }
 function isMajorLocationSlot(planet, space) { return !!getSpecialSlotName(planet, space); }
@@ -9908,7 +16240,9 @@ function isMajorLocationSlot(planet, space) { return !!getSpecialSlotName(planet
 function getTrainingFrenzyMultiplier(character) {
     if (!getTrainingFrenzyActive()) return 1;
     if ((character.location || 'Earth') !== trainingFrenzy.planet) return 1;
-    if (getPlayerAlignmentValue(character) < 0) return 1;
+    // Only players with 100+ alignment count as "good" for the frenzy — anything below 100 is
+    // treated as neutral (no bonus).
+    if (getPlayerAlignmentValue(character) < 100) return 1;
     return 50;
 }
 
@@ -9920,70 +16254,405 @@ function destroyMajorLocation(planet, space) {
     destroyedLocations.set(key, destroyed);
     return getPlayersAtLocation(planet, space);
 }
-const destroyedLocations = new Map();
 function isLocationDestroyed(planet, space) {
     const d = destroyedLocations.get(`${planet}-${space}`);
     return !!d && Date.now() < d.until;
 }
 
+// A blown-up planet's channel and travel are blocked until it returns.
+// Duration is tunable via config.json `planetDestroyedDurationHours` (default 3 days).
+let planetDestroyedMs = 3 * 24 * 60 * 60 * 1000;
+try {
+    const cfg = require('./config/config.json');
+    if (typeof cfg.planetDestroyedDurationHours === 'number') planetDestroyedMs = cfg.planetDestroyedDurationHours * 60 * 60 * 1000;
+} catch (e) { /* config optional */ }
+const PLANET_DESTROYED_MS = planetDestroyedMs;
+// Hell, the Otherworld, and deep space can never be destroyed.
+const NON_DESTRUCTIBLE_PLANETS = new Set(['Hell', 'Otherworld', 'Space']);
+function isDestructiblePlanet(planet) { return !NON_DESTRUCTIBLE_PLANETS.has(planet); }
+function destroyPlanet(planet) {
+    if (!isDestructiblePlanet(planet)) return;
+    const d = destroyedPlanets.get(planet) || { until: 0 };
+    // A destroyed planet stays destroyed until a Dragon Ball wish restores it — no time-based recovery.
+    d.until = Infinity;
+    destroyedPlanets.set(planet, d);
+    // Any homes placed on the planet are destroyed too.
+    destroyHomesOnPlanet(planet);
+    saveGlobalSaga();
+}
+
+// Clear every home (and shared home) placed on a destroyed planet.
+function destroyHomesOnPlanet(planet) {
+    Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
+        chars.forEach(c => {
+            const updates = {};
+            let changed = false;
+            if ((c.homeLocation || null) === planet) {
+                updates.homeLocation = null;
+                updates.homeSpace = null;
+                updates.homeType = null;
+                changed = true;
+            }
+            if (Array.isArray(c.sharedHomes)) {
+                const filtered = c.sharedHomes.filter(h => h.location !== planet);
+                if (filtered.length !== c.sharedHomes.length) {
+                    updates.sharedHomes = filtered;
+                    changed = true;
+                }
+            }
+            if (changed) characterManager.updateCharacter(uid, c.id, updates);
+        });
+    });
+}
+
+function isPlanetDestroyed(planet) {
+    const d = destroyedPlanets.get(planet);
+    return !!d && Date.now() < d.until;
+}
+
+// Move any live character still on a destroyed planet to a safe planet (their home, or a
+// default spawn), so the destroyed planet's blocked channel can't trap them.
+function relocateFromDestroyedPlanet(planet) {
+    const relocated = [];
+    Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
+        chars.forEach(c => {
+            if ((c.location || 'Earth') !== planet) return;
+            if (isInAfterlife(c)) return;
+            if (c.inTransitUntil) return; // en route (source location still shows the planet) — finalizeTravel will reroute them
+            // A Space Pod lets the character escape to a random new planet (never Frieza Planet).
+            const usedPod = hasSpacePod(c);
+            const dest = usedPod ? getSpacePodEscapePlanet(c)
+                : (c.homeLocation && !isPlanetDestroyed(c.homeLocation) ? c.homeLocation : getDefaultLocation(c.race));
+            const destSpace = usedPod ? getRandomInt(PLANET_SPACES[dest] || 100)
+                : (c.homeLocation === dest ? (c.homeSpace || 1) : getRandomInt(PLANET_SPACES[dest] || 100));
+            characterManager.updateCharacter(uid, c.id, { location: dest, space: destSpace });
+            relocated.push(`${c.name || '?'} (${dest})${usedPod ? ' — escaped via Space Pod' : ''}`);
+        });
+    });
+    return relocated;
+}
+
+// Kill every character still on a destroyed planet (except those protected, reborn, or escaping
+// in a Space Pod), mirroring how a canon-action planet destruction treats its victims. Returns a
+// result string. `excludeUserIds` skips certain owners (e.g. the villain taking their own planet).
+function killPlanetPopulation(planet, { excludeUserIds = new Set() } = {}) {
+    let result = '';
+    Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
+        if (excludeUserIds.has(uid)) return;
+        chars.forEach(c => {
+            if ((c.location || 'Earth') !== planet) return;
+            // Characters at a major location (a city/special slot) survive a full-planet blast.
+            if (isMajorLocationSlot(c.location, c.space)) return;
+            const killed = killCharacter(uid, c.id, { planetDestroyed: true });
+            result += killed && killed.reborn
+                ? `\n🥚 **${c.name}** was caught in the blast, but their **Namekian egg** hatches — reborn!`
+                : killed && killed.protected
+                    ? `\n🛡️ **${c.name}** survived the explosion (Ancient Wuxia Talisman)!`
+                    : killed && killed.survived
+                        ? `\n🌌 **${c.name}** drifted to safety — they can survive in space!`
+                        : killed && killed.escaped
+                            ? `\n🚀 **${c.name}** escaped the blast in a **Space Pod**!`
+                            : `\n💀 **${c.name}** died in the planetary explosion!`;
+        });
+    });
+    return result;
+}
+
+// Apply a successfully-completed planet/location destruction and return a result string.
+function applyCanonDestruction(villain, p) {
+    let result = '';
+    if (villain) {
+        const reward = getCanonReward(villain.powerLevel || 0, p.type);
+        characterManager.updateCharacter(p.villainUserId, villain.id, {
+            unspentPoints: (villain.unspentPoints || 0) + reward,
+            canonActionUsedAt: Date.now()
+        });
+        // Blowing up a planet / leveling a major location earns an evil nickname.
+        const nick = awardNickname(p.villainUserId, villain, p.type === 'blow-planet' ? 'destroyPlanet' : 'destroyLocation');
+        if (nick) result += `\n🏷️ **${villain.name}** is now known as **${nick.emoji} ${nick.text}**!`;
+    }
+    // Kill every player on the planet / at the location (unless protected / a Namekian egg).
+    if (p.type === 'blow-planet') {
+        result += killPlanetPopulation(p.planet, { excludeUserIds: new Set([p.villainUserId]) });
+    } else if (p.type === 'blow-location') {
+        Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
+            chars.forEach(c => {
+                if (uid === p.villainUserId) return;
+                if ((c.location || 'Earth') !== p.planet) return;
+                if (!isMajorLocationSlot(c.location, c.space)) return;
+                const killed = killCharacter(uid, c.id);
+                result += killed && killed.reborn
+                    ? `\n🥚 **${c.name}**'s **Namekian egg** hatches — reborn!`
+                    : killed && killed.protected
+                        ? `\n🛡️ **${c.name}** survived (Ancient Wuxia Talisman)!`
+                        : killed && killed.escaped
+                            ? `\n🚀 **${c.name}** escaped in a **Space Pod**!`
+                            : `\n💀 **${c.name}** died at the destroyed location!`;
+            });
+        });
+    }
+    if (p.type === 'blow-location') {
+        destroyMajorLocation(p.planet, p.space);
+        result += `\n🏚️ **${getSpecialSlotName(p.planet, p.space) || 'The location'}** was destroyed (returns in 3 days).`;
+    } else if (p.type === 'blow-planet') {
+        destroyPlanet(p.planet);
+        const escaped = relocateFromDestroyedPlanet(p.planet);
+        result += `\n🌍 **${p.planet}** was destroyed! Its channel is unusable and travel there is blocked until a **Dragon Ball wish** restores it.`;
+        if (escaped.length) result += `\n🚀 ${escaped.join(', ')} escaped the destruction and were relocated to safety!`;
+    }
+    return result;
+}
+
+// When a blow-planet/location canon action goes unopposed, the villain must fight the planet's
+// 6 saga defenders (one of which can transform if its race has forms). The destruction only
+// completes if the villain wins the battle; it is resolved in checkBattleOver.
+async function startCanonDefenseBattle(villain, p, channel) {
+    const battleStats = applyFormToStats(villain);
+    const participants = [{
+        userId: p.villainUserId,
+        username: villain.name,
+        race: villain.race,
+        mutation: villain.mutation || null,
+        hp: villain.maxHP,
+        ki: villain.maxKi,
+        currentHP: Math.max(villain.currentHP, 0),
+        currentKi: villain.currentKi || 0,
+        fatigue: getTotalFatigue(villain),
+        stats: battleStats.stats,
+        modBonus: battleStats.modBonus,
+        statMultipliers: battleStats.statMultipliers,
+        kiAppDamage: battleStats.kiAppDamage,
+        ...kiAppParticipantFields(battleStats),
+        ...battleStats.gear,
+        talismanActive: battleStats.talismanActive,
+        kiRegen: getBattleKiRegen(villain),
+        lssjActive: villain.activeForm === 'Legendary Super Saiyan',
+        royalClass: villain.class === 'Royal Class',
+        fightingStyle: villain.fightingStyle || null,
+        zenkaiExhausted: (villain.zenkaiExhaustedUntil || 0) > Date.now()
+    }];
+    participants.push(...buildCompanionRoster(p.villainUserId, villain));
+    const enemies = generateEnemiesForMission(villain.powerLevel || 0, 'saga', 6, p.planet || 'Earth', 'negative', false);
+    enemies.forEach((enemy, i) => participants.push(buildEnemyParticipant(enemy, i + 1)));
+    // One of the 6 defenders can transform if its race has transformations (race-gated via
+    // RAID_BOSS_FORM_TIERS). If the race has no forms, this defender simply stays in base form.
+    const tfIdx = getRandomInt(enemies.length) - 1;
+    const tfEnemy = enemies[tfIdx];
+    const tfParticipant = participants[participants.length - enemies.length + tfIdx];
+    if (tfParticipant && tfEnemy) {
+        const tiers = RAID_BOSS_FORM_TIERS[tfEnemy.race || tfParticipant.race] || [];
+        if (tiers.length > 0) {
+            const pl = tfEnemy.powerLevel || villain.powerLevel || 0;
+            tfParticipant.bossForms = tiers.filter(t => pl >= t.plReq).map(t => ({ ...t }));
+            tfParticipant.bossStage = 0;
+        }
+    }
+    const battle = battleManager.createBattle(channel ? channel.id : null, participants);
+    battle.rollInitiative();
+    pendingCanonBattles.set(battle.id, { mode: 'defense', villainUserId: p.villainUserId, villainCharId: villain.id, planet: p.planet, space: p.space, type: p.type });
+    if (channel) {
+        const header = `☠️ <@${p.villainUserId}> **${villain.name}**'s attempt to destroy **${p.planet}** went unopposed! They must crush the planet's **6 defenders** to finish it!`;
+        let logText = await resolveNPCTurns(battle, '');
+        const over = checkBattleOver(battle);
+        if (over) {
+            await channel.send(clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}\n\n${over.content}`), { components: over.components }).catch(() => {});
+            return;
+        }
+        const msg = await channel.send({ content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}`), components: buildTurnComponents(battle, { id: p.villainUserId }) }).catch(() => {});
+        if (msg && msg.id) battleMessages.set(battle.id, msg.id);
+    }
+}
+
+// When a canon action IS opposed, the resistance fights the villain in a REAL battle instead of a
+// power-level comparison: every intervening player joins the hero team, backed by allied NPC
+// helpers so the team always numbers CANON_INTERVENE_TEAM_SIZE (1 intervener -> 5 helpers, 2 -> 4,
+// 3 -> 3, ...). The villain is a real, player-controlled participant (so they can defend their own
+// canon action) but carries `isCanonVillain` so the targeting/team helpers put them on the
+// opposing side. Returns true when the battle actually started (false -> caller falls back to the
+// PL contest, e.g. no channel available or the villain is already fighting).
+async function startCanonInterveneBattle(villain, p, channel) {
+    if (!channel) return false;
+    if (battleManager.hasBattleForUser(p.villainUserId)) return false;
+
+    // Only players who aren't already in a battle (and aren't dead) can join — otherwise we'd
+    // hijack their fight, or field a corpse.
+    const candidates = (p.interveners || []).filter(id => !battleManager.hasBattleForUser(id));
+    const participants = [buildPlayerBattleParticipant(p.villainUserId, villain)];
+    participants[0].isCanonVillain = true;
+    const heroIds = [];
+    candidates.forEach(id => {
+        const h = characterManager.getCharacter(id);
+        if (!h || h.dead) return;
+        participants.push(buildPlayerBattleParticipant(id, h));
+        heroIds.push(id);
+    });
+
+    // Fill the hero team up to the configured size with allied NPC helpers.
+    const allyCount = Math.max(0, CANON_INTERVENE_TEAM_SIZE - heroIds.length);
+    const allies = allyCount > 0
+        ? generateEnemiesForMission(villain.powerLevel || 0, CANON_INTERVENE_ALLY_DIFFICULTY, allyCount, p.planet || 'Earth', 'positive', false)
+        : [];
+    allies.forEach((ally, i) => participants.push(buildAllyParticipant(ally, i + 1)));
+
+    const battle = battleManager.createBattle(channel.id, participants);
+    battle.canonInterveneBattle = true;
+    // The heroes share a team — they must never be able to target each other.
+    battle.alliedPlayerIds = new Set(heroIds);
+    battle.rollInitiative();
+    pendingCanonBattles.set(battle.id, {
+        mode: 'intervene',
+        villainUserId: p.villainUserId,
+        villainCharId: villain.id,
+        planet: p.planet,
+        space: p.space,
+        type: p.type,
+        heroUserIds: heroIds
+    });
+
+    const heroMentions = heroIds.map(id => `<@${id}>`).join(' ');
+    const heroLabel = heroIds.length > 0
+        ? `**${heroIds.length}** defender${heroIds.length === 1 ? '' : 's'}`
+        : `**${villain.name}**'s would-be victims`;
+    const header = `🛡️ **THE RESISTANCE STANDS!** ${heroMentions ? `${heroMentions} ` : ''}${heroLabel}`
+        + `${allyCount > 0 ? ` and **${allyCount}** allied warrior${allyCount === 1 ? '' : 's'}` : ''}`
+        + ` vs <@${p.villainUserId}> **${villain.name}**, who is trying to destroy **${p.planet}**!`;
+
+    let logText = await resolveNPCTurns(battle, '');
+    const over = checkBattleOver(battle);
+    if (over) {
+        await channel.send(clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}\n\n${over.content}`), { components: over.components }).catch(() => {});
+        return true;
+    }
+    const msg = await channel.send({
+        content: clampMessage(`${header}\n\n${buildBattleContent(battle, logText)}`),
+        components: buildTurnComponents(battle, null)
+    }).catch(() => null);
+    if (!msg || !msg.id) {
+        // Couldn't post the battle — clean up so nobody is left stuck "in a battle" and let the
+        // caller decide the outcome the old way.
+        battleManager.endBattle(battle.id);
+        pendingCanonBattles.delete(battle.id);
+        return false;
+    }
+    battleMessages.set(battle.id, msg.id);
+    return true;
+}
+
 // Resolve a pending evil canon action at the end of the intervention window.
-function resolveCanonAction() {
+async function resolveCanonAction() {
     const p = pendingCanonAction;
     if (!p.villainUserId || Date.now() < p.expiresAt) return;
     const villain = characterManager.getCharacter(p.villainUserId);
     // Announce the result in the dedicated #canon-actions channel (falls back to #raids).
     const channel = getCanonActionChannel();
+    // The automatic gauntlet (to stop the planet being blown up) runs in the planet's own channel
+    // (falls back to #canon-actions).
+    const defenseChannel = getPlanetChannel(p.planet) || getCanonActionChannel();
     let result = '';
     const heroPL = p.interveners.reduce((sum, id) => sum + ((characterManager.getCharacter(id) || {}).powerLevel || 0), 0);
     const villainPL = (villain && villain.powerLevel) || 0;
     if (p.interveners.length === 0) {
+        // An unopposed planet/location destruction isn't free — the villain must defeat the
+        // planet's 6 saga defenders. The destruction only completes if they win the gauntlet.
+        if ((p.type === 'blow-planet' || p.type === 'blow-location') && villain && defenseChannel && !battleManager.hasBattleForUser(p.villainUserId)) {
+            try {
+                await startCanonDefenseBattle(villain, p, defenseChannel);
+            } catch (e) {
+                console.error('[canon] defense battle failed:', e && e.message ? e.message : e);
+            }
+            pendingCanonAction.villainUserId = null;
+            pendingCanonAction.type = null;
+            pendingCanonAction.expiresAt = 0;
+            pendingCanonAction.interveners = [];
+            return;
+        }
         // Villain victorious: blow up the planet/location, kill players on the planet.
         result = `☠️ **${villain ? villain.name : 'The villain'}** succeeded!`;
         if (villain) {
+            const reward = getCanonReward(villainPL, p.type);
             characterManager.updateCharacter(p.villainUserId, villain.id, {
-                unspentPoints: (villain.unspentPoints || 0) + getRandomInt(100) + Math.round(villainPL * 0.55),
+                unspentPoints: (villain.unspentPoints || 0) + reward,
                 canonActionUsedAt: Date.now()
             });
+            const nick = awardNickname(p.villainUserId, villain, p.type === 'blow-planet' ? 'destroyPlanet' : 'destroyLocation');
+            if (nick) result += `\n🏷️ **${villain.name}** is now known as **${nick.emoji} ${nick.text}**!`;
         }
-        // Kill every good-alignment player on the planet (they weren't in a major location when the planet blew).
-        Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
-            chars.forEach(c => {
-                if (uid === p.villainUserId) return;
-                if ((c.location || 'Earth') !== p.planet) return;
-                const inMajor = isMajorLocationSlot(c.location, c.space);
-                if (p.type === 'blow-planet' && !inMajor) {
-                    characterManager.updateCharacter(uid, c.id, { currentHP: 0 });
-                    result += `\n💀 **${c.name}** died in the planetary explosion!`;
-                } else if (p.type === 'blow-location' && isMajorLocationSlot(c.location, c.space)) {
-                    characterManager.updateCharacter(uid, c.id, { currentHP: 0 });
-                    result += `\n💀 **${c.name}** died at the destroyed location!`;
-                }
+        // Kill every player on the planet (they weren't in a major location when the planet blew).
+        if (p.type === 'blow-planet') {
+            result += killPlanetPopulation(p.planet, { excludeUserIds: new Set([p.villainUserId]) });
+        } else if (p.type === 'blow-location') {
+            Object.entries(characterManager.characters || {}).forEach(([uid, chars]) => {
+                chars.forEach(c => {
+                    if (uid === p.villainUserId) return;
+                    if ((c.location || 'Earth') !== p.planet) return;
+                    if (!isMajorLocationSlot(c.location, c.space)) return;
+                    const killed = killCharacter(uid, c.id);
+                    result += killed && killed.reborn
+                        ? `\n🥚 **${c.name}** should've died here, but their **Namekian egg** hatches — reborn!`
+                        : killed && killed.protected
+                            ? `\n🛡️ **${c.name}** survived the destruction (Ancient Wuxia Talisman)!`
+                            : killed && killed.escaped
+                                ? `\n🚀 **${c.name}** escaped in a **Space Pod**!`
+                                : `\n💀 **${c.name}** died at the destroyed location!`;
+                });
             });
-        });
+        }
         if (p.type === 'blow-location') {
             const names = destroyMajorLocation(p.planet, p.space);
             result += `\n🏚️ **${getSpecialSlotName(p.planet, p.space) || 'The location'}** was destroyed (returns in 3 days).`;
-        }
-    } else if (heroPL >= villainPL) {
-        // Heroes victorious: split the reward.
-        const total = getRandomInt(200) + Math.round(villainPL * 0.85);
-        const per = Math.max(1, Math.floor(total / p.interveners.length));
-        result = `🛡️ The **heroes** thwarted the villain!`;
-        p.interveners.forEach(id => {
-            const h = characterManager.getCharacter(id);
-            if (h) {
-                characterManager.updateCharacter(id, h.id, { unspentPoints: (h.unspentPoints || 0) + per });
-                result += `\n🛡️ **${h.name}** earned **+${per}** stat points!`;
+        } else if (p.type === 'blow-planet') {
+            destroyPlanet(p.planet);
+            const escaped = relocateFromDestroyedPlanet(p.planet);
+            result += `\n🌍 **${p.planet}** was destroyed! Its channel is unusable and travel there is blocked until a **Dragon Ball wish** restores it.`;
+            if (escaped.length) {
+                result += `\n🚀 ${escaped.join(', ')} escaped the destruction and were relocated to safety!`;
             }
-        });
+        }
     } else {
-        // Villain victorious over the interveners.
-        result = `☠️ The **villain** overwhelmed the heroes!`;
-        if (villain) {
-            characterManager.updateCharacter(p.villainUserId, villain.id, {
-                unspentPoints: (villain.unspentPoints || 0) + getRandomInt(100) + Math.round(villainPL * 0.55),
-                canonActionUsedAt: Date.now()
+        // The canon action IS opposed -> the resistance fights the villain in a REAL battle. Its
+        // outcome is resolved by checkBattleOver (via pendingCanonBattles); only if the battle
+        // cannot start (no channel, or the villain is already fighting) do we fall back to the
+        // old power-level contest.
+        let battleStarted = false;
+        if (villain && defenseChannel && !battleManager.hasBattleForUser(p.villainUserId)) {
+            try {
+                battleStarted = await startCanonInterveneBattle(villain, p, defenseChannel);
+            } catch (e) {
+                console.error('[canon] intervene battle failed:', e && e.message ? e.message : e);
+            }
+        }
+        if (battleStarted) {
+            pendingCanonAction.villainUserId = null;
+            pendingCanonAction.type = null;
+            pendingCanonAction.expiresAt = 0;
+            pendingCanonAction.interveners = [];
+            return;
+        }
+        if (heroPL >= villainPL) {
+            // Heroes victorious: each intervener earns a reward scaled to their own PL and the risk
+            // of taking on the villain (a bigger upset over a stronger foe is worth more), rather
+            // than a single pool split that gets diluted by a large group.
+            result = `🛡️ The **heroes** thwarted the villain!`;
+            p.interveners.forEach(id => {
+                const h = characterManager.getCharacter(id);
+                if (h) {
+                    const per = getCanonReward(h.powerLevel || 0, 'thwart', villainPL);
+                    characterManager.updateCharacter(id, h.id, { unspentPoints: (h.unspentPoints || 0) + per });
+                    result += `\n🛡️ **${h.name}** earned **+${per}** stat points!`;
+                    const nick = awardNickname(id, h, 'savePlanet');
+                    if (nick) result += `\n🏷️ **${h.name}** is now known as **${nick.emoji} ${nick.text}**!`;
+                }
             });
+        } else {
+            // Villain victorious over the interveners.
+            result = `☠️ The **villain** overwhelmed the heroes!`;
+            if (villain) {
+                const reward = getCanonReward(villainPL, p.type);
+                characterManager.updateCharacter(p.villainUserId, villain.id, {
+                    unspentPoints: (villain.unspentPoints || 0) + reward,
+                    canonActionUsedAt: Date.now()
+                });
+            }
         }
     }
     pendingCanonAction.villainUserId = null;
@@ -10007,16 +16676,43 @@ const SPECIAL_AREA_NPCS = {
 };
 
 function getSpecialAreaNpc(location, space) {
-    if ((location || 'Earth').toLowerCase() !== 'earth') return null;
-    return SPECIAL_AREA_NPCS[space] || null;
+    const loc = String(location || '').toLowerCase();
+    if (loc === 'earth') return SPECIAL_AREA_NPCS[space] || null;
+    if (loc === 'namek' && space === 134) return { name: 'Grand Elder Guru', title: 'The Namekian Grand Elder' };
+    if (loc === 'frieza planet' && space === 34) return { name: 'Frieza Force Recruiter', title: 'The Emperor\'s Right Hand' };
+    if (loc === "king kai's planet" && space === 1) return { name: 'King Kai', title: 'The North Kai — teacher of Kaioken' };
+    return null;
 }
 
-// Basic skills an NPC can teach (anything the character doesn't already have).
-function getNpcTeachChoices(character) {
+// Techniques a named location's NPC teaches (in addition to the generic lessons). Keyed by
+// `${location}|${space}`. The `teacher` is shown on the button label as flavor text.
+const NPC_LOCATION_TECHNIQUES = {
+    'Earth|3': { teacher: 'Gohan', moves: ['Masenko'] },
+    'Earth|36': { teacher: 'Gohan & Krillin', moves: ['Masenko', 'Solar Flare'] },
+    'Earth|10': { teacher: 'Tien', moves: ['Solar Flare'] },
+    'Frieza Planet|34': { teacher: 'Frieza Force Recruiter', moves: ['Death Beam', 'Death Saucer', 'Telekinesis', 'Supernova'] },
+    // Kaioken is ONLY taught by King Kai, and King Kai's Planet is only reachable by running
+    // Snake Way (see the Snake Way route in the /travel handler).
+    "King Kai's Planet|1": { teacher: 'King Kai', moves: ['Kaioken'] }
+};
+
+// Basic skills an NPC can teach (anything the character doesn't already have), plus any
+// named-location specialties (Gohan's Masenko, Frieza Force techniques, etc.).
+function getNpcTeachChoices(character, location, space) {
     const known = getKnownTechniqueNames(character);
     const choices = [];
+    // Named-location specialties first so they're always offered (e.g. all 4 Frieza Force moves).
+    const loc = NPC_LOCATION_TECHNIQUES[`${location || 'Earth'}|${space || 1}`];
+    if (loc) {
+        loc.moves.forEach(move => {
+            if (COMBAT_SKILLS[move] && !known.includes(move) && !choices.some(c => c.technique === move)) {
+                choices.push({ type: 'technique', technique: move, label: `🧠 Learn ${move} (${loc.teacher})` });
+            }
+        });
+    }
+    // Generic lessons afterward.
     MENTOR_GENERAL_TEACHINGS.forEach(teaching => {
-        if (teaching.type === 'technique' && !known.includes(teaching.technique)) choices.push({ ...teaching });
+        if (teaching.type === 'technique' && !known.includes(teaching.technique) && !choices.some(c => c.technique === teaching.technique)) choices.push({ ...teaching });
         if (teaching.type === 'kiEfficiency' && !hasKiEfficiency(character)) choices.push({ ...teaching });
         if (teaching.type === 'kiApplication' && !hasKiApplication(character)) choices.push({ ...teaching });
     });
@@ -10026,8 +16722,8 @@ function getNpcTeachChoices(character) {
 // Roll an NPC quest. Rewards scale with the global saga AND the player's power level
 // (mirroring how enemy stats scale), so regular quests stay relevant as you grow.
 function rollNpcQuest(character) {
-    const saga = globalSaga;
-    const statPoints = getMissionStatReward(character.powerLevel || 0, 'casual', saga) + getRandomInt(20);
+    const saga = getEffectiveSaga();
+    const statPoints = getMissionStatReward(character.powerLevel || 0, 'npcQuest', saga) + getRandomInt(20);
     const zeni = (10000 + 5000 * saga) + getRandomInt(5000) * saga;
     const roll = getRandomInt(100);
     if (roll <= 40) {
@@ -10046,15 +16742,19 @@ function rollNpcQuest(character) {
 }
 
 // Post the special-area NPC offer with quest / skill / walk-away buttons.
-function offerSpecialAreaNpc(interaction, character, npc, specialName, prefixText) {
-    const teachChoices = getNpcTeachChoices(character);
+function offerSpecialAreaNpc(interaction, character, npc, specialName, prefixText, location, space) {
+    const teachChoices = getNpcTeachChoices(character, location, space);
     pendingNpcOffers.set(interaction.user.id, { npc, specialName, teachChoices });
     const rows = [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`npc_quest_${interaction.user.id}`).setLabel('🎯 Take a Quest').setStyle(ButtonStyle.Primary)
     )];
     if (teachChoices.length > 0) {
-        const teachRow = new ActionRowBuilder();
-        teachChoices.slice(0, 5).forEach((choice, i) => {
+        let teachRow = new ActionRowBuilder();
+        teachChoices.forEach((choice, i) => {
+            if (teachRow.components.length >= 5) {
+                rows.push(teachRow);
+                teachRow = new ActionRowBuilder();
+            }
             teachRow.addComponents(new ButtonBuilder().setCustomId(`npc_skill_${interaction.user.id}_${i}`).setLabel(choice.label).setStyle(ButtonStyle.Success));
         });
         rows.push(teachRow);
@@ -10062,7 +16762,9 @@ function offerSpecialAreaNpc(interaction, character, npc, specialName, prefixTex
     rows.push(new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`npc_leave_${interaction.user.id}`).setLabel('🚪 Walk Away').setStyle(ButtonStyle.Secondary)
     ));
-    const text = `${prefixText || ''}📍 **${specialName}** — you meet **${npc.name}** (${npc.title})!\n\nThey can give you a **quest for zeni & stat points** (scales with the saga), or teach you a **basic skill**.`;
+    const loc = NPC_LOCATION_TECHNIQUES[`${location || 'Earth'}|${space || 1}`];
+    const specialtyText = loc ? `\n\n🧠 Here they can teach: **${loc.moves.join(', ')}**${loc.teacher ? ` (from ${loc.teacher})` : ''}.` : '';
+    const text = `${prefixText || ''}📍 **${specialName}** — you meet **${npc.name}** (${npc.title})!\n\nThey can give you a **quest for zeni & stat points** (scales with the saga), or teach you a technique.${specialtyText}`;
     return interaction.reply({ content: text, components: rows });
 }
 
@@ -10151,7 +16853,7 @@ async function offerMentor(interaction, character, prefixText) {
 
 // Offer a quest found while searching
 function offerQuest(interaction, character, missionType, prefixText) {
-    const presets = generateMissionPresets(character.powerLevel, missionType, character.location || 'Earth');
+    const presets = generateMissionPresets(character.powerLevel, missionType, character.location || 'Earth', buildMissionPartyForScaling(interaction.user.id, character));
     pendingMissions.set(interaction.user.id, {
         presets,
         selectedAlignment: 'positive',
@@ -10160,7 +16862,7 @@ function offerQuest(interaction, character, missionType, prefixText) {
         joinedUsers: []
     });
     const labels = { casual: 'Casual Mission', hard: 'Challenging Mission', 'very hard': 'Very Challenging Mission' };
-    const text = buildMissionPreviewText(labels[missionType] || missionType, presets, 'positive', prefixText);
+    const text = buildMissionPreviewText(labels[missionType] || missionType, presets, 'positive', prefixText, { missionType, powerLevel: character.powerLevel });
     const row = missionButtons(missionType, interaction.user.id, 'positive');
     return interaction.reply({ content: text, components: [row] });
 }
@@ -10169,7 +16871,7 @@ function offerQuest(interaction, character, missionType, prefixText) {
 function rollLegendaryItem(location, space) {
     const areaKey = `${location || 'Earth'}-${space || 1}`;
     for (let attempts = 0; attempts < 20; attempts++) {
-        const item = LEGENDARY_ITEMS[getRandomInt(22) - 1];
+        const item = LEGENDARY_ITEMS[getRandomInt(23) - 1];
         // Location-specific items reroll when they don't apply
         if (item === 'Dimensional Shard') continue; // Hell exclusive
         if (item === 'Bag of Senzu (16x)' && location !== 'Earth') continue; // Earth exclusive
@@ -10249,46 +16951,101 @@ function applyFoundItemEffect(interaction, character, item) {
 }
 
 // ---------- Dragon Balls & Dragon Radar ----------
-// `dragonBallState` tracks each ball's slot and which player has found it (null = still on the map).
-function getDragonBallAt(key) {
-    return dragonBallState.find(b => b.key === key) || null;
+// Two independent 7-ball sets exist: the Earth/Shenron set (`dragonBallState`) and the
+// Namek/Porunga set (`namekianDragonBallState`). Both work identically to find, collect, and
+// summon — Porunga's wishes are simply 2× stronger.
+const DRAGON_BALL_SETS = {
+    shenron: { ballName: 'Dragon Ball', dragonName: 'Shenron', emoji: '🐉', wishMult: 1 },
+    porunga: { ballName: 'Namekian Dragon Ball', dragonName: 'Porunga', emoji: '🐲', wishMult: 2 }
+};
+// Resolve the active ball array for a set ('shenron' | 'porunga').
+function getDragonState(set = 'shenron') {
+    return set === 'porunga' ? namekianDragonBallState : dragonBallState;
+}
+function getDragonBallAt(key, set = 'shenron') {
+    return getDragonState(set).find(b => b.key === key) || null;
 }
 
-// Scatter the Dragon Balls to fresh, distinct random locations (after a wish).
-function scatterDragonBalls() {
-    dragonBallState = randomDragonBallSlots().map(key => ({ key, foundBy: null }));
+// Scatter a set's Dragon Balls to fresh, distinct random locations (after a wish).
+function scatterDragonBalls(set = 'shenron') {
+    if (set === 'porunga') namekianDragonBallState = randomNamekianDragonBallSlots().map(key => ({ key, foundBy: null }));
+    else dragonBallState = randomDragonBallSlots().map(key => ({ key, foundBy: null }));
     saveGlobalSaga();
 }
 
-function dragonBallAvailableAt(key) {
-    const b = getDragonBallAt(key);
+// When a player dies, any Dragon Balls they hold (in either set) are lost and scattered to fresh
+// random tiles so they become searchable again (and stop counting toward the set limit).
+function releaseDragonBallsForDeath(userId) {
+    let changed = false;
+    [['shenron', dragonBallState, DRAGON_BALL_SPAWN_POOL],
+     ['porunga', namekianDragonBallState, NAMEKIAN_DRAGON_BALL_SPAWN_POOL]].forEach(([set, state, pool]) => {
+        const heldIdx = [];
+        state.forEach((b, i) => { if (b.foundBy === userId) heldIdx.push(i); });
+        if (heldIdx.length === 0) return;
+        const usedKeys = new Set(state.map(b => b.key));
+        const avail = pool.filter(k => !usedKeys.has(k));
+        for (const i of heldIdx) {
+            state[i].foundBy = null;
+            if (avail.length > 0) {
+                const idx = getRandomInt(avail.length) - 1;
+                state[i].key = avail.splice(idx, 1)[0];
+            }
+            changed = true;
+        }
+    });
+    if (changed) saveGlobalSaga();
+}
+
+function dragonBallAvailableAt(key, set = 'shenron') {
+    const b = getDragonBallAt(key, set);
     return !!b && !b.foundBy;
 }
 
-function getDragonBallCount(userId) {
-    return dragonBallState.filter(b => b.foundBy === userId).length;
+function getDragonBallCount(userId, set = 'shenron') {
+    // Dead players don't hold Dragon Balls toward the limit.
+    const chars = characterManager.characters ? characterManager.characters[userId] : [];
+    if (!(chars || []).some(c => !c.dead)) return 0;
+    return getDragonState(set).filter(b => b.foundBy === userId).length;
 }
 
-function hasAllDragonBalls(userId) {
-    return dragonBallState.length > 0 && dragonBallState.every(b => b.foundBy === userId);
+function hasAllDragonBalls(userId, set = 'shenron') {
+    const state = getDragonState(set);
+    if (state.length === 0) return false;
+    const chars = characterManager.characters ? characterManager.characters[userId] : [];
+    if (!(chars || []).some(c => !c.dead)) return false;
+    return state.every(b => b.foundBy === userId);
 }
 
-// Record that `userId` found the ball at this slot (possession is tracked globally in
-// `dragonBallState`, so the ball isn't duplicated as an inventory item).
+// Record that `userId` found the ball at this slot (possession is tracked globally in the set's
+// state, so the ball isn't duplicated as an inventory item). Checks both sets; a slot can hold at
+// most one ball per set. Returns { set, ...meta } or null.
 function findDragonBallFor(interaction, character, areaKey) {
-    const b = getDragonBallAt(areaKey);
-    if (!b || b.foundBy) return null;
-    b.foundBy = interaction.user.id;
-    saveGlobalSaga();
-    return 'Dragon Ball';
+    for (const set of ['shenron', 'porunga']) {
+        const state = getDragonState(set);
+        const b = state.find(x => x.key === areaKey);
+        if (!b || b.foundBy) continue;
+        b.foundBy = interaction.user.id;
+        // Move the ball off the tile it was found on: reassign a fresh random slot so it doesn't
+        // keep "existing at the same space it was found in" when it's next released.
+        const usedKeys = new Set(state.map(x => x.key));
+        const pool = (set === 'porunga' ? NAMEKIAN_DRAGON_BALL_SPAWN_POOL : DRAGON_BALL_SPAWN_POOL).filter(k => !usedKeys.has(k));
+        if (pool.length > 0) {
+            const idx = getRandomInt(pool.length) - 1;
+            b.key = pool.splice(idx, 1)[0];
+        }
+        saveGlobalSaga();
+        return { set, ...DRAGON_BALL_SETS[set] };
+    }
+    return null;
 }
 
-// The Dragon Radar reports how far the nearest findable dragon ball is, or (if all are held)
-// how far the nearest player holding a ball is.
+// The Dragon Radar reports how far the nearest findable dragon ball is (either set), or (if all
+// are held) how far the nearest player holding a ball is.
 function getNearestDragonBallInfo(character) {
     const loc = character.location || 'Earth';
     const space = character.space || 1;
-    const unfound = dragonBallState.filter(b => !b.foundBy);
+    const allBalls = [...dragonBallState.map(b => ({ ...b, set: 'shenron' })), ...namekianDragonBallState.map(b => ({ ...b, set: 'porunga' }))];
+    const unfound = allBalls.filter(b => !b.foundBy);
     const samePlanet = unfound.filter(b => b.key.startsWith(loc + '-'));
     if (samePlanet.length > 0) {
         let best = Infinity, nearest = null;
@@ -10296,23 +17053,28 @@ function getNearestDragonBallInfo(character) {
             const d = Math.abs(space - Number(b.key.split('-')[1]));
             if (d < best) { best = d; nearest = b; }
         });
-        return { type: 'ball', distance: best, key: nearest.key };
+        return { type: 'ball', distance: best, key: nearest.key, set: nearest.set, meta: DRAGON_BALL_SETS[nearest.set] };
     }
     if (unfound.length > 0) {
         return { type: 'elsewhere', distance: null };
     }
-    // All balls are held: find the nearest player holding one on the same planet.
+    // All balls are held: find the nearest LIVING player holding one on the same planet.
     let best = Infinity, holder = null;
-    dragonBallState.forEach(b => {
+    allBalls.forEach(b => {
         if (!b.foundBy) return;
         const h = characterManager.getCharacter(b.foundBy);
-        if (!h) return;
+        if (!h || h.dead) return;
         if ((h.location || 'Earth') !== loc) return;
         const d = Math.abs(space - (h.space || 1));
         if (d < best) { best = d; holder = h; }
     });
     if (holder) return { type: 'holder', distance: best, holder };
     return { type: 'none', distance: null };
+}
+
+// A player with very good alignment (>2500) can make TWO wishes per Dragon summon.
+function getWishAllowance(character) {
+    return (getPlayerAlignmentValue(character) > 2500) ? 2 : 1;
 }
 
 // Wish buttons shown once all 7 Dragon Balls are collected.
@@ -10332,29 +17094,33 @@ function buildWishComponents() {
 }
 
 // Apply a Shenron wish (the caller scatters the Dragon Balls afterward).
-function applyWish(userId, character, type) {
+function applyWish(userId, character, type, set = 'shenron') {
+    // Porunga's wishes are 2× stronger than Shenron's (wishMult = 2).
+    const mult = (DRAGON_BALL_SETS[set] && DRAGON_BALL_SETS[set].wishMult) || 1;
     if (type === 'power') {
-        const gain = 50000;
+        const gain = 50000 * mult;
         characterManager.updateCharacter(userId, character.id, { unspentPoints: (character.unspentPoints || 0) + gain });
         return `💪 **+${gain} SP!** Spend them with \`/allocate\`.`;
     }
     if (type === 'knowledge') {
         const curInt = (character.stats || {}).int || 0;
-        const newInt = Math.min(20, curInt + 5);
+        const newInt = Math.min(20, curInt + 5 * mult);
         const gained = newInt - curInt;
         const stats = { ...(character.stats || {}), int: newInt };
-        const modifiers = calculateAllModifiers(stats);
+        const modifiers = calculateAllModifiers(stats, character.statMultipliers);
         const vitals = recalcVitals(character, stats);
         characterManager.updateCharacter(userId, character.id, { stats, modifiers, ...vitals, powerLevel: characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }) });
         return `🧠 **INT +${gained}** (max 20) → **${newInt}**.`;
     }
     if (type === 'double') {
-        characterManager.updateCharacter(userId, character.id, { doublePotential: true });
-        return `🧬 **Double My Potential!** Your next limit break rewards are **2×**, but the next requirement is **2×** higher.`;
+        // Porunga's "Double My Potential" is twice as strong: both flags stack to ×4 next break.
+        characterManager.updateCharacter(userId, character.id, { doublePotential: true, porungaDouble: mult > 1 });
+        return `🧬 **Double My Potential!** Your next limit break rewards are **${2 * mult}×**, but the next requirement is **${2 * mult}×** higher.`;
     }
     if (type === 'pseudo') {
-        characterManager.updateCharacter(userId, character.id, { pseudoImmortality: true });
-        return `🩸 **Pseudo-Immortality!** You regain **d20+8 HP each turn** in battle.`;
+        // Porunga's Pseudo-Immortality regenerates d20+16 per turn instead of d20+8.
+        characterManager.updateCharacter(userId, character.id, { pseudoImmortality: true, porungaPseudo: mult > 1 });
+        return `🩸 **Pseudo-Immortality!** You regain **d20+${8 * mult} HP each turn** in battle.`;
     }
     if (type === 'restore') {
         const planet = character.location || 'Earth';
@@ -10362,31 +17128,47 @@ function applyWish(userId, character, type) {
         for (const key of destroyedLocations.keys()) {
             if (key.startsWith(planet + '-')) { destroyedLocations.delete(key); restored++; }
         }
+        // Porunga's restore is stronger: it also brings back every destroyed planet.
+        let planetsRestored = 0;
+        if (mult > 1) {
+            [...destroyedPlanets.keys()].forEach(p => { destroyedPlanets.delete(p); planetsRestored++; });
+        }
+        let planetRestored = false;
+        if (isPlanetDestroyed(planet)) { destroyedPlanets.delete(planet); planetRestored = true; }
         saveGlobalSaga();
-        return `🌍 **${planet}** is restored! (${restored} destroyed location${restored === 1 ? '' : 's'} repaired)`;
+        const parts = [];
+        if (planetRestored || planetsRestored > 0) parts.push(`the planet${mult > 1 ? 's' : ''}`);
+        if (restored > 0) parts.push(`${restored} destroyed location${restored === 1 ? '' : 's'}`);
+        return `🌍 **${planet}** is restored! (${parts.length ? parts.join(', ') : 'nothing was damaged'})`;
     }
     if (type === 'bring') {
-        let target = null, targetUid = null;
-        if (character.dead) { target = character; targetUid = userId; }
+        // Porunga's revival returns all dead characters (not just one).
+        let targets = [];
+        if (character.dead) targets.push({ uid: userId, c: character });
         else {
             for (const uid of Object.keys(characterManager.characters || {})) {
                 for (const c of characterManager.characters[uid]) {
-                    if (c.dead) { target = c; targetUid = uid; break; }
+                    if (c.dead) targets.push({ uid, c });
                 }
-                if (target) break;
             }
         }
-        if (!target) return 'No dead characters could be brought back.';
-        characterManager.updateCharacter(targetUid, target.id, {
-            dead: false,
-            location: target.homeLocation || getDefaultLocation(target.race),
-            space: target.homeSpace || 1,
-            currentHP: target.maxHP,
-            currentKi: target.maxKi,
-            fatigue: 0,
-            peakFatigue: 0
+        if (targets.length === 0) return 'No dead characters could be brought back.';
+        targets = mult > 1 ? targets : targets.slice(0, 1);
+        let revived = 0;
+        targets.forEach(({ uid, c }) => {
+            characterManager.updateCharacter(uid, c.id, {
+                dead: false,
+                location: c.homeLocation || getDefaultLocation(c.race),
+                space: c.homeSpace || 1,
+                currentHP: c.maxHP,
+                currentKi: c.maxKi,
+                fatigue: 0,
+                peakFatigue: 0,
+                ...restoreLostCompanions(c)
+            });
+            revived++;
         });
-        return `👼 **${target.name}** has been brought back to life!`;
+        return `👼 **${revived} dead character${revived === 1 ? '' : 's'}** ${revived === 1 ? 'has' : 'have'} been brought back to life!`;
     }
     if (type === 'mastery') {
         const techniqueMastery = { ...(character.techniqueMastery || {}) };
@@ -10510,6 +17292,93 @@ function hasActiveShell(character) {
     return !!(character && character.race === 'Tortle' && getTortleShellState(character) === 'shelled');
 }
 
+// ---------- Racial stat mods ----------
+// Racial stat bonuses are NOT purely flat: every racial BONUS also adds a per-race percentage of
+// that stat's own modifier, so "+3 STR mod" stays meaningful as stats grow:
+//     +3 STR mod  →  +3 + (that race's %) of your STR mod
+// The percentage is per race in config.json `racialModPercent` — either a single number (every
+// race) or a map like { "default": 7, "Hera": 7, "Oni": 5 } — falling back to the built-in table
+// below. PENALTIES stay flat unless `racialModScalePenalties` is enabled, since scaling them would
+// otherwise turn a penalty into a bonus once the stat's modifier grows past the flat value.
+const DEFAULT_RACIAL_MOD_PERCENT = { default: 7, Hera: 7, Tortle: 6, Vampire: 6, Yokai: 6, Namekian: 6, Oni: 5 };
+const RACIAL_MOD_PERCENT_CONFIG = (typeof racialModPercent === 'number' || (racialModPercent && typeof racialModPercent === 'object'))
+    ? racialModPercent
+    : DEFAULT_RACIAL_MOD_PERCENT;
+const RACIAL_MOD_SCALE_PENALTIES = racialModScalePenalties === true;
+
+// The scaling percentage for a race: its own entry in the config map, else the map's `default`,
+// else the built-in default (a plain number in config applies to every race).
+function getRacialModPercent(race) {
+    const cfg = RACIAL_MOD_PERCENT_CONFIG;
+    if (typeof cfg === 'number') return Math.max(0, cfg);
+    if (cfg && typeof cfg === 'object') {
+        if (typeof cfg[race] === 'number') return Math.max(0, cfg[race]);
+        if (typeof cfg.default === 'number') return Math.max(0, cfg.default);
+    }
+    const fallback = DEFAULT_RACIAL_MOD_PERCENT[race];
+    return Math.max(0, typeof fallback === 'number' ? fallback : DEFAULT_RACIAL_MOD_PERCENT.default);
+}
+
+// A character's stat modifiers WITHOUT any racial mods. Racial mods are only ever added on top of
+// the effective modifier (never written back into `stats`), so this can't double count. Handles
+// both shapes used in the codebase: nested `{ stats: {...} }` (players, companions, children) and
+// flat `{ str, dex, ... }` (enemies).
+function getPreRacialMods(entity) {
+    if (!entity || typeof entity !== 'object') return null;
+    const nested = (entity.stats && typeof entity.stats === 'object') ? entity.stats : null;
+    const source = nested || entity;
+    const hasStats = ['str', 'dex', 'con', 'wil', 'spi', 'int'].some(s => typeof source[s] === 'number' && source[s] > 0);
+    if (!hasStats) return null;
+    const sm = (entity.statMultipliers && typeof entity.statMultipliers === 'object') ? entity.statMultipliers : {};
+    return calculateAllModifiers(source, sm);
+}
+
+// How much of a stat's own modifier a racial mod of that stat gains (0 when unknown).
+function getRacialModBonus(character, stat, race = null) {
+    const pct = getRacialModPercent(race || (character && character.race));
+    if (!pct) return 0;
+    const base = getPreRacialMods(character);
+    if (!base) return 0;
+    return Math.round(Math.abs(base[stat] || 0) * pct / 100);
+}
+
+// Apply the scaling to a set of racial mods (in place) and return it.
+function applyRacialModScaling(mods, character, race = null) {
+    if (!getRacialModPercent(race || (character && character.race))) return mods;
+    Object.keys(mods).forEach(stat => {
+        const value = mods[stat];
+        if (value === 0) return;
+        if (value < 0 && !RACIAL_MOD_SCALE_PENALTIES) return;
+        const bonus = getRacialModBonus(character, stat, race);
+        if (bonus <= 0) return;
+        mods[stat] = value < 0 ? value - bonus : value + bonus;
+    });
+    return mods;
+}
+
+// One stat's racial mod with its scaled breakdown, e.g. "+15 (+3 +7%)". '' when there is none.
+function formatRacialModValue(racialMods, character, stat, race = null) {
+    const value = (racialMods && racialMods[stat]) || 0;
+    if (value === 0) return '';
+    const pct = getRacialModPercent(race || (character && character.race));
+    const scaled = getRacialModBonus(character, stat, race);
+    if (pct > 0 && scaled > 0 && (value > 0 || RACIAL_MOD_SCALE_PENALTIES)) {
+        // Recover the race's flat value so the breakdown reads "flat ±pct".
+        const flat = value < 0 ? value + scaled : value - scaled;
+        return `${value >= 0 ? '+' : ''}${value} (${flat >= 0 ? '+' : ''}${flat} ${value < 0 ? '-' : '+'}${pct}%)`;
+    }
+    return `${value >= 0 ? '+' : ''}${value}`;
+}
+
+// Human-readable racial mod summary showing the scaled breakdown, e.g. "STR +15 (+3 +7%)".
+function formatRacialModLine(racialMods, character, race = null) {
+    const labels = { str: 'STR', dex: 'DEX', con: 'CON', wil: 'WIL', spi: 'SPI', int: 'INT' };
+    return Object.entries(labels)
+        .filter(([stat]) => (racialMods[stat] || 0) !== 0)
+        .map(([stat, label]) => `${label} ${formatRacialModValue(racialMods, character, stat, race)}`)
+        .join(' | ');
+}
+
 function getRaceStatModifiers(race, character = null) {
     const mods = {
         str: 0,
@@ -10527,7 +17396,15 @@ function getRaceStatModifiers(race, character = null) {
         const shell = getTortleShellMods(character);
         mods.con += shell.con;
         mods.dex += shell.dex;
-        return mods;
+        return applyRacialModScaling(mods, character, race);
+    }
+
+    // Yokai variant stat mods (assigned at the Yokai rebirth): Kitsune +5 SPI/-2 CON,
+    // Nekomata +5 DEX/-2 CON, Tengu none (its bonus is an attack mod, applied in combat).
+    if (race === 'Yokai' && character && character.yokaiVariant) {
+        if (character.yokaiVariant === 1) { mods.spi += 5; mods.con -= 2; }
+        else if (character.yokaiVariant === 2) { mods.dex += 5; mods.con -= 2; }
+        return applyRacialModScaling(mods, character, race);
     }
 
     const raceInfo = races[race];
@@ -10536,6 +17413,9 @@ function getRaceStatModifiers(race, character = null) {
     }
 
     raceInfo.passives.forEach(passive => {
+        // Namekian "Large Ears" is a temporary loud-noise penalty (applied when a Konatsian
+        // plays Hero's Flute), not a permanent racial mod — exclude it here.
+        if (passive.id === 'large-ears') return;
         const desc = passive.description.toLowerCase();
         
         // Extract stat modifiers from descriptions (e.g., "+5 STR mod", "-3 DEX mod")
@@ -10569,7 +17449,11 @@ function getRaceStatModifiers(race, character = null) {
         }
     }
 
-    // Permanent Super Namekian fusion boost (2x your stat mods, set at /fuse).
+    // Racial flats scale with each stat's own modifier (e.g. Hera +3 STR → "+3 + 7% of STR mod").
+    applyRacialModScaling(mods, character, race);
+
+    // Permanent Super Namekian fusion boost (already derived from your stat mods at /fuse, so it
+    // is added AFTER the racial scaling to avoid double-dipping the percentage).
     if (race === 'Namekian' && character && character.fusionModBonus) {
         ['str', 'dex', 'con', 'wil', 'spi', 'int'].forEach(s => {
             mods[s] += (character.fusionModBonus[s] || 0);
@@ -10579,36 +17463,61 @@ function getRaceStatModifiers(race, character = null) {
     return mods;
 }
 
-// Calculate HP based on CON (with racial bonuses)
-function calculateHP(con, race = null) {
-    let conMod = calculateModifier(con);
+// Racial stat mods as a Battle `modBonus` map (INT excluded — the battle code never uses it).
+// Players get these from `applyFormToStats`, but enemies, rivals and companions are built by hand,
+// so they must apply it explicitly or they'd silently lose every racial stat bonus in combat while
+// a player of the same race keeps theirs.
+function getRacialCombatMods(race, entity) {
+    const out = {};
+    if (!race) return out;
+    const racial = getRaceStatModifiers(race, entity);
+    Object.entries(racial).forEach(([stat, mod]) => {
+        if (mod !== 0 && stat !== 'int') out[stat] = (out[stat] || 0) + mod;
+    });
+    return out;
+}
+
+// Calculate HP based on CON (with racial bonuses). Stat-multiplier points (if any) boost
+// the CON-derived modifier before the racial bonus is added.
+// HP gained per CON modifier point (config.json `hpPerConMod`, default 15).
+const HP_PER_CON_MOD = (typeof hpPerConMod === 'number') ? hpPerConMod : 45;
+
+function calculateHP(con, race = null, statMultipliers = {}, character = null) {
+    const sm = statMultipliers || {};
+    let conMod = calculateStatModifier(con, sm.con);
     
-    // Apply racial CON modifier bonuses if race is provided
+    // Apply racial CON modifier bonuses if race is provided (the character lets
+    // character-gated racial mods like the Namekian clan / Yokai variant / Tortle shell apply)
     if (race) {
-        const raceModifiers = getRaceStatModifiers(race);
+        const raceModifiers = getRaceStatModifiers(race, character);
         conMod += raceModifiers.con;
     }
     
-    return 20 + (conMod * 10);
+    return 20 + (conMod * HP_PER_CON_MOD);
 }
 
-// Calculate Ki based on SPI (with racial bonuses)
-function calculateKi(spi, race = null) {
-    let spiMod = calculateModifier(spi);
+// Calculate Ki based on SPI (with racial bonuses). Stat-multiplier points (if any) boost
+// the SPI-derived modifier before the racial bonus is added.
+function calculateKi(spi, race = null, statMultipliers = {}, character = null) {
+    const sm = statMultipliers || {};
+    let spiMod = calculateStatModifier(spi, sm.spi);
     
-    // Apply racial SPI modifier bonuses if race is provided
+    // Apply racial SPI modifier bonuses if race is provided (the character lets
+    // character-gated racial mods like the Namekian Dragon Clan's +5 SPI mod apply)
     if (race) {
-        const raceModifiers = getRaceStatModifiers(race);
+        const raceModifiers = getRaceStatModifiers(race, character);
         spiMod += raceModifiers.spi;
     }
     
     return 20 + (spiMod * 10);
 }
 
-// Recalculate max HP/Ki after a stat change, carrying current HP/Ki up with any increase
-function recalcVitals(character, stats) {
-    const maxHP = calculateHP(stats.con, character.race);
-    const maxKi = calculateKi(stats.spi, character.race) + getKiEfficiencyEffects(character).spi * 10;
+// Recalculate max HP/Ki after a stat change, carrying current HP/Ki up with any increase.
+// Uses the character's stat multipliers automatically (falls back to x1 if none present).
+function recalcVitals(character, stats, statMultipliers) {
+    const sm = statMultipliers || character.statMultipliers || {};
+    const maxHP = calculateHP(stats.con, character.race, sm, character);
+    const maxKi = calculateKi(stats.spi, character.race, sm, character) + getKiEfficiencyEffects(character).spi * 10;
     return {
         maxHP,
         maxKi,
@@ -10669,9 +17578,9 @@ function performReincarnation(userId, character) {
         kept = 'No stats are kept from your past life.';
     }
 
-    const maxHP = calculateHP(newStats.con, character.race);
-    const maxKi = (alignVal > 0 && character.maxKi) ? character.maxKi : calculateKi(newStats.spi, character.race);
-    const modifiers = calculateAllModifiers(newStats);
+    const maxHP = calculateHP(newStats.con, character.race, character.statMultipliers, character);
+    const maxKi = (alignVal > 0 && character.maxKi) ? character.maxKi : calculateKi(newStats.spi, character.race, character.statMultipliers, character);
+    const modifiers = calculateAllModifiers(newStats, character.statMultipliers);
     const powerLevel = characterManager.calculatePowerLevel({ ...newStats, maxHP, maxKi });
     const spawnLocation = getDefaultLocation(character.race);
     const spawnSpace = getRandomInt(PLANET_SPACES[spawnLocation] || 100);
@@ -10690,10 +17599,91 @@ function performReincarnation(userId, character) {
         fatigue: 0,
         peakFatigue: 0,
         zenkaiPending: null,
-        powerLevel
+        powerLevel,
+        ...restoreLostCompanions(character)
     });
 
     return { text: `✨ **${character.name}** **reincarnates** on **${spawnLocation} - Space ${spawnSpace}**!\n\n${kept}\n\n📊 STR ${newStats.str} | DEX ${newStats.dex} | CON ${newStats.con} | WIL ${newStats.wil} | SPI ${newStats.spi} | INT ${newStats.int}\n❤️ HP **${maxHP}** | 💙 Ki **${maxKi}**` };
+}
+
+// ---------- Yokai (rebirth) ----------
+// Yokai are dead souls of +1000 alignment who proved their worth to King Yemma with 5 Very Hard
+// missions without companions. On rebirth they keep no stats, roll a variant (1d3), and keep 2
+// racial abilities from their past life.
+function yokaiVariantName(variant) {
+    return variant === 1 ? 'Kitsune' : variant === 2 ? 'Nekomata' : 'Tengu';
+}
+
+function reincarnateAsYokai(interaction, character) {
+    const uid = interaction.user.id;
+    const oldRace = character.race;
+    const pastPassives = (races[oldRace] && races[oldRace].passives) || [];
+    // Keep 2 random racial abilities from the past life.
+    const kept = pastPassives.slice().sort(() => Math.random() - 0.5).slice(0, 2).map(p => p.id);
+    const variant = getRandomInt(3); // 1 Kitsune, 2 Nekomata, 3 Tengu
+    const newStats = rollFreshStats('Yokai');
+    // Pass a variant stub so the variant's character-gated racial mods (Kitsune +5 SPI / -2 CON,
+    // Nekomata +5 DEX / -2 CON) count toward the new vitals.
+    const yokaiVitalsInfo = { race: 'Yokai', yokaiVariant: variant };
+    const maxHP = calculateHP(newStats.con, 'Yokai', character.statMultipliers, yokaiVitalsInfo);
+    const maxKi = calculateKi(newStats.spi, 'Yokai', character.statMultipliers, yokaiVitalsInfo);
+    const modifiers = calculateAllModifiers(newStats, character.statMultipliers);
+    const powerLevel = characterManager.calculatePowerLevel({ ...newStats, maxHP, maxKi });
+    const spawnLocation = getDefaultLocation('Yokai');
+    const spawnSpace = getRandomInt(PLANET_SPACES[spawnLocation] || 100);
+    const prevQuest = character.yokaiQuest || { target: 5 };
+    const keptNames = pastPassives.filter(p => kept.includes(p.id)).map(p => p.name).join(', ') || 'none';
+    characterManager.updateCharacter(uid, character.id, {
+        dead: false,
+        hellSaga: null,
+        race: 'Yokai',
+        yokaiVariant: variant,
+        yokaiKeptAbilities: kept,
+        pastRace: oldRace,
+        yokaiQuest: { mode: 'reborn', completed: prevQuest.target, target: prevQuest.target },
+        location: spawnLocation,
+        space: spawnSpace,
+        stats: newStats,
+        modifiers,
+        maxHP, maxKi,
+        currentHP: maxHP, currentKi: maxKi,
+        fatigue: 0, peakFatigue: 0,
+        zenkaiPending: null,
+        powerLevel,
+        ...restoreLostCompanions(character)
+    });
+    return interaction.update({ content: `👻 **${character.name}** is reborn as a **Yokai**!\n\n🎭 Variant: **${yokaiVariantName(variant)}**\n🧬 Kept abilities from **${oldRace}**: ${keptNames}\n\n📊 STR ${newStats.str} | DEX ${newStats.dex} | CON ${newStats.con} | WIL ${newStats.wil} | SPI ${newStats.spi} | INT ${newStats.int}\n❤️ HP **${maxHP}** | 💙 Ki **${maxKi}**\n\n📍 You awaken on **${spawnLocation} - Space ${spawnSpace}**.`, components: [] });
+}
+
+// King Yemma's Yokai trial: start, report progress, or complete the rebirth.
+function performYokaiQuest(interaction, character) {
+    const uid = interaction.user.id;
+    if (character.race === 'Yokai') {
+        return interaction.reply({ content: '❌ You are already a **Yokai**!', ephemeral: true });
+    }
+    const quest = character.yokaiQuest;
+    if (!quest || quest.mode !== 'proving') {
+        characterManager.updateCharacter(uid, character.id, { yokaiQuest: { mode: 'proving', completed: 0, target: 5 } });
+        return interaction.update({ content: `👻 **King Yemma** sets a trial for **${character.name}**:\n\n🗡️ **Prove your worth** — complete **5 Very Hard missions** without any companions, then return to me to be reborn as a **Yokai**.\n\n⚠️ You must fight alone — dismiss your companions first!`, components: [] });
+    }
+    if ((quest.completed || 0) < quest.target) {
+        return interaction.update({ content: `👻 **Prove your worth** — **${quest.completed}/${quest.target}** Very Hard missions completed without companions. Return when you've finished!`, components: [] });
+    }
+    return reincarnateAsYokai(interaction, character);
+}
+
+// Count a Very Hard mission win toward a Yokai quest (only if no companions were used).
+function countYokaiQuestProgress(userId, missionType) {
+    const character = characterManager.getCharacter(userId);
+    if (!character || character.race === 'Yokai') return '';
+    const quest = character.yokaiQuest;
+    if (!quest || quest.mode !== 'proving' || (quest.completed || 0) >= quest.target) return '';
+    if (String(missionType || '').toLowerCase() !== 'very hard') return '';
+    const companions = Array.isArray(character.companions) ? character.companions.filter(c => !c.dead).length : 0;
+    if (companions > 0) return '';
+    quest.completed = (quest.completed || 0) + 1;
+    characterManager.updateCharacter(userId, character.id, { yokaiQuest: quest });
+    return `\n👻 **Prove your worth!** (${quest.completed}/${quest.target}) — return to **King Yemma** to be reborn as a Yokai!`;
 }
 
 // Fatigue from missing Ki (Trello "Fatigue" card): +10% fatigue for every full 20% of max Ki missing
@@ -10702,7 +17692,6 @@ function getKiFatigue(currentKi, maxKi) {
     const missingPct = Math.max(0, (maxKi - (currentKi || 0)) / maxKi) * 100;
     return Math.floor(missingPct / 20) * 10;
 }
-
 // Total fatigue = training fatigue (stored) + missing-Ki fatigue (derived)
 function getTotalFatigue(character) {
     return Math.min(100, (character.fatigue || 0) + getKiFatigue(character.currentKi, character.maxKi));
@@ -10749,6 +17738,26 @@ function getLimitBreakGainMult(entity) {
     return (entity && entity.limitBreakMult) || 1;
 }
 
+// ---------- PERF: guarded periodic tasks ----------
+// Wraps a setInterval so a slow run can never overlap itself (the next tick is skipped with a
+// log line instead of piling work on top of the still-running previous one), errors are
+// contained per-tick, and the timer is `.unref()`-ed so background tasks never keep the
+// process alive at shutdown.
+function guardedInterval(fn, ms, label) {
+    let running = false;
+    const t = setInterval(async () => {
+        if (running) {
+            console.log(`[perf] ${label} tick skipped (previous run still in progress)`);
+            return;
+        }
+        running = true;
+        try { await fn(); } catch (e) { console.error(`[${label}]`, e && e.message ? e.message : e); }
+        finally { running = false; }
+    }, ms);
+    if (t.unref) t.unref();
+    return t;
+}
+
 client.once(Events.ClientReady, async c => {
     console.log(`Logged in as ${c.user.tag}`);
 
@@ -10777,15 +17786,14 @@ client.once(Events.ClientReady, async c => {
                 character.techniques.push('Fly');
                 changed = true;
             }
-            // Racial techniques: Cerealians always know Vital Strike; Konatsians Hero's Flute.
-            if (character.race === 'Cerealian' && !character.techniques.includes('Vital Strike')) {
-                character.techniques.push('Vital Strike');
-                changed = true;
-            }
-            if (character.race === 'Konatsian' && !character.techniques.includes("Hero's Flute")) {
-                character.techniques.push("Hero's Flute");
-                changed = true;
-            }
+            // Racial techniques: Cerealians always know Vital Strike; Konatsians know Hero's
+            // Flute and Ki Sharpening (innate).
+            getRacialTechniques(character.race).forEach(t => {
+                if (!character.techniques.includes(t)) {
+                    character.techniques.push(t);
+                    changed = true;
+                }
+            });
             if (character.gravityChamber === undefined || character.gravityChamber === null) {
                 character.gravityChamber = 0;
                 changed = true;
@@ -10805,7 +17813,7 @@ client.once(Events.ClientReady, async c => {
             if (character.searchesUsed === undefined) {
                 character.searchesUsed = 0;
                 character.searchArea = `${character.location || 'Earth'}-${character.space || 1}`;
-                character.searchResetDate = new Date().toDateString();
+                character.searchResetDate = centralDateString();
                 changed = true;
             }
             if (character.zeni === undefined || character.zeni === null) {
@@ -10823,7 +17831,7 @@ client.once(Events.ClientReady, async c => {
             if (character.gathersUsed === undefined) {
                 character.gathersUsed = 0;
                 character.gatherArea = `${character.location || 'Earth'}-${character.space || 1}`;
-                character.gatherResetDate = new Date().toDateString();
+                character.gatherResetDate = centralDateString();
                 changed = true;
             }
             if (character.fightingStyle === undefined) {
@@ -10843,12 +17851,12 @@ client.once(Events.ClientReady, async c => {
                 changed = true;
             }
             if (character.maxHP === undefined || character.maxHP === null) {
-                character.maxHP = calculateHP((character.stats || {}).con || 0, character.race);
+                character.maxHP = calculateHP((character.stats || {}).con || 0, character.race, {}, character);
                 character.currentHP = character.maxHP;
                 changed = true;
             }
             if (character.maxKi === undefined || character.maxKi === null) {
-                character.maxKi = calculateKi((character.stats || {}).spi || 0, character.race);
+                character.maxKi = calculateKi((character.stats || {}).spi || 0, character.race, {}, character);
                 character.currentKi = character.maxKi;
                 changed = true;
             }
@@ -10975,11 +17983,17 @@ client.once(Events.ClientReady, async c => {
                 });
             }
         });
-        if (changed) characterManager.saveCharacters();
+        // Backfill runs once at startup — mark dirty per character, then a single immediate
+        // flush for the whole batch (previously this did a blocking write per changed user).
+        if (changed) characterManager.saveCharactersNow();
     });
 
     // Apply the Raphael (Hunter of Legend) stat bonus to any existing holder (one-time).
     migrateRaphaelStats();
+    // Apply the Wise Old One Ki Mastery (Ki Efficiency + Ki Sense) to any existing holder.
+    migrateWiseOldOneKiMastery();
+    // Start the base facility income clock for existing homeowners (one-time).
+    migrateBaseAccrualClocks();
 
     const ping = new SlashCommandBuilder()
         .setName('ping')
@@ -11075,7 +18089,7 @@ client.once(Events.ClientReady, async c => {
 
     const smith = new SlashCommandBuilder()
         .setName('smith')
-        .setDescription('Smelt ores into ingots or forge weapons/armor')
+        .setDescription('Smelt ores into ingots or forge weapons/armor (forging burns Coal)')
         .addStringOption(option =>
             option.setName('action').setDescription('What to do').setRequired(true)
                 .addChoices(
@@ -11099,7 +18113,36 @@ client.once(Events.ClientReady, async c => {
 
     const cook = new SlashCommandBuilder()
         .setName('cook')
-        .setDescription('Cook raw fish so they can be eaten (costs resources)');
+        .setDescription('Cook raw fish/meat so they can be eaten (costs resources)')
+        .addStringOption(option =>
+            option
+                .setName('item')
+                .setDescription('Which raw food to cook (default: any raw food)')
+                .setRequired(false)
+                .setAutocomplete(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('amount')
+                .setDescription('How many to cook (default: all your raw food)')
+                .setRequired(false)
+                .setMinValue(1)
+        );
+
+    const nickname = new SlashCommandBuilder()
+        .setName('nickname')
+        .setDescription('View the nicknames your deeds earned, and pick which one you go by')
+        .addStringOption(option =>
+            option
+                .setName('set')
+                .setDescription('Nickname to go by (must be one you earned, or "none" to clear)')
+                .setRequired(false)
+        );
+
+    // Base hub: home facilities, upgrades, passive income, and spaceship management.
+    const baseCmd = new SlashCommandBuilder()
+        .setName('base')
+        .setDescription('Open your base: home facilities, upgrades, passive income & spaceship');
 
     const fish = new SlashCommandBuilder()
         .setName('fish')
@@ -11485,22 +18528,26 @@ client.once(Events.ClientReady, async c => {
 
     const info = new SlashCommandBuilder()
         .setName('info')
-        .setDescription('Inspect a technique or transformation and its mastery effects')
+        .setDescription('Inspect a technique, form, passive, status effect, smithing material — or read the Basics')
         .addStringOption(option =>
             option
                 .setName('type')
                 .setDescription('What to inspect')
                 .setRequired(true)
                 .addChoices(
+                    { name: '📖 Basics (what training/sparring/canon give)', value: 'basics' },
                     { name: '🧠 Technique', value: 'technique' },
-                    { name: '🔥 Form', value: 'form' }
+                    { name: '🔥 Form', value: 'form' },
+                    { name: '💠 Passive', value: 'passive' },
+                    { name: '📌 Status', value: 'status' },
+                    { name: '⛏️ Material', value: 'material' }
                 )
         )
         .addStringOption(option =>
             option
                 .setName('name')
-                .setDescription('Name of the technique or form')
-                .setRequired(true)
+                .setDescription('Name (Technique/Form/Material). Basics: training|spar|missions|scaling|canon|fatigue|rest|custom')
+                .setRequired(false)
         )
 
     const unequip = new SlashCommandBuilder()
@@ -11653,6 +18700,37 @@ client.once(Events.ClientReady, async c => {
                 .setAutocomplete(true)
         )
 
+    const createTechnique = new SlashCommandBuilder()
+        .setName('create')
+        .setDescription('🛠️ Design your own signature technique (costs stat points, up to 5)')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('Name of your technique')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('type')
+                .setDescription('Attack type')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'Ki', value: 'ki' },
+                    { name: 'Physical', value: 'physical' }
+                )
+        )
+
+    const forget = new SlashCommandBuilder()
+        .setName('forget')
+        .setDescription('Forget one of your created techniques (refunds part of its stat-point cost)')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('The created technique to forget')
+                .setRequired(true)
+                .setAutocomplete(true)
+        )
+
     const locations = new SlashCommandBuilder()
         .setName('locations')
         .setDescription('View special locations on your current planet')
@@ -11690,7 +18768,7 @@ client.once(Events.ClientReady, async c => {
 
     const eatAll = new SlashCommandBuilder()
         .setName('eat-all')
-        .setDescription('Eat all the food in your inventory (skips raw fish)')
+        .setDescription('Eat only as much food as you need to top up HP, Ki, and fatigue (skips raw food)')
 
     const hunt = new SlashCommandBuilder()
         .setName('hunt')
@@ -11698,7 +18776,7 @@ client.once(Events.ClientReady, async c => {
 
     const canonAction = new SlashCommandBuilder()
         .setName('canon-action')
-        .setDescription('Evil: destroy a planet/location. Good: start a training frenzy. Intervene to stop a villain.')
+        .setDescription('Evil: destroy a planet/location. Good: training frenzy. Anyone: declare a bounty.')
         .addStringOption(option =>
             option
                 .setName('action')
@@ -11708,13 +18786,41 @@ client.once(Events.ClientReady, async c => {
                     { name: '☠️ Destroy planet (evil)', value: 'blow-planet' },
                     { name: '🏚️ Destroy major location (evil)', value: 'blow-location' },
                     { name: '🕊️ Start training frenzy (good)', value: 'training-frenzy' },
-                    { name: '🛡️ Intervene to stop a villain', value: 'intervene' }
+                    { name: '� Declare a bounty', value: 'bounty' },
+                    { name: '�🛡️ Intervene to stop a villain', value: 'intervene' }
                 )
         )
 
     const wish = new SlashCommandBuilder()
         .setName('wish')
         .setDescription('🐉 Summon Shenron with all 7 Dragon Balls and make a wish')
+
+    const magicMaterialization = new SlashCommandBuilder()
+        .setName('materialize')
+        .setDescription('Spend ki to conjure a Regular weapon, armor, or weight (Magic Materialization)')
+        .addStringOption(option =>
+            option
+                .setName('kind')
+                .setDescription('What to create')
+                .setRequired(true)
+                .addChoices(
+                    { name: '⚔️ Weapon', value: 'weapon' },
+                    { name: '🛡️ Armor', value: 'armor' },
+                    { name: '🏋️ Light weight', value: 'light' },
+                    { name: '🏋️ Med. weight', value: 'med' },
+                    { name: '🏋️ Heavy weight', value: 'heavy' }
+                )
+        )
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('Name of the weapon/armor to conjure (ignored for weights)')
+                .setRequired(false)
+        )
+
+    const createDragonBall = new SlashCommandBuilder()
+        .setName('create-dragon-ball')
+        .setDescription('🐉 Use a Dragon Ball Stone to create a Dragon Ball (Namekian)')
 
     const allocate = new SlashCommandBuilder()
         .setName('allocate')
@@ -11850,20 +18956,23 @@ client.once(Events.ClientReady, async c => {
                 .setName('race')
                 .setDescription('Character race')
                 .setRequired(true)
+                // Only birth races are selectable at creation. Method races (Android, Bio-Android,
+                // Majin, Vampire, Super Cerealian, Baby Tuffle, etc.) are obtained in-game through
+                // methods, so they are excluded automatically.
                 .addChoices(
-                    { name: 'Saiyan', value: 'Saiyan' },
-                    { name: 'Half-Saiyan', value: 'Half-Saiyan' },
-                    { name: 'Earthling', value: 'Earthling' },
-                    { name: 'Frost Demon', value: 'Frost Demon' },
-                    { name: 'Namekian', value: 'Namekian' },
-                    { name: 'Cerealian', value: 'Cerealian' },
-                    { name: 'Konatsian', value: 'Konatsian' },
-                    { name: 'Tuffle', value: 'Tuffle' },
-                    { name: 'Oni', value: 'Oni' },
-                    { name: 'Hera', value: 'Hera' },
-                    { name: 'Tortle', value: 'Tortle' },
-                    { name: 'Alien', value: 'Alien' },
-                    { name: 'Saibamen', value: 'Saibamen' }
+                    ...Object.entries(races)
+                        .filter(([, r]) => r.type === 'birth')
+                        .map(([name]) => ({ name, value: name }))
+                )
+        )
+        .addStringOption(option =>
+            option
+                .setName('gender')
+                .setDescription('Character gender')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'Male', value: 'Male' },
+                    { name: 'Female', value: 'Female' }
                 )
         )
         .addIntegerOption(option =>
@@ -11924,17 +19033,17 @@ client.once(Events.ClientReady, async c => {
                     { name: 'Willpower (WIL)', value: 'wil' },
                     { name: 'Spirit (SPI)', value: 'spi' },
                     { name: 'Intelligence (INT)', value: 'int' },
+                    { name: 'Gender', value: 'gender' },
                     { name: 'Zeni', value: 'zeni' },
                     { name: 'Resources', value: 'resources' },
                     { name: 'Age', value: 'age' }
                 )
         )
-        .addIntegerOption(option =>
+        .addStringOption(option =>
             option
                 .setName('value')
-                .setDescription('New stat value')
+                .setDescription('New value (a number, or Male/Female for Gender)')
                 .setRequired(true)
-                .setMinValue(0)
         )
         .addUserOption(option =>
             option
@@ -11998,6 +19107,34 @@ client.once(Events.ClientReady, async c => {
                 .setRequired(true)
         )
 
+    const wipeCharacterAdmin = new SlashCommandBuilder()
+        .setName('character-wipe-admin')
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+        .setDescription('👑⚠️ Admin: PERMANENTLY wipe another player\'s character data')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('The player whose character data to wipe')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('confirmation')
+                .setDescription('Type "DELETE" to confirm (this cannot be undone!)')
+                .setRequired(true)
+        )
+
+    const wipeGame = new SlashCommandBuilder()
+        .setName('wipe-game')
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+        .setDescription('👑💥 Admin: PERMANENTLY wipe ALL game data (characters, world state, battles)')
+        .addStringOption(option =>
+            option
+                .setName('confirmation')
+                .setDescription('Type "WIPE GAME" to confirm (this cannot be undone!)')
+                .setRequired(true)
+        )
+
     const setDungeonMaster = new SlashCommandBuilder()
         .setName('set-dm')
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
@@ -12053,18 +19190,37 @@ client.once(Events.ClientReady, async c => {
 
     const kingYemma = new SlashCommandBuilder()
         .setName('king-yemma')
-        .setDescription('Speak to King Yemma — roll d20 (save 15) to be revived (1000+ positive alignment)');
+        .setDescription('Speak to King Yemma: revive (d20), or prove your worth to be reborn as a Yokai');
     registerCommand(kingYemma);
+
+    const autoSagaCmd = new SlashCommandBuilder()
+        .setName('auto-saga')
+        .setDescription('Show/ test the auto-saga formula: the saga scales with the strongest player\'s power level')
+        .addIntegerOption(o => o.setName('pl').setDescription('Preview the saga for an arbitrary power level (leave blank for live server data)').setRequired(false));
+    registerCommand(autoSagaCmd);
+
+    const potentialUnlock = new SlashCommandBuilder()
+        .setName('potential-unlock')
+        .setDescription('Visit Grand Elder Guru (or Babidi) to unlock your potential (once every 3 sagas, after Saiyan saga)')
+        .addUserOption(option =>
+            option
+                .setName('target')
+                .setDescription('A Wise Old One can unlock another player\'s potential instead')
+                .setRequired(false)
+        );
+    registerCommand(potentialUnlock);
 
     registerCommand(calculatePowerLevel);
     registerCommand(fish);
     registerCommand(cook);
+    registerCommand(nickname);
     registerCommand(ping);
     registerCommand(hello);
     registerCommand(createEnemy);
     registerCommand(search);
     registerCommand(rest);
     registerCommand(store);
+    registerCommand(baseCmd);
     registerCommand(smith);
     registerCommand(shed);
     registerCommand(startBattle);
@@ -12087,6 +19243,8 @@ client.once(Events.ClientReady, async c => {
     registerCommand(blood);
     registerCommand(teach);
     registerCommand(giveSkill);
+    registerCommand(createTechnique);
+    registerCommand(forget);
     registerCommand(merchant);
     registerCommand(travelingMerchant);
     registerCommand(buy);
@@ -12099,6 +19257,8 @@ client.once(Events.ClientReady, async c => {
     registerCommand(hunt);
     registerCommand(canonAction);
     registerCommand(wish);
+    registerCommand(magicMaterialization);
+    registerCommand(createDragonBall);
     registerCommand(allocate);
     registerCommand(setSaga);
     registerCommand(train);
@@ -12129,6 +19289,8 @@ client.once(Events.ClientReady, async c => {
     registerCommand(characterSetImage);
     registerCommand(useItem);
     registerCommand(wipeCharacter);
+    registerCommand(wipeCharacterAdmin);
+    registerCommand(wipeGame);
     registerCommand(setDungeonMaster);
     registerCommand(viewDungeonMaster);
     registerCommand(leaderboard);
@@ -12142,13 +19304,81 @@ client.once(Events.ClientReady, async c => {
     ensureAllStyleTechniques();
 
     // Resolve due pregnancies and baby feedings periodically (persistent timestamps survive restarts).
-    setInterval(() => runFamilyTick(), 60 * 1000);
+    // PERF: with the debounced saver, per-birth updateCharacter calls no longer do blocking
+    // writes, and the guard below prevents a slow tick from overlapping the next one.
+    guardedInterval(() => runFamilyTick(), 60 * 1000, 'family tick');
 
     // World raids: check every 30 min for a 35% chance to start a 15-min raid.
-    setInterval(() => startRaidTick(), RAID_INTERVAL_MS);
+    guardedInterval(() => startRaidTick(), RAID_INTERVAL_MS, 'raid tick');
+
+    // Out-of-combat form maintenance (Ki drain + mastery roll) every `formTickMinutes`.
+    guardedInterval(async () => {
+        await runTransformationDowntime();
+        checkTreeOfMight(); // a matured Tree of Might bears fruit on its canon-window expiry.
+    }, FORM_TICK_INTERVAL_MS, 'form downtime');
+
+    // Pin/update the current saga number in the #saga channel, and refresh it periodically so an
+    // auto-derived saga (from the strongest player's PL) stays current.
+    updateSagaChannelMessage();
+    guardedInterval(() => updateSagaChannelMessage(), 10 * 60 * 1000, 'saga channel');
 });
 
+// ---------- PERF: interaction auto-acknowledgement (Discord's 3-second ACK window) ----------
+// Discord requires every interaction to be acknowledged within ~3 seconds or it expires with
+// 10062 "Unknown interaction" (the player sees nothing happen). Fast handlers reply directly
+// and are 100% unchanged; heavy handlers (enemy generation, family tick coincidences, batch
+// migrations) can exceed the window under load. Safety net: if a handler hasn't responded
+// within the grace period, auto-defer the interaction, and transparently redirect the
+// handler's eventual .reply()/.update() to .editReply() so NO dispatch branch has to know
+// whether the ack happened.
+const INTERACTION_ACK_GRACE_MS = 2500; // headroom under Discord's 3000ms window
+
+// Wrap .reply()/.update() so they work whether or not the watchdog already deferred.
+function makeAckSafe(interaction) {
+    // Chat-input commands have .reply but no .update; components/modals have both. Bind each
+    // method independently so a missing one (e.g. .update on a slash command) is simply skipped
+    // rather than throwing "Cannot read properties of undefined (reading 'bind')".
+    const origReply = typeof interaction.reply === 'function'
+        ? interaction.reply.bind(interaction) : null;
+    const origUpdate = typeof interaction.update === 'function'
+        ? interaction.update.bind(interaction) : null;
+    const redirect = async (payload) => {
+        const msg = await interaction.editReply(payload);
+        // Some call sites use `withResponse: true` and read `.resource.message` off the
+        // response — keep that shape working when the reply was redirected post-defer.
+        try { Object.defineProperty(msg, 'resource', { value: { message: msg } }); } catch (e) {}
+        return msg;
+    };
+    const wasAutoDeferred = () => interaction.deferred && !interaction.replied;
+    if (origReply) {
+        interaction.reply = (payload) => wasAutoDeferred() ? redirect(payload) : origReply(payload);
+    }
+    if (origUpdate) {
+        interaction.update = (payload) => wasAutoDeferred() ? redirect(payload) : origUpdate(payload);
+    }
+}
+
+function armInteractionWatchdog(interaction) {
+    if (typeof interaction.isChatInputCommand !== 'function') return; // raw/ping objects
+    if (typeof interaction.isAutocomplete === 'function' && interaction.isAutocomplete()) return; // autocomplete acks via respond()
+    if (interaction.isChatInputCommand() || interaction.isButton() || interaction.isStringSelectMenu()) {
+        makeAckSafe(interaction);
+    }
+    const startedAt = interaction.createdTimestamp || Date.now();
+    const t = setTimeout(async () => {
+        try {
+            if (interaction.deferred || interaction.replied) return;
+            if (interaction.isChatInputCommand()) await interaction.deferReply();
+            else await interaction.deferUpdate();
+            console.log(`[perf] auto-acked slow interaction (${interaction.commandName || interaction.customId || 'unknown'}) after ${Date.now() - startedAt}ms`);
+        } catch (e) { /* interaction already expired — nothing left to do */ }
+    }, INTERACTION_ACK_GRACE_MS);
+    // A pending ack must never keep the process alive on shutdown.
+    if (t.unref) t.unref();
+}
+
 client.on(Events.InteractionCreate, interaction => {
+    armInteractionWatchdog(interaction);
     handleInteraction(interaction).catch(err => {
         if (isBenignInteractionError(err)) return;
         console.error('Interaction error:', err);
@@ -12205,7 +19435,8 @@ async function handleInteraction(interaction) {
             if (character) {
                 const inventory = Array.isArray(character.inventory) ? character.inventory : [];
                 const tackle = getFishTackle(character);
-                [...inventory, ...tackle].forEach(item => {
+                const bag = getHuntingBag(character);
+                [...inventory, ...tackle, ...bag].forEach(item => {
                     if (isUncookedFood(item)) return; // raw food must be cooked first
                     const p = parseItemName(item);
                     const name = p.name;
@@ -12216,6 +19447,23 @@ async function handleInteraction(interaction) {
             }
             return interaction.respond(matches.filter(m => m.name.toLowerCase().includes(focused)).slice(0, 25));
         }
+        if (interaction.commandName === 'cook') {
+            const focused = interaction.options.getFocused().toLowerCase();
+            const character = characterManager.getCharacter(interaction.user.id);
+            const counts = new Map(); // raw food name -> how many the player holds
+            if (character) {
+                const inventory = Array.isArray(character.inventory) ? character.inventory : [];
+                const tackle = getFishTackle(character);
+                const bag = getHuntingBag(character);
+                [...inventory, ...tackle, ...bag].forEach(item => {
+                    if (!isUncookedFood(item)) return; // only raw food can be cooked
+                    const name = parseItemName(item).name;
+                    counts.set(name, (counts.get(name) || 0) + 1);
+                });
+            }
+            const matches = [...counts.entries()].map(([name, count]) => ({ name: `${name} ×${count}`, value: name }));
+            return interaction.respond(matches.filter(m => m.value.toLowerCase().includes(focused)).slice(0, 25));
+        }
         if (interaction.commandName === 'craft') {
             const focused = interaction.options.getFocused();
             const matches = Object.entries(CRAFTING_RECIPES)
@@ -12224,12 +19472,30 @@ async function handleInteraction(interaction) {
                 .map(([name, recipe]) => ({ name: `${name} (${recipe.amount} per craft)`, value: name }));
             return interaction.respond(matches);
         }
+        if (interaction.commandName === 'forget') {
+            const focused = interaction.options.getFocused().toLowerCase();
+            const character = characterManager.getCharacter(interaction.user.id);
+            const skills = (character && character.customSkills && typeof character.customSkills === 'object') ? character.customSkills : {};
+            const matches = Object.keys(skills)
+                .filter(name => name.toLowerCase().includes(focused))
+                .slice(0, 25)
+                .map(name => {
+                    const paid = typeof skills[name].statCost === 'number' ? skills[name].statCost : 0;
+                    const refund = Math.floor(paid * CUSTOM_TECH_REFUND_PCT / 100);
+                    return { name: refund > 0 ? `${name} (refund ${refund.toLocaleString()})` : name, value: name };
+                });
+            return interaction.respond(matches);
+        }
         if (interaction.commandName === 'travel') {
             const focused = interaction.options.getFocused();
             const character = characterManager.getCharacter(interaction.user.id);
             const matches = [{ name: '🏠 Home', value: 'home' }];
             if (character) {
                 const planet = character.location || 'Earth';
+                // The Snake Way route (the only way onto King Kai's Planet).
+                if (isAtCheckInStation(character)) matches.push({ name: `🐍 Set out down Snake Way`, value: SNAKE_WAY.name });
+                else if (isAtSnakeWay(character)) matches.push({ name: `🐍 Run Snake Way → ${KING_KAI_PLANET.name}`, value: KING_KAI_PLANET.name });
+                else if (isAtKingKaiPlanet(character)) matches.push({ name: '🐍 Run back down Snake Way', value: SNAKE_WAY.name });
                 const slots = SPECIAL_SLOTS[planet];
                 if (slots) {
                     const visited = Array.isArray(character.visitedSlots) ? character.visitedSlots : [];
@@ -12253,6 +19519,54 @@ async function handleInteraction(interaction) {
     // Handle button interactions first
     if (interaction.isButton()) {
         try {
+        if (interaction.customId.startsWith('base_')) {
+            await handleBaseButton(interaction);
+            return;
+        }
+        if (interaction.customId.startsWith('cs_')) {
+            await handleCustomSkillButton(interaction);
+            return;
+        }
+
+        if (interaction.customId.startsWith('yemma_revive_')) {
+            const uid = interaction.customId.slice('yemma_revive_'.length);
+            if (interaction.user.id !== uid) return interaction.reply({ content: '❌ That\'s not yours!', ephemeral: true });
+            const character = characterManager.getCharacter(uid);
+            if (!character) return interaction.reply({ content: '❌ Character not found!', ephemeral: true });
+            const now = Date.now();
+            const wait = (character.yemmaRollAt || 0) + 10 * 60 * 1000 - now;
+            if (wait > 0) {
+                return interaction.update({ content: `⏳ You can roll again in **${formatDuration(wait)}**.`, components: [] });
+            }
+            const roll = getRandomInt(20);
+            if (roll > 15) {
+                const reviveLocation = character.deathLocation || character.homeLocation || getDefaultLocation(character.race);
+                const reviveSpace = character.deathSpace || character.homeSpace || 1;
+                characterManager.updateCharacter(uid, character.id, {
+                    dead: false,
+                    location: reviveLocation,
+                    space: reviveSpace,
+                    currentHP: character.maxHP,
+                    currentKi: character.maxKi,
+                    fatigue: 0,
+                    peakFatigue: 0,
+                    yemmaRollAt: now,
+                    ...restoreLostCompanions(character)
+                });
+                return interaction.update({ content: `😇 **King Yemma** smiles upon **${character.name}**! (d20 = **${roll}**, save **15**)\n✨ **${character.name} is revived!** You return to life at **${reviveLocation} - Space ${reviveSpace}** with **full HP/Ki**.`, components: [] });
+            }
+            characterManager.updateCharacter(uid, character.id, { yemmaRollAt: now });
+            return interaction.update({ content: `👿 **King Yemma** shakes his head... (d20 = **${roll}**, save **15**)\n**${character.name}** remains in the **Otherworld**. You can roll again in **10 minutes**.`, components: [] });
+        }
+
+        if (interaction.customId.startsWith('yemma_yokai_')) {
+            const uid = interaction.customId.slice('yemma_yokai_'.length);
+            if (interaction.user.id !== uid) return interaction.reply({ content: '❌ That\'s not yours!', ephemeral: true });
+            const character = characterManager.getCharacter(uid);
+            if (!character) return interaction.reply({ content: '❌ Character not found!', ephemeral: true });
+            return await performYokaiQuest(interaction, character);
+        }
+
         if (interaction.customId === 'fish_again') {
             await runFishing(interaction, true);
             return;
@@ -12268,7 +19582,7 @@ async function handleInteraction(interaction) {
             if (character.fightingStyle) return interaction.reply({ content: 'You can only become a Maniac if you have **no fighting style**.', ephemeral: true });
             if (getPlayerAlignmentValue(character) > -900) return interaction.reply({ content: 'Your alignment is not dark enough to become a Maniac yet.', ephemeral: true });
             let techniques = Array.isArray(character.techniques) ? [...character.techniques] : [];
-            techniques = pruneOffStyleTechniques(techniques, 'Maniac');
+            techniques = pruneOffStyleTechniques(techniques, 'Maniac', character.race);
             (MENTOR_STYLES['Maniac'].moves || []).forEach(m => { if (!techniques.includes(m)) techniques.push(m); });
             characterManager.updateCharacter(interaction.user.id, character.id, { fightingStyle: 'Maniac', techniques });
             return interaction.reply({ content: `🌀 **${character.name}** has given in to the madness — you are now a **Maniac**!`, ephemeral: true });
@@ -12313,6 +19627,18 @@ async function handleInteraction(interaction) {
             if (!item || item.qty <= 0) return interaction.reply({ content: `❌ **${item ? item.name : 'That item'}** is sold out!`, ephemeral: true });
             const zeni = character.zeni || 0;
             if (zeni < item.price) return interaction.reply({ content: `❌ Not enough zeni! **${item.name}** costs **${item.price.toLocaleString()} zeni**, you have **${zeni.toLocaleString()}**.`, ephemeral: true });
+            // Inventory Upgrade is a permanent slot boost (not a physical item), so apply it directly.
+            const merchEntry = MERCHANT_PRICES[item.name] || {};
+            const isInvUpgrade = item.name === 'Inventory Upgrade' || !!merchEntry.inventoryUpgrade;
+            if (isInvUpgrade) {
+                const newSlots = Math.min(100, (character.inventorySlots || 10) + 10);
+                const capNote = newSlots >= 100 ? ' (Max inventory size reached!)' : '';
+                item.qty--;
+                character.zeni = zeni - item.price;
+                characterManager.updateCharacter(interaction.user.id, character.id, { zeni: character.zeni, travelingMerchant: tm, inventorySlots: newSlots });
+                const view = buildTravelingMerchantView(interaction.user.id, character);
+                return interaction.update({ content: `✅ Bought **Inventory Upgrade** for **${item.price.toLocaleString()} zeni**!\n\n🎒 Inventory slots: ${character.inventorySlots || 10} → **${newSlots}**${capNote}\n\n${view.content}`, components: view.components });
+            }
             const addResult = characterManager.addItem(interaction.user.id, character.id, item.name);
             if (addResult && !addResult.success) return interaction.reply({ content: `❌ ${addResult.message}`, ephemeral: true });
             item.qty--;
@@ -12322,19 +19648,36 @@ async function handleInteraction(interaction) {
             return interaction.update({ content: view.content, components: view.components });
         }
 
-        // Shenron wish buttons (shown once all 7 Dragon Balls are collected).
+        // Wish buttons (shown once all 7 Dragon Balls of a set are collected — Shenron or Porunga).
         if (interaction.customId.startsWith('wish_')) {
             const character = characterManager.getCharacter(interaction.user.id);
             if (!character) return interaction.reply({ content: 'You need a character to wish!', ephemeral: true });
-            if (!hasAllDragonBalls(interaction.user.id)) {
-                return interaction.reply({ content: '❌ You don\'t have all the Dragon Balls!', ephemeral: true });
+            // Choose which dragon was summoned: prefer Shenron, else Porunga.
+            const set = hasAllDragonBalls(interaction.user.id, 'shenron') ? 'shenron'
+                : hasAllDragonBalls(interaction.user.id, 'porunga') ? 'porunga' : null;
+            if (!set) {
+                return interaction.reply({ content: '❌ You don\'t have all the Dragon Balls of a set!', ephemeral: true });
+            }
+            const meta = DRAGON_BALL_SETS[set];
+            const state = getDragonState(set);
+            const allowance = getWishAllowance(character);
+            const used = character.shenronWishesUsed || 0;
+            if (used >= allowance) {
+                return interaction.reply({ content: '❌ You\'ve already used all your wishes this summon!', ephemeral: true });
             }
             const type = interaction.customId.slice('wish_'.length);
-            const result = applyWish(interaction.user.id, character, type);
+            const result = applyWish(interaction.user.id, character, type, set);
             if (result) {
-                // The Dragon Balls scatter to fresh random locations after any wish.
-                scatterDragonBalls();
-                return interaction.update({ content: `🐉 **${character.name}** makes their wish!\n\n${result}\n\n✨ The Dragon Balls scatter across the planet...`, components: [] });
+                const newUsed = used + 1;
+                characterManager.updateCharacter(interaction.user.id, character.id, { shenronWishesUsed: newUsed });
+                // Very-good-alignment characters get a SECOND wish before the balls scatter.
+                if (newUsed < allowance) {
+                    return interaction.update({ content: `${meta.emoji} **${character.name}** makes wish **${newUsed}/${allowance}**!\n\n${result}\n\n✨ **${meta.dragonName} shimmers — a second wish is granted!** (${allowance - newUsed} left)`, components: buildWishComponents() });
+                }
+                // All wishes spent — that set's Dragon Balls scatter to fresh random locations.
+                scatterDragonBalls(set);
+                characterManager.updateCharacter(interaction.user.id, character.id, { shenronWishesUsed: 0 });
+                return interaction.update({ content: `${meta.emoji} **${character.name}** makes their final wish!\n\n${result}\n\n✨ The **${meta.ballName}s** scatter across the planet...`, components: [] });
             }
             return interaction.update({ content: '❌ That wish could not be made.', components: [] });
         }
@@ -12386,12 +19729,11 @@ async function handleInteraction(interaction) {
             const speed = getTravelSpeed(character);
             scheduleTravel(interaction.user.id, character, planet, newTarget, distance, speed);
             // Decrement the daily reroll count.
-            character.carpetRerollDay = new Date().toDateString();
+            character.carpetRerollDay = centralDateString();
             character.carpetRerolls = rerolls - 1;
             characterManager.updateCharacter(interaction.user.id, character.id, { carpetRerollDay: character.carpetRerollDay, carpetRerolls: character.carpetRerolls });
             // Stop the old travel countdown (it would overwrite the new destination).
-            const existing = travelCountdowns.get(interaction.user.id);
-            if (existing) { clearInterval(existing.timer); travelCountdowns.delete(interaction.user.id); }
+            travelCountdowns.delete(interaction.user.id);
             const specialName = getSpecialSlotName(planet, newTarget);
             const destText = specialName ? `**${specialName}** (Space ${newTarget})` : `**Space ${newTarget}**`;
             return interaction.update({ content: `🎲 **Magic Carpet reroll!** **${character.name}** now heads for ${destText} on ${planet}!`, components: [] });
@@ -12603,6 +19945,9 @@ async function handleInteraction(interaction) {
             const id = interaction.customId.slice('child_comp_'.length);
             const character = characterManager.getCharacter(interaction.user.id);
             if (!character) return interaction.update({ content: '❌ You don\'t have a character!', components: [] });
+            if (!canAcquireCompanions(character)) {
+                return interaction.update({ content: '❌ You cannot make a companion while dead or in the afterlife!', components: [] });
+            }
             const children = getChildrenOf(character);
             const idx = children.findIndex(c => c.id === id);
             if (idx === -1) return interaction.update({ content: '❌ That child no longer exists.', components: [] });
@@ -12682,13 +20027,13 @@ async function handleInteraction(interaction) {
                 text += `🤝 **Your Companions (${companions.length}/${MAX_COMPANIONS})**\n\n`;
                 companions.forEach((cmp, index) => {
                     const stats = getCompanionBattleStats(cmp, character);
-                    const maxHP = calculateHP(stats.con, cmp.race || null);
-                    const maxKi = calculateKi(stats.spi, cmp.race || null);
+                    const maxHP = calculateHP(stats.con, cmp.race || null, {}, cmp);
+                    const maxKi = calculateKi(stats.spi, cmp.race || null, {}, cmp);
                     const pl = characterManager.calculatePowerLevel({
                         str: stats.str, dex: stats.dex, con: stats.con, wil: stats.wil, spi: stats.spi,
                         maxHP, maxKi
                     });
-                    text += `**${index + 1}. ${cmp.name}** — ${cmp.race || 'Unknown'} ${cmp.gender || ''} | ⚡ ${pl.toLocaleString()} PL\n`;
+                    text += `**${index + 1}. ${cmp.name}** — ${cmp.race || 'Unknown'} ${cmp.gender || ''} | ⚡ ${formatPL(pl)} PL\n`;
                     text += `   📊 STR ${stats.str} | DEX ${stats.dex} | CON ${stats.con} | WIL ${stats.wil} | SPI ${stats.spi}${cmp.weapon ? ` | ⚔️ ${cmp.weapon}` : ''}${cmp.fightingStyle ? ` | 🥋 ${cmp.fightingStyle}` : ''}\n\n`;
                 });
                 text += `Use \`/companion slot:<1-4>\` to see a companion's full status.`;
@@ -12779,12 +20124,36 @@ async function handleInteraction(interaction) {
             if (!cmp) {
                 return interaction.reply({ content: `❌ No companion in slot **${slot}**!`, ephemeral: true });
             }
-            const restText = companionRest(cmp);
+            const restText = companionRest(cmp, character);
             companions[idx] = cmp;
             characterManager.updateCharacter(interaction.user.id, character.id, { companions });
             const fresh = characterManager.getCharacter(interaction.user.id) || character;
             const status = buildCompanionStatus(fresh, slot);
             return interaction.update({ content: `${restText}\n\n${status ? status.content : ''}`, components: status ? status.components : [] });
+        }
+
+        // Feed a companion cooked food from the owner's inventory to heal its HP/Ki.
+        if (interaction.customId.startsWith('comp_feed_')) {
+            const slot = parseInt(interaction.customId.slice('comp_feed_'.length), 10);
+            if (Number.isNaN(slot)) {
+                return interaction.reply({ content: '❌ Invalid companion slot.', ephemeral: true });
+            }
+            const character = characterManager.getCharacter(interaction.user.id);
+            if (!character) {
+                return interaction.reply({ content: '❌ You don\'t have a character!', ephemeral: true });
+            }
+            const companions = Array.isArray(character.companions) ? [...character.companions] : [];
+            const idx = slot - 1;
+            const cmp = companions[idx];
+            if (!cmp) {
+                return interaction.reply({ content: `❌ No companion in slot **${slot}**!`, ephemeral: true });
+            }
+            const feedText = feedCompanion(cmp, character);
+            companions[idx] = cmp;
+            characterManager.updateCharacter(interaction.user.id, character.id, { companions, inventory: character.inventory, fishTackle: getFishTackle(character), huntingBag: getHuntingBag(character) });
+            const fresh = characterManager.getCharacter(interaction.user.id) || character;
+            const status = buildCompanionStatus(fresh, slot);
+            return interaction.update({ content: `${feedText}\n\n${status ? status.content : ''}`, components: status ? status.components : [] });
         }
 
         if (interaction.customId.startsWith('comp_unequip_weapon_') || interaction.customId.startsWith('comp_unequip_armor_')) {
@@ -12821,11 +20190,17 @@ async function handleInteraction(interaction) {
                     quantity: 1,
                     weaponType: cmp.weaponType,
                     weaponAttackMod: cmp.weaponAttackMod || 0,
+                    weaponAtkPct: cmp.weaponAtkPct || 0,
+                    weaponDexPct: cmp.weaponDexPct || 0,
                     weaponDexPenalty: cmp.weaponDexPenalty || 0,
                     weaponDamageMode: cmp.weaponDamageMode || null,
                     weaponBypass: !!cmp.weaponBypass,
                     weaponConBonus: cmp.weaponConBonus || 0,
-                    weaponWilBonus: cmp.weaponWilBonus || 0
+                    weaponWilBonus: cmp.weaponWilBonus || 0,
+                    weaponUnarmed: !!cmp.weaponUnarmed,
+                    weaponPunchStrBonus: cmp.weaponPunchStrBonus || 0,
+                    weaponBleedOnHit: cmp.weaponBleedOnHit || 0,
+                    weaponCritRangeBonus: cmp.weaponCritRangeBonus || 0
                 });
                 cmp.weapon = null;
                 cmp.weaponType = null;
@@ -12835,6 +20210,10 @@ async function handleInteraction(interaction) {
                 cmp.weaponBypass = false;
                 cmp.weaponConBonus = 0;
                 cmp.weaponWilBonus = 0;
+                cmp.weaponUnarmed = false;
+                cmp.weaponPunchStrBonus = 0;
+                cmp.weaponBleedOnHit = 0;
+                cmp.weaponCritRangeBonus = 0;
                 note = `🗡️ **${oldName}** was returned to your inventory.`;
             } else {
                 if (!cmp.armor) return interaction.reply({ content: `❌ **${cmp.name}** has no armor equipped!`, ephemeral: true });
@@ -12952,7 +20331,7 @@ async function handleInteraction(interaction) {
 
             const isAdjacent = Math.abs(space - currentSpace) === 1;
             const flyEff = getFlyMasteryEffects(character);
-            const kiCost = flyEff.travelFree ? 0 : Math.max(1, (isAdjacent ? 4 : 8) - flyEff.travelDiscount);
+            const kiCost = flyEff.travelFree ? 0 : Math.max(1, Math.round((character.maxKi || 1) * MOVEMENT_KI_PCT) + (isAdjacent ? 4 : 8) - flyEff.travelDiscount);
             if ((character.currentKi || 0) < kiCost) {
                 return interaction.update({ content: `❌ Traveling to ${isAdjacent ? 'an adjacent space' : 'a non-adjacent space'} costs **${kiCost} Ki**, but you only have **${character.currentKi || 0}**!`, components: [] });
             }
@@ -12963,7 +20342,7 @@ async function handleInteraction(interaction) {
             const durationMs = scheduleTravel(interaction.user.id, character, planet, space, distance, speed);
 
             const specialName = getSpecialSlotName(planet, space);
-            const destinationText = specialName ? `**${specialName}** (Space ${space})` : `**Space ${space}**`;
+            const destinationText = specialName ? `**${specialName}** (Space ${space})${caveMarker(planet, space)}` : `**Space ${space}**${caveMarker(planet, space)}`;
             const fromText = `Space ${currentSpace}`;
             const playersAtDest = formatPlayersAtSlot(planet, space);
             const travelHeader = `📍 **${character.name}** travels from ${fromText} to ${destinationText} on ${planet}.`;
@@ -12994,6 +20373,59 @@ async function handleInteraction(interaction) {
             const r = runTraining(interaction, character, type, null);
             if (r.error) return interaction.update({ content: r.error, components: buildTrainComponents(type) });
             return interaction.update({ content: r.content, components: r.components });
+        }
+
+        // Stat-multiplier allocation screen (character creation).
+        if (interaction.customId === 'open_stat_multipliers') {
+            const pending = pendingCharacters.get(interaction.user.id);
+            if (!pending) {
+                return interaction.reply({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+            return interaction.update(buildStatMultiplierView(pending));
+        }
+
+        if (interaction.customId.startsWith('sm_')) {
+            const pending = pendingCharacters.get(interaction.user.id);
+            if (!pending) {
+                return interaction.reply({ content: 'No pending character found! Create a new character with `/character-create`.', ephemeral: true });
+            }
+
+            if (interaction.customId === 'sm_reset') {
+                pending.data.statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
+                refreshPendingWithStatMultipliers(pending);
+                return interaction.update(buildStatMultiplierView(pending));
+            }
+
+            if (interaction.customId === 'sm_back') {
+                // Return to the character preview with freshly-recomputed modifiers/vitals.
+                const content = rebuildPendingPreviewContent(pending);
+                const components = buildPendingPreviewComponents(pending);
+                pending.lastPreview = { content, components };
+                return interaction.update({ content, components });
+            }
+
+            const match = interaction.customId.match(/^sm_(inc|dec)_(str|dex|con|wil|spi)$/);
+            if (match) {
+                const op = match[1];
+                const stat = match[2];
+                const sm = pending.data.statMultipliers || (pending.data.statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 });
+                const pool = pending.data.statMultiplierPoints || getRaceStatMultiplierPoints(pending.data.race);
+                const used = getStatMultiplierUsed(sm);
+
+                if (op === 'inc') {
+                    if (used >= pool) {
+                        return interaction.reply({ content: `❌ You have no more stat multiplier points to allocate!`, ephemeral: true });
+                    }
+                    sm[stat] = (sm[stat] || 0) + 1;
+                } else {
+                    if ((sm[stat] || 0) <= STAT_MULT_MIN_POINTS) {
+                        return interaction.reply({ content: `❌ ${stat.toUpperCase()} is already at its minimum (${formatStatMultiplier(STAT_MULT_MIN_POINTS)}×)!`, ephemeral: true });
+                    }
+                    sm[stat] = (sm[stat] || 0) - 1;
+                }
+                refreshPendingWithStatMultipliers(pending);
+                return interaction.update(buildStatMultiplierView(pending));
+            }
         }
 
         if (interaction.customId === 'reroll_stats') {
@@ -13033,12 +20465,12 @@ async function handleInteraction(interaction) {
                 pending.data.eliteBonus = { stat: extraStat, roll: extraRoll };
             }
 
-            // Recalculate HP and Ki
-            const maxHP = calculateHP(newStats.con, selectedRace);
-            const maxKi = calculateKi(newStats.spi, selectedRace);
+            // Recalculate HP and Ki (applying stat-multiplier points to CON/SPI mods)
+            const maxHP = calculateHP(newStats.con, selectedRace, pending.data.statMultipliers, pending.data);
+            const maxKi = calculateKi(newStats.spi, selectedRace, pending.data.statMultipliers, pending.data);
 
-            // Recalculate modifiers
-            const newModifiers = calculateAllModifiers(newStats);
+            // Recalculate modifiers (applying stat-multiplier points)
+            const newModifiers = calculateAllModifiers(newStats, pending.data.statMultipliers);
 
             // Update character data
             pending.data.stats = newStats;
@@ -13050,10 +20482,13 @@ async function handleInteraction(interaction) {
                 maxHP: maxHP,
                 maxKi: maxKi
             });
+            // Rerolling stats also rerolls beauty (1d5: 1=hideous ... 5=beautiful/handsome).
+            pending.data.beauty = getRandomInt(5);
             pending.hasRerolled = true;
 
             const raceInfo = races[selectedRace];
-            const racialMods = getRaceStatModifiers(selectedRace);
+            // Racial mods scale with the rerolled stats, so the preview must see them.
+            const racialMods = getRaceStatModifiers(selectedRace, pending.data);
 
             // Build stat roll description
             let statRollDesc = `1d${raceRollConfig.diceSize}`;
@@ -13065,27 +20500,21 @@ async function handleInteraction(interaction) {
             else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
 
             let message = `🎲 **Stats Rerolled!** ✨\n\n`;
-            message += `**${pending.data.name}** - ${pending.data.race} (Age ${pending.data.age})\n`;
+            message += `**${pending.data.name}** - ${pending.data.race}${pending.data.gender ? ` ${pending.data.gender}` : ''} (Age ${pending.data.age})\n`;
+            if (pending.data.clan) message += `🧬 **Clan:** ${pending.data.clan}\n`;
+            if (pending.data.beauty) message += `🎭 **Beauty Reroll:** 1d5 → **${pending.data.beauty}** (${getBeautyLabel(pending.data.beauty)})\n`;
             if (pending.data.class === 'Elite Class' && pending.data.eliteBonus) {
                 message += `⭐ **Elite Class bonus:** +1d40 → **${pending.data.eliteBonus.stat.toUpperCase()} +${pending.data.eliteBonus.roll}**\n`;
             }
-            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**Power Level:** ${formatPL(pending.data.powerLevel)}\n\n`;
             message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
             message += `STR: ${newStats.str} (${newModifiers.str >= 0 ? '+' : ''}${newModifiers.str})${racialMods.str !== 0 ? `(${racialMods.str >= 0 ? '+' : ''}${racialMods.str})` : ''} | DEX: ${newStats.dex} (${newModifiers.dex >= 0 ? '+' : ''}${newModifiers.dex})${racialMods.dex !== 0 ? `(${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex})` : ''} | CON: ${newStats.con} (${newModifiers.con >= 0 ? '+' : ''}${newModifiers.con})${racialMods.con !== 0 ? `(${racialMods.con >= 0 ? '+' : ''}${racialMods.con})` : ''}\n`;
             message += `WIL: ${newStats.wil} (${newModifiers.wil >= 0 ? '+' : ''}${newModifiers.wil})${racialMods.wil !== 0 ? `(${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil})` : ''} | SPI: ${newStats.spi} (${newModifiers.spi >= 0 ? '+' : ''}${newModifiers.spi})${racialMods.spi !== 0 ? `(${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi})` : ''} | INT: ${newStats.int} (${newModifiers.int >= 0 ? '+' : ''}${newModifiers.int})${racialMods.int !== 0 ? `(${racialMods.int >= 0 ? '+' : ''}${racialMods.int})` : ''}\n`;
             
-            // Show racial modifiers if any exist
+            // Show racial modifiers if any exist (each racial bonus also adds a % of that stat's mod)
             const hasRacialMods = Object.values(racialMods).some(mod => mod !== 0);
             if (hasRacialMods) {
-                message += `\n**Racial Modifiers:** `;
-                const modParts = [];
-                if (racialMods.str !== 0) modParts.push(`STR ${racialMods.str >= 0 ? '+' : ''}${racialMods.str}`);
-                if (racialMods.dex !== 0) modParts.push(`DEX ${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex}`);
-                if (racialMods.con !== 0) modParts.push(`CON ${racialMods.con >= 0 ? '+' : ''}${racialMods.con}`);
-                if (racialMods.wil !== 0) modParts.push(`WIL ${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil}`);
-                if (racialMods.spi !== 0) modParts.push(`SPI ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi}`);
-                if (racialMods.int !== 0) modParts.push(`INT ${racialMods.int >= 0 ? '+' : ''}${racialMods.int}`);
-                message += modParts.join(' | ') + `\n`;
+                message += `\n**Racial Modifiers:** ${formatRacialModLine(racialMods, pending.data)}\n`;
             }
             
             message += `\nHP: ${maxHP}${racialMods.con !== 0 ? ` (includes ${racialMods.con >= 0 ? '+' : ''}${racialMods.con * 10} from CON racial bonus)` : ''} | Ki: ${maxKi}${racialMods.spi !== 0 ? ` (includes ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi * 10} from SPI racial bonus)` : ''}\n\n`;
@@ -13105,6 +20534,10 @@ async function handleInteraction(interaction) {
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
+                        .setCustomId('open_stat_multipliers')
+                        .setLabel('🎯 Stat Multipliers')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
                         .setCustomId('roll_mutation')
                         .setLabel('🧬 Roll Mutation (1d20)')
                         .setStyle(ButtonStyle.Secondary),
@@ -13118,6 +20551,7 @@ async function handleInteraction(interaction) {
                         .setStyle(ButtonStyle.Success)
                 );
 
+            pending.lastPreview = { content: message, components: [row] };
             return await interaction.editReply({ content: message, components: [row] });
         }
 
@@ -13145,7 +20579,7 @@ async function handleInteraction(interaction) {
                 mutationMessage += `You rolled ${mutationRoll}! You can choose a mutation from the Dragon Ball universe or create your own.\n`;
                 
                 // Show race-specific mutations
-                const availableMutations = getAvailableMutations(pending.data.race);
+                const availableMutations = getAvailableMutations(pending.data.race, pending.data.clan);
                 if (availableMutations.length > 0) {
                     mutationMessage += `🎯 **Select your mutation for ${pending.data.race} below**, or create your own (approved by Chilly).\n\n`;
                     mutationMessage += `**Available Mutations for ${pending.data.race}:**\n`;
@@ -13168,7 +20602,8 @@ async function handleInteraction(interaction) {
             const selectedRace = pending.data.race;
             const raceRollConfig = getRaceStatRolls(selectedRace);
             const raceInfo = races[selectedRace];
-            const racialMods = getRaceStatModifiers(selectedRace);
+            // Racial mods scale with the rolled stats, so the preview must see them.
+            const racialMods = getRaceStatModifiers(selectedRace, pending.data);
 
             let statRollDesc = `1d${raceRollConfig.diceSize}`;
             if (raceRollConfig.bonus > 0) statRollDesc += `+${raceRollConfig.bonus}`;
@@ -13179,24 +20614,18 @@ async function handleInteraction(interaction) {
             else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
 
             let message = pending.hasRerolled ? `🎲 **Stats Rerolled!** ✨\n\n` : `✨ **Character Preview!** ✨\n\n`;
-            message += `**${pending.data.name}** - ${pending.data.race} (Age ${pending.data.age})\n`;
-            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**${pending.data.name}** - ${pending.data.race}${pending.data.gender ? ` ${pending.data.gender}` : ''} (Age ${pending.data.age})\n`;
+            if (pending.data.clan) message += `🧬 **Clan:** ${pending.data.clan}\n`;
+            if (pending.data.beauty) message += `🎭 **Beauty:** ${getBeautyLabel(pending.data.beauty)} (${pending.data.beauty})\n`;
+            message += `**Power Level:** ${formatPL(pending.data.powerLevel)}\n\n`;
             message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
             message += `STR: ${pending.data.stats.str} (${pending.data.modifiers.str >= 0 ? '+' : ''}${pending.data.modifiers.str})${racialMods.str !== 0 ? `(${racialMods.str >= 0 ? '+' : ''}${racialMods.str})` : ''} | DEX: ${pending.data.stats.dex} (${pending.data.modifiers.dex >= 0 ? '+' : ''}${pending.data.modifiers.dex})${racialMods.dex !== 0 ? `(${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex})` : ''} | CON: ${pending.data.stats.con} (${pending.data.modifiers.con >= 0 ? '+' : ''}${pending.data.modifiers.con})${racialMods.con !== 0 ? `(${racialMods.con >= 0 ? '+' : ''}${racialMods.con})` : ''}\n`;
             message += `WIL: ${pending.data.stats.wil} (${pending.data.modifiers.wil >= 0 ? '+' : ''}${pending.data.modifiers.wil})${racialMods.wil !== 0 ? `(${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil})` : ''} | SPI: ${pending.data.stats.spi} (${pending.data.modifiers.spi >= 0 ? '+' : ''}${pending.data.modifiers.spi})${racialMods.spi !== 0 ? `(${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi})` : ''} | INT: ${pending.data.stats.int} (${pending.data.modifiers.int >= 0 ? '+' : ''}${pending.data.modifiers.int})${racialMods.int !== 0 ? `(${racialMods.int >= 0 ? '+' : ''}${racialMods.int})` : ''}\n`;
             
-            // Show racial modifiers if any exist
+            // Show racial modifiers if any exist (each racial bonus also adds a % of that stat's mod)
             const hasRacialMods = Object.values(racialMods).some(mod => mod !== 0);
             if (hasRacialMods) {
-                message += `\n**Racial Modifiers:** `;
-                const modParts = [];
-                if (racialMods.str !== 0) modParts.push(`STR ${racialMods.str >= 0 ? '+' : ''}${racialMods.str}`);
-                if (racialMods.dex !== 0) modParts.push(`DEX ${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex}`);
-                if (racialMods.con !== 0) modParts.push(`CON ${racialMods.con >= 0 ? '+' : ''}${racialMods.con}`);
-                if (racialMods.wil !== 0) modParts.push(`WIL ${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil}`);
-                if (racialMods.spi !== 0) modParts.push(`SPI ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi}`);
-                if (racialMods.int !== 0) modParts.push(`INT ${racialMods.int >= 0 ? '+' : ''}${racialMods.int}`);
-                message += modParts.join(' | ') + `\n`;
+                message += `\n**Racial Modifiers:** ${formatRacialModLine(racialMods, pending.data)}\n`;
             }
             
             message += `\nHP: ${pending.data.maxHP}${racialMods.con !== 0 ? ` (includes ${racialMods.con >= 0 ? '+' : ''}${racialMods.con * 10} from CON racial bonus)` : ''} | Ki: ${pending.data.maxKi}${racialMods.spi !== 0 ? ` (includes ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi * 10} from SPI racial bonus)` : ''}\n\n`;
@@ -13217,7 +20646,7 @@ async function handleInteraction(interaction) {
             // Build mutation selection buttons (when eligible) + the confirm button.
             const rows = [];
             if (mutationRoll >= 19) {
-                const availableMutations = getAvailableMutations(pending.data.race);
+                const availableMutations = getAvailableMutations(pending.data.race, pending.data.clan);
                 const selectButtons = availableMutations.map((mut, idx) =>
                     new ButtonBuilder()
                         .setCustomId(`mselect_${idx}`)
@@ -13238,11 +20667,16 @@ async function handleInteraction(interaction) {
 
             rows.push(new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
+                    .setCustomId('open_stat_multipliers')
+                    .setLabel('🎯 Stat Multipliers')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
                     .setCustomId('confirm_character')
                     .setLabel('✅ Confirm Character')
                     .setStyle(ButtonStyle.Success)
             ));
 
+            pending.lastPreview = { content: message, components: rows };
             return await interaction.update({ content: message, components: rows });
         }
 
@@ -13255,7 +20689,7 @@ async function handleInteraction(interaction) {
                 return interaction.reply({ content: '❌ You are not eligible for a mutation!', ephemeral: true });
             }
 
-            const availableMutations = getAvailableMutations(pending.data.race);
+            const availableMutations = getAvailableMutations(pending.data.race, pending.data.clan);
             const choice = interaction.customId.slice('mselect_'.length);
             let mutationText;
             let selectedName;
@@ -13306,12 +20740,18 @@ async function handleInteraction(interaction) {
 
             rows.push(new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
+                    .setCustomId('open_stat_multipliers')
+                    .setLabel('🎯 Stat Multipliers')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
                     .setCustomId('confirm_character')
                     .setLabel('✅ Confirm Character')
                     .setStyle(ButtonStyle.Success)
             ));
 
-            return await interaction.update({ content: `${base}\n${mutationText}\n\n✅ Click **Confirm Character** to create this character.`, components: rows });
+            const finalContent = `${base}\n${mutationText}\n\n✅ Click **Confirm Character** to create this character.`;
+            pending.lastPreview = { content: finalContent, components: rows };
+            return await interaction.update({ content: finalContent, components: rows });
         }
 
         if (interaction.customId === 'boost_stats') {
@@ -13350,12 +20790,12 @@ async function handleInteraction(interaction) {
                 pending.data.eliteBonus = { stat: extraStat, roll: extraRoll };
             }
 
-            // Recalculate HP and Ki
-            const maxHP = calculateHP(boostedStats.con, selectedRace);
-            const maxKi = calculateKi(boostedStats.spi, selectedRace);
+            // Recalculate HP and Ki (applying stat-multiplier points to CON/SPI mods)
+            const maxHP = calculateHP(boostedStats.con, selectedRace, pending.data.statMultipliers, pending.data);
+            const maxKi = calculateKi(boostedStats.spi, selectedRace, pending.data.statMultipliers, pending.data);
 
-            // Recalculate modifiers
-            const boostedModifiers = calculateAllModifiers(boostedStats);
+            // Recalculate modifiers (applying stat-multiplier points)
+            const boostedModifiers = calculateAllModifiers(boostedStats, pending.data.statMultipliers);
 
             // Update character data
             pending.data.stats = boostedStats;
@@ -13372,7 +20812,8 @@ async function handleInteraction(interaction) {
             pending.chosenPath = 'boost'; // Lock in boost path
 
             const raceInfo = races[selectedRace];
-            const racialMods = getRaceStatModifiers(selectedRace);
+            // Racial mods scale with the boosted stats, so the preview must see them.
+            const racialMods = getRaceStatModifiers(selectedRace, pending.data);
 
             let intRollDesc = '1d10';
             if (selectedRace === 'Earthling') intRollDesc = '1d10+1';
@@ -13384,23 +20825,15 @@ async function handleInteraction(interaction) {
             if (pending.data.class === 'Elite Class' && pending.data.eliteBonus) {
                 message += `⭐ **Elite Class bonus:** +1d40 → **${pending.data.eliteBonus.stat.toUpperCase()} +${pending.data.eliteBonus.roll}**\n`;
             }
-            message += `**Power Level:** ${pending.data.powerLevel}\n\n`;
+            message += `**Power Level:** ${formatPL(pending.data.powerLevel)}\n\n`;
             message += `**Stats (1d100+20 per stat for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
             message += `STR: ${boostedStats.str} (${boostedModifiers.str >= 0 ? '+' : ''}${boostedModifiers.str})${racialMods.str !== 0 ? `(${racialMods.str >= 0 ? '+' : ''}${racialMods.str})` : ''} | DEX: ${boostedStats.dex} (${boostedModifiers.dex >= 0 ? '+' : ''}${boostedModifiers.dex})${racialMods.dex !== 0 ? `(${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex})` : ''} | CON: ${boostedStats.con} (${boostedModifiers.con >= 0 ? '+' : ''}${boostedModifiers.con})${racialMods.con !== 0 ? `(${racialMods.con >= 0 ? '+' : ''}${racialMods.con})` : ''}\n`;
             message += `WIL: ${boostedStats.wil} (${boostedModifiers.wil >= 0 ? '+' : ''}${boostedModifiers.wil})${racialMods.wil !== 0 ? `(${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil})` : ''} | SPI: ${boostedStats.spi} (${boostedModifiers.spi >= 0 ? '+' : ''}${boostedModifiers.spi})${racialMods.spi !== 0 ? `(${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi})` : ''} | INT: ${boostedStats.int} (${boostedModifiers.int >= 0 ? '+' : ''}${boostedModifiers.int})${racialMods.int !== 0 ? `(${racialMods.int >= 0 ? '+' : ''}${racialMods.int})` : ''}\n`;
             
-            // Show racial modifiers if any exist
+            // Show racial modifiers if any exist (each racial bonus also adds a % of that stat's mod)
             const hasRacialMods = Object.values(racialMods).some(mod => mod !== 0);
             if (hasRacialMods) {
-                message += `\n**Racial Modifiers:** `;
-                const modParts = [];
-                if (racialMods.str !== 0) modParts.push(`STR ${racialMods.str >= 0 ? '+' : ''}${racialMods.str}`);
-                if (racialMods.dex !== 0) modParts.push(`DEX ${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex}`);
-                if (racialMods.con !== 0) modParts.push(`CON ${racialMods.con >= 0 ? '+' : ''}${racialMods.con}`);
-                if (racialMods.wil !== 0) modParts.push(`WIL ${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil}`);
-                if (racialMods.spi !== 0) modParts.push(`SPI ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi}`);
-                if (racialMods.int !== 0) modParts.push(`INT ${racialMods.int >= 0 ? '+' : ''}${racialMods.int}`);
-                message += modParts.join(' | ') + `\n`;
+                message += `\n**Racial Modifiers:** ${formatRacialModLine(racialMods, pending.data)}\n`;
             }
             
             message += `\nHP: ${maxHP}${racialMods.con !== 0 ? ` (includes ${racialMods.con >= 0 ? '+' : ''}${racialMods.con * 10} from CON racial bonus)` : ''} | Ki: ${maxKi}${racialMods.spi !== 0 ? ` (includes ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi * 10} from SPI racial bonus)` : ''}\n\n`;
@@ -13420,11 +20853,16 @@ async function handleInteraction(interaction) {
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
+                        .setCustomId('open_stat_multipliers')
+                        .setLabel('🎯 Stat Multipliers')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
                         .setCustomId('confirm_character')
                         .setLabel('✅ Confirm Character')
                         .setStyle(ButtonStyle.Success)
                 );
 
+            pending.lastPreview = { content: message, components: [row] };
             return await interaction.update({ content: message, components: [row] });
         }
 
@@ -13442,11 +20880,11 @@ async function handleInteraction(interaction) {
                 }
             }
 
-            // Racial techniques: Cerealians know Vital Strike; Konatsians know Hero's Flute.
+            // Racial techniques: Cerealians know Vital Strike; Konatsians know Hero's Flute
+            // and Ki Sharpening (innate sword affinity).
             if (pending.data.race === 'Cerealian' || pending.data.race === 'Konatsian') {
                 const techs = Array.isArray(pending.data.techniques) ? [...pending.data.techniques] : [];
-                const racialTech = pending.data.race === 'Cerealian' ? 'Vital Strike' : "Hero's Flute";
-                if (!techs.includes(racialTech)) techs.push(racialTech);
+                getRacialTechniques(pending.data.race).forEach(t => { if (!techs.includes(t)) techs.push(t); });
                 pending.data.techniques = techs;
             }
 
@@ -13521,7 +20959,7 @@ async function handleInteraction(interaction) {
                 if (choice.type === 'style') {
                     const oldStyle = companion.fightingStyle;
                     let techniques = Array.isArray(companion.techniques) ? [...companion.techniques] : [];
-                    techniques = pruneOffStyleTechniques(techniques, teach.style);
+                    techniques = pruneOffStyleTechniques(techniques, teach.style, companion.race);
                     (MENTOR_STYLES[teach.style].moves || []).forEach(move => { if (!techniques.includes(move)) techniques.push(move); });
                     companion.fightingStyle = teach.style;
                     companion.techniques = techniques;
@@ -13579,7 +21017,7 @@ async function handleInteraction(interaction) {
                     return interaction.reply({ content: `❌ **Assassin** requires **-250 negative alignment**. Your alignment is **${getPlayerAlignmentValue(character)}**.`, ephemeral: true });
                 }
                 let techniques = getKnownTechniqueNames(character);
-                techniques = pruneOffStyleTechniques(techniques, reward.style);
+                techniques = pruneOffStyleTechniques(techniques, reward.style, character.race);
                 (MENTOR_STYLES[reward.style].moves || []).forEach(move => {
                     if (!techniques.includes(move)) techniques.push(move);
                 });
@@ -13631,12 +21069,32 @@ async function handleInteraction(interaction) {
             // without -250 negative alignment (checked in the reward choices).
             const mentor = MENTOR_STYLES[style];
             const mentorStats = generateMentorStats(character.powerLevel || 0);
+            // Mentors are NPCs — roll a random stat-multiplier spread (default points).
+            const mentorMultipliers = rollRandomStatMultipliers(null);
             const playerBattleStats = applyFormToStats(character);
 
             const mentorRank = getEnemyDifficultyRank('mentor');
             const mentorWeapon = rollStyleWeapon(style, mentorRank) || null;
             const mentorWeaponMods = getWeaponMods(mentorWeapon);
             const mentorArmor = rollEnemyArmor(mentorRank);
+
+            // Mentors are masters of their craft: style signature moves + any mentor-specific
+            // techniques (e.g. Turtle's Pump Up) + every passive ki ability, ALL at MASTERY 5 —
+            // so their techniques use the fully-upgraded mastery dice and the mastery pct
+            // (see TECHNIQUE_MASTERY_* and masteryScaling).
+            const mentorTechniques = [...(mentor.moves || []), ...(MENTOR_SPECIFIC_TECHNIQUES[style] || []), 'Fly', 'Ki Sense', 'Ki Efficiency', 'Ki Application'];
+            const MENTOR_MASTERY = 5;
+            const mentorTechniqueMastery = Object.fromEntries(mentorTechniques.map(t => [t, MENTOR_MASTERY]));
+            const mentorAbilityMastery = { 'Ki Sense': MENTOR_MASTERY, 'Ki Efficiency': MENTOR_MASTERY, 'Ki Application': MENTOR_MASTERY };
+            // The ki disciplines at mastery 5 too: Ki Application becomes passive & free (+1/4 WIL
+            // mod damage) and Ki Efficiency's SPI/WIL mods fold into modBonus — the same fields a
+            // mastery-5 enemy gets. `kiAppDamage: 5` keeps the mentor's existing flat floor.
+            const mentorKiModBonus = { dex: -applyWeaponProficiencyReduction(null, style, mentorWeaponMods ? mentorWeaponMods.type : null, mentorWeaponMods ? mentorWeaponMods.dexPenalty : 0) };
+            const mentorKiFields = buildEnemyKiAbilityFields(
+                { level: MENTOR_MASTERY, techniqueMastery: mentorTechniqueMastery, abilityMastery: mentorAbilityMastery, kiApplication: MENTOR_MASTERY, kiEfficiency: MENTOR_MASTERY },
+                { wil: mentorStats.wil }, mentorKiModBonus,
+                { race: null, statMultipliers: mentorMultipliers, kiAppDamage: 5 }
+            );
 
             const participants = [
                 {
@@ -13651,6 +21109,7 @@ async function handleInteraction(interaction) {
                     fatigue: getTotalFatigue(character),
                     stats: playerBattleStats.stats,
                     modBonus: playerBattleStats.modBonus,
+                    statMultipliers: playerBattleStats.statMultipliers,
                     kiAppDamage: playerBattleStats.kiAppDamage,
                     kiApplicationLearned: playerBattleStats.kiApplicationLearned,
                     kiApplicationActive: playerBattleStats.kiApplicationActive,
@@ -13669,20 +21128,26 @@ async function handleInteraction(interaction) {
                     userId: 'enemy_mentor',
                     username: mentor.name,
                     isNPC: true,
-                    hp: calculateHP(mentorStats.con),
-                    ki: calculateKi(mentorStats.spi),
+                    race: null,
+                    hp: calculateHP(mentorStats.con, null, mentorMultipliers),
+                    ki: calculateKi(mentorStats.spi, null, mentorMultipliers),
                     fatigue: 0,
                     stats: mentorStats,
+                    statMultipliers: mentorMultipliers,
                     // Mentors always wield every passive technique.
                     flying: true,
                     kiSense: true,
                     kiEfficiency: true,
-                    kiAppDamage: 5,
-                    techniques: [...(mentor.moves || []), 'Fly', 'Ki Sense', 'Ki Efficiency', 'Ki Application'],
+                    // Mentors are masters of their craft: every technique and ki discipline at
+                    // MASTERY 5 (see mentorTechniqueMastery / mentorKiFields above).
+                    techniques: mentorTechniques,
+                    ...mentorKiFields,
                     fightingStyle: style,
                     weapon: mentorWeapon,
                     weaponType: mentorWeaponMods ? mentorWeaponMods.type : null,
                     weaponAttackMod: mentorWeaponMods ? mentorWeaponMods.attackMod : 0,
+                    weaponAtkPct: mentorWeaponMods ? (mentorWeaponMods.atkPct || 0) : 0,
+                    weaponDexPct: mentorWeaponMods ? (mentorWeaponMods.dexPct || 0) : 0,
                     weaponDamageMode: mentorWeaponMods ? mentorWeaponMods.damageMode : null,
                     weaponBypass: mentorWeaponMods ? mentorWeaponMods.bypass : false,
                     weaponConBonus: mentorWeaponMods ? (mentorWeaponMods.conBonus || 0) : 0,
@@ -13690,12 +21155,13 @@ async function handleInteraction(interaction) {
                     armor: mentorArmor ? mentorArmor.name : null,
                     armorReduction: mentorArmor ? mentorArmor.armorReduction : 0,
                     armorDexReduction: mentorArmor ? mentorArmor.armorDexReduction : 0,
-                    modBonus: { dex: -applyWeaponProficiencyReduction(null, style, mentorWeaponMods ? mentorWeaponMods.type : null, mentorWeaponMods ? mentorWeaponMods.dexPenalty : 0) }
+                    modBonus: mentorKiModBonus
                 }
             ];
 
             const battle = battleManager.createBattle(channelId, participants);
             battle.rollInitiative();
+            battle.isMentor = true; // mentor training is non-lethal — no limit breaking here
             activeMentorFights.set(battle.id, { userId: interaction.user.id, style });
             pendingMentors.delete(interaction.user.id);
 
@@ -13853,7 +21319,8 @@ async function handleInteraction(interaction) {
             missionData.selectedAlignment = alignment;
 
             const labels = { casual: 'Casual Mission', hard: 'Challenging Mission', 'very hard': 'Very Challenging Mission', saga: 'Saga Mission' };
-            const text = buildMissionPreviewText(labels[missionType] || missionType, missionData.presets, alignment, '');
+            const plChar = characterManager.getCharacter(userId);
+            const text = buildMissionPreviewText(labels[missionType] || missionType, missionData.presets, alignment, '', { missionType, powerLevel: plChar ? plChar.powerLevel : 0 });
             const row = missionButtons(missionType, interaction.user.id, alignment);
             await interaction.update({ content: text, components: [row] });
             return;
@@ -13910,6 +21377,8 @@ async function handleInteraction(interaction) {
                 preMissionAlignment: character.alignment
             });
             character.alignmentValue = newAlignVal;
+            // Alignment extremes earn evil/heroic nicknames.
+            checkAlignmentNicknames(interaction.user.id, characterManager.getCharacter(interaction.user.id) || character, newAlignVal);
             checkManiacOffer(interaction.user.id, character);
 
             // Create participants array - player + companions + enemies
@@ -13927,6 +21396,7 @@ async function handleInteraction(interaction) {
                     fatigue: getTotalFatigue(character),
                     stats: playerBattleStats.stats,
                     modBonus: playerBattleStats.modBonus,
+                    statMultipliers: playerBattleStats.statMultipliers,
                     kiAppDamage: playerBattleStats.kiAppDamage,
                     ...kiAppParticipantFields(playerBattleStats),
                     ...playerBattleStats.gear,
@@ -13961,6 +21431,7 @@ async function handleInteraction(interaction) {
                     fatigue: getTotalFatigue(joinedChar),
                     stats: joinedStats.stats,
                     modBonus: joinedStats.modBonus,
+                    statMultipliers: joinedStats.statMultipliers,
                     kiAppDamage: joinedStats.kiAppDamage,
                     ...kiAppParticipantFields(joinedStats),
                     ...joinedStats.gear,
@@ -13976,8 +21447,16 @@ async function handleInteraction(interaction) {
 
             // Add enemies to participants
             enemies.forEach((enemy, index) => {
-                const maxHP = calculateHP(enemy.con, enemy.race || null); // Same HP formula as player characters
-                const maxKi = calculateKi(enemy.spi, enemy.race || null); // Same Ki formula as player characters
+                // Enemies participate in the stat-multiplier system: roll a race-appropriate
+                // spread when they don't already carry one, and use it for HP/Ki AND combat mods.
+                const enemyMultipliers = resolveStatMultipliers(enemy.statMultipliers, enemy.race || null);
+                const maxHP = calculateHP(enemy.con, enemy.race || null, enemyMultipliers, enemy); // Same HP formula as player characters
+                const maxKi = calculateKi(enemy.spi, enemy.race || null, enemyMultipliers, enemy); // Same Ki formula as player characters
+                // Enemies get their racial stat mods in combat, exactly like a player of that race.
+                const enemyModBonus = getRacialCombatMods(enemy.race || null, enemy);
+                enemyModBonus.dex = (enemyModBonus.dex || 0) - (enemy.weaponDexPenalty || 0);
+                // Technique mastery + ki disciplines scale with the enemy's power level.
+                const enemyKiFields = buildEnemyKiAbilityFields(getEnemyMasteryProfile(enemy.powerLevel || 0, enemy), { wil: enemy.wil || 0 }, enemyModBonus, enemy);
                 participants.push({
                     userId: `enemy_${index + 1}`,
                     username: `Enemy ${index + 1}`,
@@ -14004,11 +21483,10 @@ async function handleInteraction(interaction) {
                         spi: enemy.spi,
                         int: enemy.int || rollIntelligence(enemy.race || null)
                     },
+                    statMultipliers: enemyMultipliers,
                     flying: enemy.flying || false,
                     kiSense: enemy.kiSense || false,
-                    kiAppDamage: enemy.kiAppDamage || 0,
-                    kiEfficiency: enemy.kiEfficiency || false,
-                    kiApplicationLearned: enemy.race === 'Cerealian',
+                    ...enemyKiFields,
                     techniques: (enemy.techniques || []).concat((enemy.race === 'Cerealian' && !(enemy.techniques || []).includes('Vital Strike')) ? ['Vital Strike'] : []),
                     fightingStyle: enemy.style || null,
                     // Assassins can surprise non-Assassin opponents: 50% chance to start invisible.
@@ -14016,6 +21494,8 @@ async function handleInteraction(interaction) {
                     weapon: enemy.weapon || null,
                     weaponType: enemy.weaponType || null,
                     weaponAttackMod: enemy.weaponAttackMod || 0,
+                    weaponAtkPct: enemy.weaponAtkPct || 0,
+                    weaponDexPct: enemy.weaponDexPct || 0,
                     weaponDamageMode: enemy.weaponDamageMode || null,
                     weaponBypass: enemy.weaponBypass || false,
                     weaponConBonus: enemy.weaponConBonus || 0,
@@ -14023,7 +21503,7 @@ async function handleInteraction(interaction) {
                     armor: enemy.armor || null,
                     armorReduction: enemy.armorReduction || 0,
                     armorDexReduction: enemy.armorDexReduction || 0,
-                    modBonus: { dex: -(enemy.weaponDexPenalty || 0) }
+                    modBonus: enemyModBonus
                 });
             });
 
@@ -14046,6 +21526,9 @@ async function handleInteraction(interaction) {
 
             // Create battle and roll initiative
             const battle = battleManager.createBattle(channelId, participants);
+            // The host and any joined players fight on the same team — they must not be able to
+            // target each other (this is what `getAliveTargets`/`buildTargetComponents` use).
+            battle.alliedPlayerIds = new Set([interaction.user.id, ...(missionData.joinedUsers || [])]);
             battle.rollInitiative();
 
             // Track the mission so the winners get stat points + zeni on completion.
@@ -14210,12 +21693,21 @@ async function handleInteraction(interaction) {
             if (candidates.length === 0) {
                 return interaction.update({ content: '❌ Nothing to store! Your inventory/home are empty and you have no placed home.', components: [] });
             }
-            pendingTrueCapsule.set(interaction.user.id, { candidates });
-            const select = new StringSelectMenuBuilder().setCustomId('truecap_store_sel').setPlaceholder('Choose an item to store...');
-            candidates.forEach((c, i) => {
-                select.addOptions(new StringSelectMenuOptionBuilder().setLabel(c.name.slice(0, 100)).setValue(String(i)));
-            });
-            return interaction.update({ content: '📥 Choose an item to store in the True Capsule:', components: [new ActionRowBuilder().addComponents(select)] });
+            pendingTrueCapsule.set(interaction.user.id, { candidates, page: 0 });
+            return interaction.update({ content: '📥 Choose an item to store in the True Capsule:', components: buildTrueCapStoreComponents(candidates, 0) });
+        }
+
+        // Paginate the True Capsule "store" list (max 25 options per select menu).
+        if (interaction.customId === 'truecap_storeprev' || interaction.customId === 'truecap_storenext') {
+            const pending = pendingTrueCapsule.get(interaction.user.id);
+            if (!pending) return interaction.update({ content: '❌ This capsule menu has expired. Use the True Capsule again.', components: [] });
+            const totalPages = Math.max(1, Math.ceil(pending.candidates.length / TRUECAP_PAGE_SIZE));
+            let page = pending.page ?? 0;
+            page = interaction.customId === 'truecap_storeprev' ? page - 1 : page + 1;
+            page = Math.max(0, Math.min(page, totalPages - 1));
+            pending.page = page;
+            pendingTrueCapsule.set(interaction.user.id, pending);
+            return interaction.update({ content: '📥 Choose an item to store in the True Capsule:', components: buildTrueCapStoreComponents(pending.candidates, page) });
         }
 
         if (interaction.customId === 'truecap_take') {
@@ -14342,6 +21834,45 @@ async function handleInteraction(interaction) {
 
     if(!interaction.isChatInputCommand()) return;
 
+    if (interaction.commandName === "create"){
+        return startCreateTechnique(interaction, interaction.options.getString('name'), interaction.options.getString('type'));
+    }
+
+    if (interaction.commandName === "forget") {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) {
+            return interaction.reply('You need a character! Use `/character-create` to make one.');
+        }
+        const wanted = (interaction.options.getString('name') || '').trim();
+        const skills = (character.customSkills && typeof character.customSkills === 'object') ? character.customSkills : {};
+        const key = Object.keys(skills).find(k => k.toLowerCase() === wanted.toLowerCase());
+        if (!key) {
+            const owned = Object.keys(skills);
+            return interaction.reply(owned.length
+                ? `❌ You haven't created a technique called **"${wanted}"**. Your created techniques:\n${owned.map(n => `• **${n}**`).join('\n')}`
+                : '❌ You haven\'t created any techniques yet — make one with `/create`!');
+        }
+        const skill = skills[key];
+        const customSkills = { ...skills };
+        delete customSkills[key];
+        // Drop it from the techniques list too, or it would stay in the battle skill menu.
+        const techniques = (Array.isArray(character.techniques) ? character.techniques : []).filter(t => t !== key);
+        // Refund part of the stat-point price it originally cost (techniques made before the cost
+        // system have no statCost, so they refund nothing).
+        const paid = typeof skill.statCost === 'number' ? skill.statCost : 0;
+        const refund = Math.floor(paid * CUSTOM_TECH_REFUND_PCT / 100);
+        const points = (character.unspentPoints || 0) + refund;
+        const updates = { customSkills, techniques };
+        if (refund > 0) updates.unspentPoints = points;
+        characterManager.updateCharacter(interaction.user.id, character.id, updates);
+
+        let text = `🗑️ **${character.name}** forgot **${key}**. It can no longer be used in battle.`;
+        if (refund > 0) text += `\n💰 Refunded **${refund.toLocaleString()}** stat points (**${CUSTOM_TECH_REFUND_PCT}%** of the ${paid.toLocaleString()} it cost) — you now have **${points.toLocaleString()}**.`;
+        else text += '\n*(No stat points refunded — this technique was created before creation costs existed.)*';
+        text += `\n🛠️ You can design a new technique with \`/create\` (${Object.keys(customSkills).length}/${MAX_CUSTOM_SKILLS} used).`;
+        return interaction.reply(text);
+    }
+
     if (interaction.commandName === "ping"){
         interaction.reply("Pong!");
     }
@@ -14357,25 +21888,88 @@ async function handleInteraction(interaction) {
 
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
         const tackle = getFishTackle(character);
-        const rawFood = [...inventory, ...tackle].filter(item => isUncookedFood(item));
-        if (rawFood.length === 0) {
+        const bag = getHuntingBag(character);
+        const allRawFood = [...inventory, ...tackle, ...bag].filter(item => isUncookedFood(item));
+        if (allRawFood.length === 0) {
             return interaction.reply('❌ You have no raw fish or meat to cook! Go fishing with `/fish` or hunt with `/hunt` first.');
         }
 
-        // Cost: 1 resource per item, or 1 resource per 5 items with a Camp Fire (Trello).
-        const hasCampfire = inventory.some(item => parseItemName(item).name.toLowerCase() === 'camp fire');
-        const cost = hasCampfire ? Math.max(1, Math.ceil(rawFood.length / 5)) : rawFood.length;
-        if ((character.resources || 0) < cost) {
-            return interaction.reply(`❌ Cooking **${rawFood.length} items** needs **${cost} resource${cost === 1 ? '' : 's'}**${hasCampfire ? ' (1 per 5 with a Camp Fire)' : ''}, but you only have **${character.resources || 0}**.`);
+        // Optional `item`: cook only a specific raw food (case-insensitive).
+        const itemFilter = (interaction.options.getString('item') || '').trim();
+        let rawFood = allRawFood;
+        if (itemFilter) {
+            rawFood = allRawFood.filter(item => parseItemName(item).name.toLowerCase() === itemFilter.toLowerCase());
+            if (rawFood.length === 0) {
+                const available = [...new Set(allRawFood.map(i => parseItemName(i).name))];
+                return interaction.reply(`❌ You have no raw **${itemFilter}** to cook!\n🍖 Your raw food: ${available.join(', ')}`);
+            }
         }
 
-        // Cook all raw fish/meat (these reference the objects in inventory and/or tackle)
-        rawFood.forEach(food => { food.cooked = true; });
-        const newResources = (character.resources || 0) - cost;
-        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle, resources: newResources });
+        // Cost: 1 resource per item, or 1 resource per 5 items with a Camp Fire (Trello).
+        // A Garden & Kitchen facility discounts it further. An explicit `amount` caps the batch so
+        // you never burn every resource cooking a huge pile of raw food.
+        const hasCampfire = inventory.some(item => parseItemName(item).name.toLowerCase() === 'camp fire');
+        const cookDiscountPct = getBaseBonuses(character).cookDiscountPct;
+        const resources = character.resources || 0;
+        const plan = planCookBatch(rawFood.length, interaction.options.getInteger('amount'), hasCampfire, cookDiscountPct, resources);
+        const costNote = `${hasCampfire ? ' (1 per 5 with a Camp Fire)' : ''}${cookDiscountPct > 0 ? ` (-${cookDiscountPct}% Kitchen)` : ''}`;
+        const cookHint = `\`/cook${itemFilter ? ` item:${itemFilter}` : ''} amount:${plan.maxAffordable}\``;
 
-        const names = rawFood.map(f => f.name).join(', ');
-        return interaction.reply(`🔥 **${character.name}** cooked **${rawFood.length}** raw food (${names}) for **${cost} resource${cost === 1 ? '' : 's'}**!\n\nThey're ready to eat with \`/eat\`.`);
+        if (!plan.affordable) {
+            if (plan.maxAffordable <= 0) {
+                return interaction.reply(`❌ Cooking **${plan.cookCount}** item${plan.cookCount === 1 ? '' : 's'} needs **${plan.cost} resource${plan.cost === 1 ? '' : 's'}**${costNote}, but you only have **${resources}**.`);
+            }
+            return interaction.reply(`❌ Cooking **${plan.cookCount}** item${plan.cookCount === 1 ? '' : 's'} needs **${plan.cost} resource${plan.cost === 1 ? '' : 's'}**${costNote}, but you only have **${resources}**.\n💡 You can afford up to **${plan.maxAffordable}** — try ${cookHint}.`);
+        }
+
+        // Cook the chosen batch (these reference the objects in inventory and/or tackle and/or bag).
+        const chosen = rawFood.slice(0, plan.cookCount);
+        chosen.forEach(food => { food.cooked = true; });
+        const newResources = resources - plan.cost;
+        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle, huntingBag: bag, resources: newResources });
+
+        const left = rawFood.length - chosen.length;
+        // Group identical names ("Deer Meat ×12") instead of repeating the name per item.
+        const nameCounts = new Map();
+        chosen.forEach(f => nameCounts.set(f.name, (nameCounts.get(f.name) || 0) + 1));
+        const names = [...nameCounts.entries()].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(', ');
+        return interaction.reply(`🔥 **${character.name}** cooked **${chosen.length}** raw food (${names}) for **${plan.cost} resource${plan.cost === 1 ? '' : 's'}**!${left > 0 ? `\n🍖 **${left}** raw item${left === 1 ? '' : 's'} left uncooked.` : ''}\n\nThey're ready to eat with \`/eat\`.`);
+    }
+    if (interaction.commandName === "nickname") {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) {
+            return interaction.reply('You need a character! Use `/character-create` to make one.');
+        }
+        const list = getNicknameList(character);
+        const want = (interaction.options.getString('set') || '').trim();
+
+        if (want && want.toLowerCase() === 'none') {
+            characterManager.updateCharacter(interaction.user.id, character.id, { activeNickname: null });
+            return interaction.reply('🏷️ Cleared your active nickname (your deeds are still recorded). Use `/nickname set:<name>` to pick one again.');
+        }
+        if (want) {
+            const lower = want.toLowerCase();
+            const match = list.find(n => n.text.toLowerCase() === lower || n.id === lower)
+                || list.find(n => n.text.toLowerCase().includes(lower));
+            if (!match) {
+                return interaction.reply(list.length
+                    ? `❌ You haven't earned **"${want}"**. You go by:\n${list.map(n => `• **${n.emoji} ${n.text}**`).join('\n')}`
+                    : '❌ You haven\'t earned any nicknames yet — great deeds earn them (see `/nickname`).');
+            }
+            characterManager.updateCharacter(interaction.user.id, character.id, { activeNickname: match.id });
+            return interaction.reply(`🏷️ You now go by **${match.emoji} ${match.text}**.`);
+        }
+
+        const notice = takeNicknameNotice(interaction.user.id);
+        const active = getActiveNickname(character);
+        if (!list.length) {
+            return interaction.reply(`${notice}🏷️ **${character.name}'s Nicknames**\n\nNone yet — nicknames are earned automatically by great deeds:\n• 🪐 **Destroy a planet** (or a major location) → the villain ladder\n• 🌟 **Save a planet** from a canon action → the hero ladder\n• 🌱 **Plant / fell a Tree of Might**\n• 🏋️ Start a **training frenzy**\n• 💰 Declare a **bounty**\n• 😈 / 😇 Reach extremes of **evil or heroic alignment** (500 / 2,000 / 10,000 / 50,000)`);
+        }
+        let text = `${notice}🏷️ **${character.name}'s Nicknames**\n`;
+        text += `\nCurrently going by: **${active ? `${active.emoji} ${active.text}` : 'None'}**\n\n`;
+        text += list.map(n => `${n.emoji} **${n.text}**${active && active.id === n.id ? ' ⬅️' : ''}`).join('\n');
+        text += '\n\n*Use `/nickname set:<name>` to change it (`set:none` to clear).*';
+        return interaction.reply(clampMessage(text));
     }
     if (interaction.commandName === "rest"){
         const character = characterManager.getCharacter(interaction.user.id);
@@ -14404,7 +21998,7 @@ async function handleInteraction(interaction) {
         if ((character.restCharges || 0) < 1) {
             const now = Date.now();
             const pod = character.healingPod === true && !hasActiveShell(character);
-            const intervalMs = pod ? 7.5 * 60000 : 30 * 60000; // 1 charge per 7.5 min (pod) or 30 min
+            const intervalMs = getRestChargeIntervalMs(character); // Healing Pod halved + Med Bay bonus
             const last = character.lastRestChargeTime || now;
             const elapsed = Math.max(0, now - last);
             const remainingMs = Math.max(0, intervalMs - elapsed);
@@ -14426,11 +22020,18 @@ async function handleInteraction(interaction) {
         const restModBonus = homeRestBonus + shellRestBonus;
         // Burnout (Hunter of Legend): resting is almost entirely useless for healing HP outside midnight.
         const isBurnout = character.mutation === 'Hunter of Legend';
-        const hpHeal = isBurnout ? 0 : Math.max(20, Math.floor((character.maxHP || 1) * Math.min(20, getRandomInt(20) + restModBonus) / 100)) + 12;
-        let kiHeal = Math.max(20, Math.floor((character.maxKi || 1) * Math.min(20, getRandomInt(20) + restModBonus) / 100)) + 12;
+        // One shared short-rest roll (percent of max + the flat base) for HP, Ki and fatigue.
+        const restRoll = rollRestRecovery(character.maxHP, character.maxKi, restModBonus);
+        let hpHeal = isBurnout ? 0 : restRoll.hpHeal;
+        let kiHeal = restRoll.kiHeal;
+        // Sphinxian "Lazy": rest benefits are doubled.
+        if (character.race === 'Sphinxian') {
+            hpHeal = Math.floor(hpHeal * 2);
+            kiHeal = Math.floor(kiHeal * 2);
+        }
         // Zenkai exhaustion halves Ki recovery for 24h.
         if ((character.zenkaiExhaustedUntil || 0) > Date.now()) kiHeal = Math.floor(kiHeal / 2);
-        const fatigueReduction = getRandomInt(15) + 20 + restModBonus;
+        const fatigueReduction = restRoll.fatigueReduction;
 
         const oldHP = character.currentHP || 0;
         const oldKi = character.currentKi || 0;
@@ -14459,10 +22060,11 @@ async function handleInteraction(interaction) {
         text += takeZenkaiNotice(interaction.user.id);
         text += takeBirthNotice(interaction.user.id);
 
-        // Companions rest when you rest: they recover fatigue once too tired, using a rest charge.
+        // Companions rest when you rest: they recover the same amount you just did, using a rest
+        // charge of their own (once they're tired enough or badly hurt to need it).
         if (Array.isArray(character.companions) && character.companions.length > 0) {
             let companionRestText = '';
-            character.companions.forEach(cmp => { companionRestText += companionRestIfNeeded(cmp); });
+            character.companions.forEach(cmp => { companionRestText += companionRestIfNeeded(cmp, character); });
             characterManager.updateCharacter(interaction.user.id, character.id, { companions: character.companions });
             if (companionRestText) text += `\n\n${companionRestText}`;
         }
@@ -14519,6 +22121,14 @@ async function handleInteraction(interaction) {
 
         return interaction.reply(`❌ Unknown store action.`);
     }
+    if (interaction.commandName === 'base') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) {
+            return interaction.reply('You need a character to use your base! Use `/character-create` to make one.');
+        }
+        const view = openBaseHub(interaction, character);
+        return interaction.reply({ content: view.content, components: view.components });
+    }
     if (interaction.commandName === 'smith') {
         const character = characterManager.getCharacter(interaction.user.id);
         if (!character) {
@@ -14546,11 +22156,15 @@ async function handleInteraction(interaction) {
             const take = Math.min(have, amount);
             if (take <= 0) return interaction.reply(`❌ You don't have **${itemName}**!`);
             removeInventoryItems(inventory, itemName, take);
-            pushStackedItem(inventory, ingot, take);
+            // A Workshop facility squeezes extra ingots out of the same ore.
+            const smeltPct = getBaseBonuses(character).smeltBonusPct || 0;
+            const bonusIngots = applySmeltBonus(take, smeltPct);
+            pushStackedItem(inventory, ingot, take + bonusIngots);
             const smeltGain = smithingProficiencyGain(getSmithingProficiency(character));
             const smeltProf = Math.min(SMITHING_PROFICIENCY_MAX, getSmithingProficiency(character) + smeltGain);
             characterManager.updateCharacter(interaction.user.id, character.id, { smithingProficiency: smeltProf, inventory });
-            return interaction.reply(`🔥 **${character.name}** smelted **${itemName} ×${take}** into **${ingot} ×${take}**!\n\n🛠️ **+${smeltGain} Smithing Proficiency** (total **${smeltProf}**).\n\nUse \`/smith action:forge item:${ingot}\` to forge something.`);
+            const bonusText = bonusIngots > 0 ? `\n🏭 **Workshop** (Lv${baseSystem.getFacilityLevel(character, 'workshop')}): **+${bonusIngots} bonus ingot${bonusIngots === 1 ? '' : 's'}** (+${smeltPct}% yield)!` : '';
+            return interaction.reply(`🔥 **${character.name}** smelted **${itemName} ×${take}** into **${ingot} ×${take + bonusIngots}**!${bonusText}\n\n🛠️ **+${smeltGain} Smithing Proficiency** (total **${smeltProf}**).\n\nUse \`/smith action:forge item:${ingot}\` to forge something.`);
         }
 
         if (action === 'forge') {
@@ -14560,6 +22174,11 @@ async function handleInteraction(interaction) {
             const have = countInventoryItem(inventory, itemName);
             if (have <= 0) return interaction.reply(`❌ You don't have **${itemName}**!`);
             if (intStat < 5) return interaction.reply(`❌ Forging requires **INT 5+** (you have **${intStat}**).`);
+            // The forge needs fuel: every item forged burns Coal (config `forgeCoalCost`).
+            const coalHave = countInventoryItem(inventory, 'Coal');
+            if (coalHave < FORGE_COAL_COST) {
+                return interaction.reply(`❌ The forge burns **Coal ×${FORGE_COAL_COST}** as fuel per item — you have **${coalHave}**. Mine more with \`/mine\`!`);
+            }
 
             // Weapon?
             if (type === 'Power Pole') {
@@ -14568,6 +22187,7 @@ async function handleInteraction(interaction) {
             if (WEAPON_STATS[type]) {
                 const item = forgeWeapon(character, itemName, type);
                 removeInventoryItems(inventory, itemName, 1);
+                removeInventoryItems(inventory, 'Coal', FORGE_COAL_COST);
                 inventory.push(item);
                 const wpGain = smithingProficiencyGain(getSmithingProficiency(character));
                 const wpProf = Math.min(SMITHING_PROFICIENCY_MAX, getSmithingProficiency(character) + wpGain);
@@ -14577,7 +22197,7 @@ async function handleInteraction(interaction) {
                 if (item.weaponSpiDmgPct) spareW.push(`**+${item.weaponSpiDmgPct}% SPI mod** to damage`);
                 if (item.weaponWilDmgPct) spareW.push(`**+${item.weaponWilDmgPct}% WIL mod** to damage`);
                 const wBuffs = spareW.length ? `\n💪 While wielded: ${spareW.join(' and ')}\n` : '';
-                return interaction.reply(`⚒️ **${character.name}** forged **${item.name}**!\n🛠️ **+${wpGain} Smithing Proficiency** (total **${wpProf}**).\n\n🎯 Attack mod: **+${item.weaponAttackMod}**\n😅 Inhibiting DEX: **-${item.weaponDexPenalty}**\n${item.weaponBypass ? '💥 Bypasses armor!\n' : ''}${item.weaponDamageMode && item.weaponDamageMode !== 'str' ? `📐 Damage mode: ${item.weaponDamageMode}\n` : ''}${wBuffs}\nEquip it with \`/equip\`.`);
+                return interaction.reply(`⚒️ **${character.name}** forged **${item.name}**!\n🛠️ **+${wpGain} Smithing Proficiency** (total **${wpProf}**).\n🔥 Fuel: **Coal ×${FORGE_COAL_COST}** burned.\n\n🎯 Attack mod: **+${item.weaponAttackMod}** (multiplies total damage by **×${(1 + (item.weaponAtkPct || 0) / 100).toFixed(2)}**)\n😅 Inhibiting DEX: **-${item.weaponDexPenalty}** (and **-${item.weaponDexPct || 0}%** of DEX mod)\n${item.weaponBypass ? '💥 Bypasses armor!\n' : ''}${item.weaponBleedOnHit ? '🩸 Causes bleed on hit!\n' : ''}${item.weaponCritRangeBonus ? '🎯 +1 crit range (NAT 19-20)!\n' : ''}${item.weaponPunchStrBonus ? `💪 +${item.weaponPunchStrBonus} STR bonus to strikes!\n` : ''}${item.weaponDamageMode && item.weaponDamageMode !== 'str' ? `📐 Damage mode: ${item.weaponDamageMode}\n` : ''}${wBuffs}\nEquip it with \`/equip\`.`);
             }
 
             // Armor?
@@ -14585,6 +22205,7 @@ async function handleInteraction(interaction) {
                 if (!countInventoryItem(inventory, 'Armor Mold')) return interaction.reply('❌ You need an **Armor Mold** to shape armor.');
                 const item = forgeArmor(character, itemName, type);
                 removeInventoryItems(inventory, itemName, 1);
+                removeInventoryItems(inventory, 'Coal', FORGE_COAL_COST);
                 inventory.push(item);
                 const apGain = smithingProficiencyGain(getSmithingProficiency(character));
                 const apProf = Math.min(SMITHING_PROFICIENCY_MAX, getSmithingProficiency(character) + apGain);
@@ -14593,7 +22214,7 @@ async function handleInteraction(interaction) {
                 if (item.armorWilBonus) spareA.push(`**+${item.armorWilBonus} WIL**`);
                 if (item.armorSpiBonus) spareA.push(`**+${item.armorSpiBonus} SPI**`);
                 const aBuffs = spareA.length ? `\n💪 While worn: ${spareA.join(' and ')}\n` : '';
-                return interaction.reply(`🛡️ **${character.name}** forged **${item.name}**!\n🛠️ **+${apGain} Smithing Proficiency** (total **${apProf}**).\n\n💥 Damage reduction: **${item.armorReduction}%**\n😅 Defending DEX reduction: **${item.armorDexReduction}%**\n🔩 Durability: **${item.armorDurability}**${aBuffs}\nEquip it with \`/equip\`.`);
+                return interaction.reply(`🛡️ **${character.name}** forged **${item.name}**!\n🛠️ **+${apGain} Smithing Proficiency** (total **${apProf}**).\n🔥 Fuel: **Coal ×${FORGE_COAL_COST}** burned.\n\n💥 Damage reduction: **${item.armorReduction}%**\n😅 Defending DEX reduction: **${item.armorDexReduction}%**\n🔩 Durability: **${item.armorDurability}**${aBuffs}\nEquip it with \`/equip\`.`);
             }
 
             return interaction.reply('❌ Pick a valid **type**: a weapon type (e.g. `Sword`, `Katana`, `Greatsword`) or an armor weight (Light/Medium/Heavy).');
@@ -14668,7 +22289,7 @@ async function handleInteraction(interaction) {
         }
 
         // Search limit: 7 searches per new area, resets every midnight (Trello Searching card)
-        const today = new Date().toDateString();
+        const today = centralDateString();
         const areaKey = `${character.location || 'Earth'}-${character.space || 1}`;
         if (character.searchResetDate !== today) {
             character.searchesUsed = 0;
@@ -14682,11 +22303,12 @@ async function handleInteraction(interaction) {
             return interaction.reply(`❌ You've already searched this area **${SEARCH_LIMIT_PER_AREA} times**! The limit resets every midnight, or travel to a new area.`);
         }
 
-        // Searching takes 3 Ki
-        if ((character.currentKi || 0) < SEARCH_KI_COST) {
-            return interaction.reply(`❌ Searching takes **${SEARCH_KI_COST} Ki**, but you only have **${character.currentKi || 0}**!`);
+        // Searching takes 3% of max Ki + a flat base.
+        const searchKiCost = Math.max(1, Math.round((character.maxKi || 1) * MOVEMENT_KI_PCT) + SEARCH_KI_COST);
+        if ((character.currentKi || 0) < searchKiCost) {
+            return interaction.reply(`❌ Searching takes **${searchKiCost} Ki**, but you only have **${character.currentKi || 0}**!`);
         }
-        characterManager.modifyKi(interaction.user.id, character.id, -SEARCH_KI_COST);
+        characterManager.modifyKi(interaction.user.id, character.id, -searchKiCost);
         character.searchesUsed = (character.searchesUsed || 0) + 1;
         characterManager.updateCharacter(interaction.user.id, character.id, {
             searchesUsed: character.searchesUsed,
@@ -14717,19 +22339,21 @@ async function handleInteraction(interaction) {
         if (specialName) {
             const npc = getSpecialAreaNpc(character.location || 'Earth', character.space || 1);
             if (npc && (character.npcQuestCooldownUntil || 0) <= Date.now() && getRandomInt(100) <= 50) {
-                return offerSpecialAreaNpc(interaction, character, npc, specialName, text);
+                return offerSpecialAreaNpc(interaction, character, npc, specialName, text, character.location || 'Earth', character.space || 1);
             }
         }
 
         // DRAGON BALL / RADAR: with a Dragon Radar, a d70-99 search on a slot with a ball finds
         // it (at NAT 100 you roll the legendary item table instead).
         const dragonAreaKey = `${character.location || 'Earth'}-${character.space || 1}`;
-        if (dragonBallAvailableAt(dragonAreaKey) && ownsItem(character, 'Dragon Radar') && natRoll >= 70 && natRoll < 100) {
+        if ((dragonBallAvailableAt(dragonAreaKey) || dragonBallAvailableAt(dragonAreaKey, 'porunga'))
+            && ownsItem(character, 'Dragon Radar') && natRoll >= 70 && natRoll < 100) {
             const found = findDragonBallFor(interaction, character, dragonAreaKey);
             if (found) {
-                const count = getDragonBallCount(interaction.user.id);
-                text += `🐉 **You found a DRAGON BALL!** (${count}/${dragonBallState.length})`;
-                if (count >= dragonBallState.length) text += `\n\n⭐ All seven are yours — use \`/wish\` to summon Shenron!`;
+                const state = getDragonState(found.set);
+                const count = getDragonBallCount(interaction.user.id, found.set);
+                text += `${found.emoji} **You found a ${found.ballName}!** (${count}/${state.length})`;
+                if (count >= state.length) text += `\n\n⭐ All seven are yours — use \`/wish\` to summon ${found.dragonName}!`;
                 return interaction.reply(text);
             }
         }
@@ -14746,9 +22370,10 @@ async function handleInteraction(interaction) {
                 // A Dragon Ball found at NAT 100 goes through the state tracker (not inventory).
                 const found = findDragonBallFor(interaction, character, dragonAreaKey);
                 if (found) {
-                    const count = getDragonBallCount(interaction.user.id);
-                    text += `🐉 **You found a DRAGON BALL!** (${count}/${dragonBallState.length})`;
-                    if (count >= dragonBallState.length) text += `\n\n⭐ All seven are yours — use \`/wish\` to summon Shenron!`;
+                    const state = getDragonState(found.set);
+                    const count = getDragonBallCount(interaction.user.id, found.set);
+                    text += `${found.emoji} **You found a ${found.ballName}!** (${count}/${state.length})`;
+                    if (count >= state.length) text += `\n\n⭐ All seven are yours — use \`/wish\` to summon ${found.dragonName}!`;
                     return interaction.reply(text);
                 }
             }
@@ -14765,25 +22390,20 @@ async function handleInteraction(interaction) {
             return interaction.reply(text);
         }
 
-        // SAGA MISSION: 93-97 (Earth only — elsewhere roll a d2)
+        // SAGA MISSION: 93-97 (findable anywhere — no location restriction)
         if (searchNumber >= 93) {
-            if ((character.location || 'Earth').toLowerCase() !== 'earth') {
-                text += `🌟 Story quests can only be found on **Earth**! Rolling a d2 instead...\n\n`;
-                const fallback = getRandomInt(2);
-                if (fallback === 1) {
-                    return offerMentor(interaction, character, text);
-                }
-                text += `(d2 = 2) A **Challenging Quest** appears instead!\n\n`;
-                return offerQuest(interaction, character, 'hard', text);
-            }
             text += `🌟 Initiated a **SAGA MISSION**!!!\n\n`;
-            text += `⚠️ Story quests scale with the global saga. Reward on victory: **(d90+30×saga) stat points** and **500d100 zeni**!\n\n`;
-            const saga = globalSaga;
+            const saga = getEffectiveSaga();
+            // Show the payout the quest will actually grant (stat points scale to each survivor's
+            // own power level) instead of the old stale "(d90+30×saga) stat points" formula.
+            text += `⚠️ Story quests grow with the global saga (now **saga ${saga}**). ${describeMissionReward('saga', character.powerLevel).trim()}\n\n`;
             const counts = getAlignmentEnemyCounts('saga');
             const presets = {
                 positive: scaleEnemyStats(generateEnemiesForMission(character.powerLevel, 'very hard', counts.positive, character.location || 'Earth', 'positive', true), saga),
                 negative: scaleEnemyStats(generateEnemiesForMission(character.powerLevel, 'very hard', counts.negative, character.location || 'Earth', 'negative', true), saga)
             };
+            // Party scaling happens at generation (companions only nudge the difficulty).
+            scalePresetsForParty(presets, buildMissionPartyForScaling(interaction.user.id, character), character.powerLevel);
             pendingMissions.set(interaction.user.id, {
                 presets,
                 selectedAlignment: 'positive',
@@ -14791,7 +22411,7 @@ async function handleInteraction(interaction) {
                 channelId: interaction.channelId,
                 joinedUsers: []
             });
-            text = buildMissionPreviewText('Saga Mission', presets, 'positive', text);
+            text = buildMissionPreviewText('Saga Mission', presets, 'positive', text, { missionType: 'saga', powerLevel: character.powerLevel });
             const row = missionButtons('saga', interaction.user.id, 'positive');
             return interaction.reply({ content: text, components: [row] });
         }
@@ -14871,6 +22491,10 @@ async function handleInteraction(interaction) {
 
         // Enemy stats scale continuously with the player's power level (see ENEMY_SCALING).
         ({ roll, mod } = getEnemyStatRollMod(powerlevel, type));
+        // Real enemies also get the saga multiplier applied on top of the base roll — include it
+        // here so the admin preview matches what a mission would actually generate.
+        const previewSagaMult = getEffectiveEnemySagaMult(powerlevel, type);
+        const rollEnemyStat = () => Math.round((getRandomInt(roll) + mod) * previewSagaMult);
         style = type.toLowerCase() !== 'casual';
         if (type.toLowerCase() === 'very hard') {
             amount = getRandomInt(2) + 1;
@@ -14878,31 +22502,31 @@ async function handleInteraction(interaction) {
 
         for(let i = 0; i < amount; i++){
             if(i === 0){
-                enemy1.push('**STR:** '+(getRandomInt(roll)+mod));
-                enemy1.push('**DEX:** '+(getRandomInt(roll)+mod));
-                enemy1.push('**CON:** '+(getRandomInt(roll)+mod));
-                enemy1.push('**WIL:** '+(getRandomInt(roll)+mod));
-                enemy1.push('**SPI:** '+(getRandomInt(roll)+mod));
+                enemy1.push('**STR:** '+rollEnemyStat());
+                enemy1.push('**DEX:** '+rollEnemyStat());
+                enemy1.push('**CON:** '+rollEnemyStat());
+                enemy1.push('**WIL:** '+rollEnemyStat());
+                enemy1.push('**SPI:** '+rollEnemyStat());
                 if (style){
                     enemy1.push('**STYLE:** '+styles[getRandomInt(styles.length)-1]);
                 }
             }
             if(i === 1){
-                enemy2.push('**STR:** '+(getRandomInt(roll)+mod));
-                enemy2.push('**DEX:** '+(getRandomInt(roll)+mod));
-                enemy2.push('**CON:** '+(getRandomInt(roll)+mod));
-                enemy2.push('**WIL:** '+(getRandomInt(roll)+mod));
-                enemy2.push('**SPI:** '+(getRandomInt(roll)+mod));
+                enemy2.push('**STR:** '+rollEnemyStat());
+                enemy2.push('**DEX:** '+rollEnemyStat());
+                enemy2.push('**CON:** '+rollEnemyStat());
+                enemy2.push('**WIL:** '+rollEnemyStat());
+                enemy2.push('**SPI:** '+rollEnemyStat());
                 if (style){
                     enemy2.push('**STYLE:** '+styles[getRandomInt(styles.length)-1]);
                 }
             }
             if(i === 2){
-                enemy3.push('**STR:** '+(getRandomInt(roll)+mod));
-                enemy3.push('**DEX:** '+(getRandomInt(roll)+mod));
-                enemy3.push('**CON:** '+(getRandomInt(roll)+mod));
-                enemy3.push('**WIL:** '+(getRandomInt(roll)+mod));
-                enemy3.push('**SPI:** '+(getRandomInt(roll)+mod));
+                enemy3.push('**STR:** '+rollEnemyStat());
+                enemy3.push('**DEX:** '+rollEnemyStat());
+                enemy3.push('**CON:** '+rollEnemyStat());
+                enemy3.push('**WIL:** '+rollEnemyStat());
+                enemy3.push('**SPI:** '+rollEnemyStat());
                 if (style){
                     enemy3.push('**STYLE:** '+styles[getRandomInt(styles.length)-1]);
                 }
@@ -15018,7 +22642,7 @@ async function handleInteraction(interaction) {
             if (p.isDead) statusIcons.push('💀 DEAD');
             else if (p.isIncapacitated) statusIcons.push('😵 INCAPACITATED');
             
-            message += `\n**${p.username}**\n`;
+            message += `\n**${p.username}**${p.race ? ` (${p.race})` : ''}\n`;
             message += `HP: ${p.hp} | Ki: ${p.ki} | Fatigue: ${p.fatigue}%\n`;
             
             if (statusIcons.length > 0) {
@@ -15043,62 +22667,68 @@ async function handleInteraction(interaction) {
     }
 
     if (interaction.commandName === 'battle-end') {
-        // Admin-only testing command
+        // Admin-only testing command. With no `user` option it ends the whole battle; with one it
+        // removes just that combatant (and the fight carries on properly without them).
         if (interaction.memberPermissions === null || !interaction.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
             return interaction.reply({ content: '❌ This command is admin-only (for testing).', ephemeral: true });
         }
 
-        const targetUser = interaction.options.getUser('user') || interaction.user;
-        const battle = battleManager.getBattleForUser(targetUser.id);
-
+        const targetUser = interaction.options.getUser('user');
+        // Battles are per-player, so one channel can hold several at once — resolve the intended
+        // battle by the target user, then the admin, then (only if it's unambiguous) the channel.
+        let battle = targetUser
+            ? battleManager.getBattleForUser(targetUser.id)
+            : battleManager.getBattleForUser(interaction.user.id);
+        if (!battle && !targetUser) {
+            const inChannel = battleManager.getActiveBattles().filter(b => b.channelId === interaction.channelId);
+            if (inChannel.length === 1) battle = inChannel[0];
+            else if (inChannel.length > 1) {
+                return interaction.reply({
+                    content: `❌ There are **${inChannel.length}** battles in this channel — pass the \`user\` option to pick which one to end.`,
+                    ephemeral: true
+                });
+            }
+        }
         if (!battle) {
-            return interaction.reply(targetUser.id === interaction.user.id ? 'You are not in a battle!' : `❌ **${targetUser.username}** is not in a battle!`);
+            return interaction.reply({
+                content: targetUser
+                    ? `❌ **${targetUser.username}** is not in a battle!`
+                    : '❌ You are not in a battle, and there is no single battle in this channel to end. Pass the `user` option.',
+                ephemeral: true
+            });
         }
 
-        const participant = battle.turnOrder.find(p => p.userId === targetUser.id);
-        if (participant) {
-            participant.isDead = true;
-            participant.currentHP = 0;
+        // Capture the battle message id BEFORE anything is torn down — ending the battle clears
+        // battleMessages, and the final edit has to target the original message.
+        const endMsgId = battleMessages.get(battle.id);
 
+        // ---- Remove a single combatant, leaving the battle running ----
+        if (targetUser) {
+            const participant = battle.turnOrder.find(p => p.userId === targetUser.id);
+            if (!participant) {
+                return interaction.reply({ content: `❌ **${targetUser.username}** isn't taking part in that battle!`, ephemeral: true });
+            }
             const current = battle.getCurrentTurn();
-            if (current && current.userId === targetUser.id) {
-                battle.advance();
+            const wasCurrent = !!current && current.userId === targetUser.id;
+            markParticipantOut(battle, participant);
+            // Run the aftermath through the normal pipeline (NPC turns, outcome, re-render) instead
+            // of dropping them dead into the turn order — otherwise the battle deadlocks on an
+            // unreachable NPC turn and the participants are left in a fight they can't end.
+            const result = await continueAfterAdminRemoval(battle, endMsgId, wasCurrent);
+            if (result.over) {
+                return interaction.reply(`🚫 **${targetUser.username}** was removed from the battle.\n\n${result.content}`);
             }
+            return interaction.reply(`🚫 **${targetUser.username}** was removed from the battle — it continues without them.`);
         }
 
-        const alivePlayers = battle.turnOrder.filter(p => !isNPC(p) && !p.isDead && !p.isIncapacitated);
-
-        // Battle over now (or no players left to fight)?
-        if (battle.isBattleOver() || alivePlayers.length === 0) {
-            const alive = battle.turnOrder.filter(p => !p.isDead && !p.isIncapacitated);
-            battleManager.endBattle(battle.id);
-            battleMessages.delete(battle.id);
-            activeMissions.delete(battle.id);
-            activeMentorFights.delete(battle.id);
-            activeHunts.delete(battle.id);
-            const winnerText = alive.length > 0 ? `**${alive[0].username}** wins!` : 'Everyone is down.';
-            return interaction.reply(`🚫 **${targetUser.username}** was removed from the battle.\n\n🏆 ${winnerText}`);
-        }
-
-        // Re-render the battle message
-        const messageId = battleMessages.get(battle.id);
-        if (messageId) {
-            try {
-                const channel = client.channels.cache.get(battle.channelId);
-                const msg = channel ? await channel.messages.fetch(messageId) : null;
-                if (msg) {
-                    const newCurrent = battle.getCurrentTurn();
-                    const viewer = newCurrent && !isNPC(newCurrent) ? { id: newCurrent.userId } : { id: 'none' };
-                    await msg.edit({
-                        content: buildBattleContent(battle, `🚫 **${targetUser.username}** was removed from the battle by an admin.`),
-                        components: buildTurnComponents(battle, viewer)
-                    });
-                }
-            } catch (error) {
-                // Battle message may already be gone
-            }
-        }
-        return interaction.reply(`🚫 **${targetUser.username}** was removed from the battle.`);
+        // ---- End the whole battle ----
+        const released = battle.turnOrder.filter(p => !isNPC(p) && !p.isAlly).map(p => p.username);
+        abortBattle(battle);
+        const notice = `🚫 **BATTLE ENDED** by an administrator.`
+            + (released.length > 0 ? `\nReleased: **${released.join('**, **')}**` : '')
+            + `\n*(no rewards, no injuries — the fight was stopped, not won)*`;
+        await editBattleMessage(battle, notice, [], endMsgId);
+        return interaction.reply(notice);
     }
 
     if (interaction.commandName === 'duel') {
@@ -15169,6 +22799,7 @@ async function handleInteraction(interaction) {
                 fatigue: getTotalFatigue(challenger),
                 stats: challengerBattleStats.stats,
                 modBonus: challengerBattleStats.modBonus,
+                statMultipliers: challengerBattleStats.statMultipliers,
                 kiAppDamage: challengerBattleStats.kiAppDamage,
                 ...kiAppParticipantFields(challengerBattleStats),
                 ...challengerBattleStats.gear,
@@ -15191,6 +22822,7 @@ async function handleInteraction(interaction) {
                 fatigue: getTotalFatigue(opponentChar),
                 stats: opponentBattleStats.stats,
                 modBonus: opponentBattleStats.modBonus,
+                statMultipliers: opponentBattleStats.statMultipliers,
                 kiAppDamage: opponentBattleStats.kiAppDamage,
                 ...kiAppParticipantFields(opponentBattleStats),
                 ...opponentBattleStats.gear,
@@ -15224,34 +22856,6 @@ async function handleInteraction(interaction) {
         });
         const reply = cb.resource ? cb.resource.message : null;
         battleMessages.set(battle.id, reply ? reply.id : null);
-    }
-
-    // Build a player battle participant (used by duels, spars, companion spars).
-    function buildPlayerBattleParticipant(userId, character) {
-        const bs = applyFormToStats(character);
-        return {
-            userId,
-            username: character.name,
-            race: character.race,
-            mutation: character.mutation || null,
-            hp: character.maxHP,
-            ki: character.maxKi,
-            currentHP: Math.max(character.currentHP, 0),
-            currentKi: character.currentKi || 0,
-            fatigue: getTotalFatigue(character),
-            stats: bs.stats,
-            modBonus: bs.modBonus,
-            kiAppDamage: bs.kiAppDamage,
-            ...kiAppParticipantFields(bs),
-            ...bs.gear,
-            talismanActive: bs.talismanActive,
-            kiRegen: getBattleKiRegen(character),
-            lssjActive: character.activeForm === 'Legendary Super Saiyan',
-            royalClass: character.class === 'Royal Class',
-            fightingStyle: character.fightingStyle || null,
-            pseudoImmortality: character.pseudoImmortality === true,
-            zenkaiExhausted: (character.zenkaiExhaustedUntil || 0) > Date.now()
-        };
     }
 
     // A rival "call-out": the active rival steps out mid-search for a 1v1 battle.
@@ -15371,8 +22975,12 @@ async function handleInteraction(interaction) {
             return { error: `❌ **${character.name}** must be at **full HP** to spar with their companion! (${Math.max(0, character.currentHP || 0)}/${character.maxHP || 1}) Rest first.` };
         }
         const cStats = getCompanionBattleStats(companion, character);
-        const maxHP = calculateHP(cStats.con, companion.race || null);
-        const maxKi = calculateKi(cStats.spi, companion.race || null);
+        const companionMult = companion.statMultipliers || {};
+        const maxHP = calculateHP(cStats.con, companion.race || null, companionMult, companion);
+        const maxKi = calculateKi(cStats.spi, companion.race || null, companionMult, companion);
+        // A companion sparring its owner keeps its racial stat mods too.
+        const sparModBonus = getRacialCombatMods(companion.race || null, companion);
+        sparModBonus.dex = (sparModBonus.dex || 0) - applyWeaponProficiencyReduction(companion.race, companion.fightingStyle, parseWeaponType(companion.weapon || ''), Number(companion.weaponDexPenalty) || 0);
         const companionParticipant = {
             userId: `companion_spar_${companion.id}`,
             username: companion.name,
@@ -15385,7 +22993,8 @@ async function handleInteraction(interaction) {
             ki: maxKi,
             fatigue: 0,
             stats: cStats,
-            modBonus: applyPregnancyModPenalty({ dex: -applyWeaponProficiencyReduction(companion.race, companion.fightingStyle, parseWeaponType(companion.weapon || ''), Number(companion.weaponDexPenalty) || 0) }, companion, character),
+            statMultipliers: companionMult,
+            modBonus: applyPregnancyModPenalty(sparModBonus, companion, character),
             kiAppDamage: companion.kiAppDamage || 0,
             kiEfficiency: false,
             techniques: getCompanionTechniques(companion),
@@ -15393,6 +23002,8 @@ async function handleInteraction(interaction) {
             weapon: companion.weapon || null,
             weaponType: parseWeaponType(companion.weapon || ''),
             weaponAttackMod: companion.weaponAttackMod || 0,
+            weaponAtkPct: companion.weaponAtkPct || 0,
+            weaponDexPct: companion.weaponDexPct || 0,
             weaponDamageMode: companion.weaponDamageMode || null,
             weaponBypass: companion.weaponBypass || false,
             weaponConBonus: companion.weaponConBonus || 0,
@@ -15526,8 +23137,7 @@ async function handleInteraction(interaction) {
                 return interaction.reply('🚀 You\'re not currently traveling!');
             }
             // Stop any live travel countdown.
-            const existing = travelCountdowns.get(interaction.user.id);
-            if (existing) { clearInterval(existing.timer); travelCountdowns.delete(interaction.user.id); }
+            travelCountdowns.delete(interaction.user.id);
             const destText = character.transitDestination
                 ? `${character.transitDestination.location} - Space ${character.transitDestination.space}`
                 : 'an unknown destination';
@@ -15590,6 +23200,38 @@ async function handleInteraction(interaction) {
             target = homeSpace;
             isAdjacent = Math.abs(target - currentSpace) === 1;
         } else if (destination) {
+            // Snake Way ⇄ King Kai's Planet: the only way onto King Kai's Planet. It is a
+            // cross-planet trip (Snake Way lives on Otherworld), so it is handled before the
+            // normal same-planet named-location lookup below.
+            const route = resolveSnakeWayRoute(character, destination);
+            if (route && route.error) return interaction.reply(route.error);
+            if (route) {
+                if (getTotalFatigue(character) >= 90) {
+                    return interaction.reply(`😫 **${character.name}** is too exhausted to run Snake Way! Rest first.`);
+                }
+                // DEX decides the run: 5 minutes at the cap, up to 5 hours when DEX is low.
+                const dex = (character.stats && character.stats.dex) || 0;
+                const minutes = getSnakeWayTravelMinutes(dex);
+                const durationMs = getSnakeWayTravelMs(character);
+                const flyEffR = getFlyMasteryEffects(character);
+                const kiCostR = (flyEffR.travelFree || ownsItem(character, 'Magic Carpet')) ? 0 : Math.max(1, Math.round((character.maxKi || 1) * MOVEMENT_KI_PCT) + 8 - flyEffR.travelDiscount);
+                if ((character.currentKi || 0) < kiCostR) {
+                    return interaction.reply(`❌ Traveling to **${route.to.name}** costs **${kiCostR} Ki**, but you only have **${character.currentKi || 0}**!`);
+                }
+                characterManager.modifyKi(interaction.user.id, character.id, -kiCostR);
+                scheduleTravel(interaction.user.id, character, route.to.location, route.to.space, 0, 1, durationMs);
+                const destPlayers = formatPlayersAtSlot(route.to.location, route.to.space);
+                const routeHeader = `🐍 **${character.name}** sets off from **${route.fromName}** to **${route.to.name}**!`;
+                const baseContent = `${routeHeader}\n**DEX ${dex.toLocaleString()}** → the trip takes **${formatDuration(durationMs)}** (fastest possible: ${KING_KAI_MIN_MINUTES} min at ${KING_KAI_DEX_CAP.toLocaleString()} DEX, slowest: ${formatDuration(KING_KAI_MAX_MINUTES * 60000)}).\n⚡ Ki used: **${kiCostR}**\n\n${destPlayers}`;
+                const cbR = await interaction.reply({
+                    content: baseContent,
+                    withResponse: true
+                });
+                const replyR = cbR.resource ? cbR.resource.message : null;
+                startTravelCountdown(interaction.user.id, interaction.channelId, replyR ? replyR.id : null, baseContent, route.to.name, durationMs);
+                return;
+            }
+
             // Travel to a named major location the character has visited before (fast travel).
             const slots = SPECIAL_SLOTS[planet];
             const specialEntry = slots
@@ -15637,7 +23279,7 @@ async function handleInteraction(interaction) {
         // The Magic Carpet makes travel free.
         const flyEff = getFlyMasteryEffects(character);
         const hasCarpet = ownsItem(character, 'Magic Carpet');
-        const kiCost = (flyEff.travelFree || hasCarpet) ? 0 : Math.max(1, (isAdjacent ? 4 : 8) - flyEff.travelDiscount);
+        const kiCost = (flyEff.travelFree || hasCarpet) ? 0 : Math.max(1, Math.round((character.maxKi || 1) * MOVEMENT_KI_PCT) + (isAdjacent ? 4 : 8) - flyEff.travelDiscount);
         if ((character.currentKi || 0) < kiCost) {
             return interaction.reply(`❌ Traveling to ${isAdjacent ? 'an adjacent space' : 'a non-adjacent space'} costs **${kiCost} Ki**, but you only have **${character.currentKi || 0}**!`);
         }
@@ -15648,7 +23290,7 @@ async function handleInteraction(interaction) {
         const durationMs = scheduleTravel(interaction.user.id, character, planet, target, distance, speed);
 
         const specialName = getSpecialSlotName(planet, target);
-        const destinationText = specialName ? `**${specialName}** (Space ${target})` : `**Space ${target}**`;
+        const destinationText = specialName ? `**${specialName}** (Space ${target})${caveMarker(planet, target)}` : `**Space ${target}**${caveMarker(planet, target)}`;
         const fromText = `Space ${currentSpace}`;
         const playersAtDest = formatPlayersAtSlot(planet, target);
         const travelHeader = direction
@@ -15714,6 +23356,11 @@ async function handleInteraction(interaction) {
             return interaction.reply(`❌ You are already on **${current}**!`);
         }
 
+        // A destroyed planet can't be traveled to while it's gone.
+        if (isPlanetDestroyed(destination)) {
+            return interaction.reply(`🌋 **${destination}** has been **destroyed**! You can't travel there until it returns (up to **3 days**).`);
+        }
+
         // Space travel requirements: a spaceship, space pod, or flight + space survival
         const ship = hasSpaceship(character);
         const pod = hasSpacePod(character);
@@ -15777,7 +23424,7 @@ async function handleInteraction(interaction) {
 
         const arrivalText = destination === 'Space'
             ? `**Space - Space ${arrival.space}**`
-            : `**${destination}** (Space 1)`;
+            : `**${destination}** (Space 1)${caveMarker(destination, 1)}`;
 
         const playersAtDest = formatPlayersAtSlot(arrival.location, arrival.space);
 
@@ -15894,13 +23541,13 @@ async function handleInteraction(interaction) {
         const city = getCityName(location, space);
 
         if (!city) {
-            return interaction.reply(`❌ You're not in a city! Merchants set up shop in major cities.\n\n**Earth cities:** North City (Space 1), East City (6), Satan City (17), South City (31), West City (45).\n\nUse \`/travel\` to move somewhere new.`);
+            return interaction.reply(`❌ You're not in a city! Merchants set up shop in major cities.\n\n**${location} cities:** ${cityListText(location) || 'none'}.\n\nUse \`/travel\` to move somewhere new.`);
         }
 
         const embed = new EmbedBuilder()
             .setColor(0xF1C40F)
             .setTitle(`🏪 ${city} Merchant`)
-            .setDescription(`📍 ${location} - Space ${space}\n💰 Your zeni: **${(character.zeni || 0).toLocaleString()}**`)
+            .setDescription(`📍 ${location} - Space ${space}${caveMarker(location, space)}\n💰 Your zeni: **${(character.zeni || 0).toLocaleString()}**`)
             .setFooter({ text: 'Use /buy item:<name> to purchase and /sell item:<name> to sell (30% of value). Stock is per city and rerolls daily.' });
 
         const forSaleLines = Object.entries(MERCHANT_PRICES)
@@ -15958,7 +23605,7 @@ async function handleInteraction(interaction) {
         const city = getCityName(location, space);
 
         if (!city) {
-            return interaction.reply(`❌ No merchant here! Merchants only operate in major cities. On Earth: North City (1), East City (6), Satan City (17), South City (31), West City (45).`);
+            return interaction.reply(`❌ No merchant here! Merchants only operate in major cities. On ${location}: ${cityListText(location) || 'none'}.`);
         }
 
         const itemName = interaction.options.getString('item');
@@ -16056,7 +23703,7 @@ async function handleInteraction(interaction) {
     function doGather(interaction, character) {
         if (!character) return 'You need a character to gather resources! Use `/character-create` to make one.';
 
-        const today = new Date().toDateString();
+        const today = centralDateString();
         const areaKey = `${character.location || 'Earth'}-${character.space || 1}`;
         if (character.gatherResetDate !== today) {
             character.gathersUsed = 0;
@@ -16115,7 +23762,7 @@ async function handleInteraction(interaction) {
     function doMine(interaction, character) {
         if (!character) return 'You need a character to mine! Use `/character-create` to make one.';
 
-        const today = new Date().toDateString();
+        const today = centralDateString();
         const areaKey = `${character.location || 'Earth'}-${character.space || 1}`;
         if (character.gatherResetDate !== today) {
             character.gathersUsed = 0;
@@ -16146,8 +23793,11 @@ async function handleInteraction(interaction) {
         const intStat = (character.stats || {}).int || 0;
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
         character.inventory = inventory;
+        // Mining in a cave boosts the roll toward rarer minerals.
+        const caveHere = getCaveAt(character.location, character.space);
+        const caveBonus = caveHere ? CAVE_MINE_BONUS : 0;
         const natRoll = getRandomInt(20); // 1d20
-        const total = natRoll + intStat;
+        const total = natRoll + intStat + caveBonus;
         const ore = mapOreRoll(total);
 
         let durability = typeof character.pickaxeDurability === 'number' ? character.pickaxeDurability : PICKAXE_DURABILITY;
@@ -16174,7 +23824,9 @@ async function handleInteraction(interaction) {
         });
 
         const usesLeft = GATHER_LIMIT_PER_AREA - (character.gathersUsed || 0);
-        return `⛏️ **${character.name}** mines with a **Pickaxe**! (1d20 + ${intStat} INT = **${natRoll} + ${intStat} → ${total}**)\n🔩 Mined **1 ${ore}**!${breakNote}\n\nUses left in this area: **${usesLeft}** (${kiCost} Ki used)`;
+        const rollText = `1d20 + ${intStat} INT${caveBonus ? ` + ${caveBonus} ${CAVE_EMOJI} cave` : ''}`;
+        const rollCalc = `${natRoll} + ${intStat}${caveBonus ? ` + ${caveBonus}` : ''}`;
+        return `⛏️ **${character.name}** mines with a **Pickaxe**! (${rollText} = **${rollCalc} → ${total}**)\n🔩 Mined **1 ${ore}**!${breakNote}\n\nUses left in this area: **${usesLeft}** (${kiCost} Ki used)`;
     }
 
     function buildMineComponents(character) {
@@ -16251,7 +23903,7 @@ async function handleInteraction(interaction) {
         } else {
             message += `**Living presences** (Space → PL):\n`;
             found.forEach(f => {
-                message += `📍 Space ${f.space} — **${f.name}** (⚡ ${f.pl.toLocaleString()} PL)\n`;
+                message += `📍 Space ${f.space} — **${f.name}** (⚡ ${formatPL(f.pl)} PL)\n`;
             });
         }
         message += `\n\n*Cost: ${cost} Ki.*`;
@@ -16305,7 +23957,7 @@ async function handleInteraction(interaction) {
         const before = stats[stat] || 0;
         stats[stat] = before + amount;
 
-        const modifiers = calculateAllModifiers(stats);
+        const modifiers = calculateAllModifiers(stats, character.statMultipliers);
         const vitals = recalcVitals(character, stats);
         const powerLevel = characterManager.calculatePowerLevel({
             ...stats,
@@ -16344,7 +23996,7 @@ async function handleInteraction(interaction) {
         }
 
         // Hunting is limited per area each day (like gathering).
-        const huntToday = new Date().toDateString();
+        const huntToday = centralDateString();
         const huntAreaKey = `${character.location || 'Earth'}-${character.space || 1}`;
         if (character.huntResetDate !== huntToday) {
             character.huntResetDate = huntToday;
@@ -16361,10 +24013,11 @@ async function handleInteraction(interaction) {
         characterManager.updateCharacter(interaction.user.id, character.id, { huntsUsed: character.huntsUsed, huntArea: character.huntArea, huntResetDate: character.huntResetDate });
 
         const animal = rollHuntAnimal();
-        const battle = await startHuntBattle(interaction, character, animal);
         const header = `🏹 **HUNT!** 🏹\n\n🎲 d20 = **${animal.d20}** — a **${animal.emoji} ${animal.name}** appears!`;
+        let battle = null;
 
         try {
+            battle = await startHuntBattle(interaction, character, animal);
             let logText = await resolveNPCTurns(battle, '');
             if (await maybeShowReactionReply(interaction, battle, logText)) return;
 
@@ -16381,12 +24034,24 @@ async function handleInteraction(interaction) {
             const reply = cb.resource ? cb.resource.message : null;
             battleMessages.set(battle.id, reply ? reply.id : null);
         } catch (e) {
-            // If the battle message can't be established, unregister the player so they're
-            // not left "in battle" with a fight they can't see or interact with.
-            clearBattleTurnTimer(battle);
-            battleManager.endBattle(battle.id);
-            activeHunts.delete(battle.id);
-            battleMessages.delete(battle.id);
+            // If the battle can't be established or the message can't be sent, unregister the
+            // player so they're not left "in battle" with a fight they can't see or interact with.
+            if (battle) {
+                clearBattleTurnTimer(battle);
+                battleManager.endBattle(battle.id);
+                activeHunts.delete(battle.id);
+                battleMessages.delete(battle.id);
+            } else {
+                // startHuntBattle threw (possibly after createBattle registered the player) —
+                // unregister any battle the player may already have been added to.
+                const existing = battleManager.getBattleForUser(interaction.user.id);
+                if (existing) {
+                    clearBattleTurnTimer(existing);
+                    battleManager.endBattle(existing.id);
+                    activeHunts.delete(existing.id);
+                    battleMessages.delete(existing.id);
+                }
+            }
             throw e;
         }
     }
@@ -16408,6 +24073,7 @@ async function handleInteraction(interaction) {
         const qty = interaction.options.getInteger('quantity') || 1;
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
         const tackle = getFishTackle(character);
+        const bag = getHuntingBag(character);
 
         let eaten = 0;
         let totalHP = 0, totalKi = 0, totalFatigue = 0;
@@ -16433,10 +24099,12 @@ async function handleInteraction(interaction) {
 
         eatFrom(inventory);
         if (eaten < qty) eatFrom(tackle);
+        if (eaten < qty) eatFrom(bag);
 
         if (eaten === 0) {
             const hasRaw = (inventory || []).some(item => parseItemName(item).name.toLowerCase() === itemName.toLowerCase())
-                || (tackle || []).some(item => parseItemName(item).name.toLowerCase() === itemName.toLowerCase());
+                || (tackle || []).some(item => parseItemName(item).name.toLowerCase() === itemName.toLowerCase())
+                || (bag || []).some(item => parseItemName(item).name.toLowerCase() === itemName.toLowerCase());
             if (hasRaw) return interaction.reply(`🔥 **${itemName}** is **raw**! Cook it first with \`/cook\`.`);
             return interaction.reply(`❌ You don't have **${itemName}** in your inventory!`);
         }
@@ -16450,7 +24118,7 @@ async function handleInteraction(interaction) {
         if (totalFatigue !== 0) {
             characterManager.modifyFatigue(interaction.user.id, character.id, totalFatigue);
         }
-        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle });
+        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle, huntingBag: bag });
 
         const fresh = characterManager.getCharacter(interaction.user.id) || character;
         const newHP = fresh.currentHP;
@@ -16474,12 +24142,36 @@ async function handleInteraction(interaction) {
 
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
         const tackle = getFishTackle(character);
+        const bag = getHuntingBag(character);
+
+        const maxHP = character.maxHP || 1;
+        const maxKi = character.maxKi || 1;
+        // Simulated vitals as we eat, so we can stop the moment nothing more is needed:
+        // HP at max, Ki at max, and stored fatigue at its rest floor (stored fatigue can't drop
+        // below peakFatigue * floor ratio without a real /rest, so eating past that is wasted).
+        let simHP = Math.max(0, character.currentHP || 0);
+        let simKi = Math.max(0, character.currentKi || 0);
+        let simFatigue = character.fatigue || 0;
+        let simPeak = character.peakFatigue || 0;
+        const fatigueFloor = simPeak * FATIGUE_FLOOR_RATIO;
+
+        const needsHP = () => simHP < maxHP;
+        const needsKi = () => simKi < maxKi;
+        const needsFatigue = () => simFatigue > fatigueFloor + 1e-9;
+        const stillNeedsFood = () => needsHP() || needsKi() || needsFatigue();
+        // A food only "helps" if it actually replenishes something we're still missing — this
+        // stops an HP-only food from being wasted when only fatigue/Ki is needed (and vice versa).
+        const foodHelps = (effect) =>
+            (effect.hpHeal > 0 && needsHP()) ||
+            (effect.kiHeal > 0 && needsKi()) ||
+            ((effect.fatigueDelta || 0) < 0 && needsFatigue());
 
         let totalHP = 0, totalKi = 0, totalFatigue = 0, eaten = 0, skipped = 0;
         const eatenList = [];
 
         const processSource = (source) => {
             for (let i = source.length - 1; i >= 0; i--) {
+                if (!stillNeedsFood()) return; // topped up — stop eating
                 const item = source[i];
                 if (isUncookedFood(item)) { skipped++; continue; }
                 const p = parseItemName(item);
@@ -16489,36 +24181,56 @@ async function handleInteraction(interaction) {
                 const qty = p.quantity;
                 let slotEaten = 0;
                 for (let k = 0; k < qty; k++) {
+                    if (!stillNeedsFood()) break; // stop mid-stack too
                     const effect = computeConsumableEffect(spec, character);
+                    if (!foodHelps(effect)) break; // this food can't help the remaining need — save it
+
+                    simHP = Math.min(maxHP, simHP + effect.hpHeal);
+                    simKi = Math.min(maxKi, simKi + effect.kiHeal);
+                    // Mirror characterManager.modifyFatigue's clamp + soft-floor behaviour.
+                    let nextFatigue = Math.max(0, Math.min(100, simFatigue + (effect.fatigueDelta || 0)));
+                    if ((effect.fatigueDelta || 0) < 0) nextFatigue = Math.max(nextFatigue, fatigueFloor);
+                    if (nextFatigue > simPeak) simPeak = nextFatigue;
+                    simFatigue = nextFatigue;
+
                     totalHP += effect.hpHeal;
                     totalKi += effect.kiHeal;
                     totalFatigue += effect.fatigueDelta || 0;
                     slotEaten++;
                     consumeInventorySlot(source, i);
                 }
-                eaten += slotEaten;
-                eatenList.push(`${p.name} ×${slotEaten}`);
+                if (slotEaten > 0) {
+                    eaten += slotEaten;
+                    eatenList.push(`${p.name} ×${slotEaten}`);
+                }
             }
         };
 
         processSource(inventory);
         processSource(tackle);
+        processSource(bag);
 
         if (eaten === 0) {
-            return interaction.reply('❌ You have no cooked food to eat!');
+            const hasCookedFood = [...inventory, ...tackle, ...bag]
+                .some(item => !isUncookedFood(item) && FOOD_ITEMS[parseItemName(item).name]);
+            if (!hasCookedFood) return interaction.reply('❌ You have no cooked food to eat!');
+            if (!stillNeedsFood()) {
+                return interaction.reply(`✅ **${character.name}** is already topped up — no need to eat anything!`);
+            }
+            return interaction.reply(`🤔 None of your cooked food can replenish what **${character.name}** is missing right now.`);
         }
 
         characterManager.modifyHP(interaction.user.id, character.id, totalHP);
         characterManager.modifyKi(interaction.user.id, character.id, totalKi);
         if (totalFatigue !== 0) characterManager.modifyFatigue(interaction.user.id, character.id, totalFatigue);
-        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle });
+        characterManager.updateCharacter(interaction.user.id, character.id, { inventory, fishTackle: tackle, huntingBag: bag });
 
         const fresh = characterManager.getCharacter(interaction.user.id) || character;
         const newHP = fresh.currentHP;
         const newKi = fresh.currentKi;
         const newFatigue = getTotalFatigue(fresh);
 
-        let text = `🍽️ **${character.name}** ate **${eaten}** food item${eaten === 1 ? '' : 's'}${skipped > 0 ? ` (skipped ${skipped} raw fish)` : ''}!\n\n`;
+        let text = `🍽️ **${character.name}** ate **${eaten}** food item${eaten === 1 ? '' : 's'} (only what was needed)${skipped > 0 ? ` (skipped ${skipped} raw fish)` : ''}!\n\n`;
         if (eatenList.length > 0) text += `🥡 ${eatenList.join(', ')}\n`;
         text += `❤️ HP: → **${newHP}**\n💙 Ki: → **${newKi}**\n😓 Fatigue: → **${newFatigue}%**`;
         return interaction.reply(text);
@@ -16551,13 +24263,13 @@ async function handleInteraction(interaction) {
         text += `*Companions fight alongside you and each takes a 20% cut of your stat points.*\n\n`;
         companions.forEach((cmp, index) => {
             const stats = getCompanionBattleStats(cmp, character);
-            const maxHP = calculateHP(stats.con, cmp.race || null);
-            const maxKi = calculateKi(stats.spi, cmp.race || null);
+            const maxHP = calculateHP(stats.con, cmp.race || null, {}, cmp);
+            const maxKi = calculateKi(stats.spi, cmp.race || null, {}, cmp);
             const pl = characterManager.calculatePowerLevel({
                 str: stats.str, dex: stats.dex, con: stats.con, wil: stats.wil, spi: stats.spi,
                 maxHP, maxKi
             });
-            text += `**${index + 1}. ${cmp.name}** — ${cmp.race || 'Unknown'} ${cmp.gender || ''} | ⚡ ${pl.toLocaleString()} PL\n`;
+            text += `**${index + 1}. ${cmp.name}** — ${cmp.race || 'Unknown'} ${cmp.gender || ''} | ⚡ ${formatPL(pl)} PL\n`;
             text += `   📊 STR ${stats.str} | DEX ${stats.dex} | CON ${stats.con} | WIL ${stats.wil} | SPI ${stats.spi}${cmp.weapon ? ` | ⚔️ ${cmp.weapon}` : ''}${cmp.fightingStyle ? ` | 🥋 ${cmp.fightingStyle}` : ''}\n\n`;
         });
         text += `Use \`/companion slot:<1-4>\` to see a companion's full status.`;
@@ -16609,7 +24321,7 @@ async function handleInteraction(interaction) {
         // Inventory-boosting recipes are permanent capacity boosts, not physical items.
         if (recipe.inventoryUpgrade || recipe.invSlots) {
             const slotGain = recipe.invSlots || 10;
-            const resourceCost = (recipe.resources || 0) * qty;
+            const resourceCost = applyBaseDiscount((recipe.resources || 0) * qty, getBaseBonuses(character).craftDiscountPct);
             if ((character.resources || 0) < resourceCost) {
                 return interaction.reply(`❌ Not enough resources! **${recipeName} ×${qty}** needs **${resourceCost} resources**, but you only have **${character.resources || 0}**.`);
             }
@@ -16635,8 +24347,9 @@ async function handleInteraction(interaction) {
             return interaction.reply(`❌ Missing ingredients for **${recipeName} ×${qty}**:\n\n• ${missing.join('\n• ')}`);
         }
 
-        // Check resources
-        const resourceCost = (recipe.resources || 0) * qty;
+        // Check resources (a Workshop facility discounts the resource cost)
+        const craftBaseBonus = getBaseBonuses(character);
+        const resourceCost = applyBaseDiscount((recipe.resources || 0) * qty, craftBaseBonus.craftDiscountPct);
         if ((character.resources || 0) < resourceCost) {
             return interaction.reply(`❌ Not enough resources! **${recipeName} ×${qty}** needs **${resourceCost} resources**, but you only have **${character.resources || 0}**.`);
         }
@@ -16704,7 +24417,8 @@ async function handleInteraction(interaction) {
 
         const name = interaction.options.getString('item');
         const inventory = Array.isArray(character.inventory) ? character.inventory : [];
-        const entry = inventory.find(i => parseItemName(i).name.toLowerCase() === name.toLowerCase());
+        const entryIdx = inventory.findIndex(i => parseItemName(i).name.toLowerCase() === name.toLowerCase());
+        const entry = inventory[entryIdx];
         if (!entry) {
             return interaction.reply(`❌ You don't have **"${name}"** in your inventory!`);
         }
@@ -16715,7 +24429,7 @@ async function handleInteraction(interaction) {
         const weaponType = (typeof entry === 'object' && entry.weaponType) ? entry.weaponType : parseWeaponType(itemName);
         if (weaponType) {
             const mods = (typeof entry === 'object' && entry.weaponAttackMod != null)
-                ? { attackMod: entry.weaponAttackMod, dexPenalty: entry.weaponDexPenalty || 0, damageMode: entry.weaponDamageMode || 'str', bypass: !!entry.weaponBypass, conBonus: entry.weaponConBonus || 0, wilBonus: entry.weaponWilBonus || 0, spiDmgPct: entry.weaponSpiDmgPct || 0, wilDmgPct: entry.weaponWilDmgPct || 0 }
+                ? { attackMod: entry.weaponAttackMod, atkPct: entry.weaponAtkPct || 0, dexPct: entry.weaponDexPct || 0, dexPenalty: entry.weaponDexPenalty || 0, damageMode: entry.weaponDamageMode || 'str', bypass: !!entry.weaponBypass, conBonus: entry.weaponConBonus || 0, wilBonus: entry.weaponWilBonus || 0, spiDmgPct: entry.weaponSpiDmgPct || 0, wilDmgPct: entry.weaponWilDmgPct || 0, unarmedWeapon: !!entry.weaponUnarmed, punchStrBonus: entry.weaponPunchStrBonus || 0, bleedOnHit: entry.weaponBleedOnHit || 0, critRangeBonus: entry.weaponCritRangeBonus || 0 }
                 : getWeaponMods(itemName);
             if (!mods) {
                 return interaction.reply(`❌ Couldn't compute stats for **${itemName}**!`);
@@ -16729,29 +24443,41 @@ async function handleInteraction(interaction) {
                     quantity: 1,
                     weaponType: character.weaponType,
                     weaponAttackMod: character.weaponAttackMod,
+                    weaponAtkPct: character.weaponAtkPct,
+                    weaponDexPct: character.weaponDexPct,
                     weaponDexPenalty: character.weaponDexPenalty,
                     weaponDamageMode: character.weaponDamageMode,
                     weaponBypass: !!character.weaponBypass,
                     weaponConBonus: character.weaponConBonus || 0,
                     weaponWilBonus: character.weaponWilBonus || 0,
                     weaponSpiDmgPct: character.weaponSpiDmgPct || 0,
-                    weaponWilDmgPct: character.weaponWilDmgPct || 0
+                    weaponWilDmgPct: character.weaponWilDmgPct || 0,
+                    weaponUnarmed: !!character.weaponUnarmed,
+                    weaponPunchStrBonus: character.weaponPunchStrBonus || 0,
+                    weaponBleedOnHit: character.weaponBleedOnHit || 0,
+                    weaponCritRangeBonus: character.weaponCritRangeBonus || 0
                 });
                 swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
             }
-            removeInventoryItems(inventory, itemName, 1);
+            consumeInventorySlot(inventory, entryIdx);
             characterManager.updateCharacter(interaction.user.id, character.id, {
                 inventory,
                 weapon: itemName,
                 weaponType,
                 weaponAttackMod: mods.attackMod,
+                weaponAtkPct: mods.atkPct || 0,
+                weaponDexPct: mods.dexPct || 0,
                 weaponDamageMode: mods.damageMode,
                 weaponBypass: mods.bypass,
                 weaponDexPenalty: mods.dexPenalty,
                 weaponConBonus: mods.conBonus || 0,
                 weaponWilBonus: mods.wilBonus || 0,
                 weaponSpiDmgPct: mods.spiDmgPct || 0,
-                weaponWilDmgPct: mods.wilDmgPct || 0
+                weaponWilDmgPct: mods.wilDmgPct || 0,
+                weaponUnarmed: !!mods.unarmedWeapon,
+                weaponPunchStrBonus: mods.punchStrBonus || 0,
+                weaponBleedOnHit: mods.bleedOnHit || 0,
+                weaponCritRangeBonus: mods.critRangeBonus || 0
             });
             const bonusParts = [];
             if (mods.conBonus) bonusParts.push(`**+${mods.conBonus} CON**`);
@@ -16759,7 +24485,7 @@ async function handleInteraction(interaction) {
             if (mods.spiDmgPct) bonusParts.push(`**+${mods.spiDmgPct}% SPI mod** to damage`);
             if (mods.wilDmgPct) bonusParts.push(`**+${mods.wilDmgPct}% WIL mod** to damage`);
             const buffs = bonusParts.length ? `\n💪 While wielded: ${bonusParts.join(' and ')}` : '';
-            return interaction.reply(`⚔️ **${character.name}** equipped **${itemName}**!\n\n🎯 Attack mod: **+${mods.attackMod}**\n😅 Inhibiting DEX: **-${mods.dexPenalty}**\n${mods.bypass ? '💥 Bypasses armor!\n' : ''}${mods.damageMode && mods.damageMode !== 'str' ? `📐 Damage mode: ${mods.damageMode}\n` : ''}${buffs}${swapNote}`);
+            return interaction.reply(`⚔️ **${character.name}** equipped **${itemName}**!\n\n🎯 Attack mod: **+${mods.attackMod}** (multiplies total damage by **×${(1 + (mods.atkPct || 0) / 100).toFixed(2)}**)\n😅 Inhibiting DEX: **-${mods.dexPenalty}** (and **-${mods.dexPct || 0}%** of your DEX mod)\n${mods.bypass ? '💥 Bypasses armor!\n' : ''}${mods.bleedOnHit ? '🩸 Causes bleed on hit!\n' : ''}${mods.critRangeBonus ? '🎯 +1 crit range (NAT 19-20)!\n' : ''}${mods.punchStrBonus ? `💪 +${mods.punchStrBonus} STR bonus to strikes!\n` : ''}${mods.damageMode && mods.damageMode !== 'str' ? `📐 Damage mode: ${mods.damageMode}\n` : ''}${buffs}${swapNote}`);
         }
 
         // Armor: roll its damage-reduction %, defending-DEX reduction %, and durability by weight.
@@ -16796,7 +24522,7 @@ async function handleInteraction(interaction) {
                 });
                 swapNote = `\n↩️ **${oldName}** was returned to your inventory.`;
             }
-            removeInventoryItems(inventory, itemName, 1);
+            consumeInventorySlot(inventory, entryIdx);
             const armorWilBonus = (typeof entry === 'object' && entry.armorWilBonus != null) ? entry.armorWilBonus : 0;
             const armorSpiBonus = (typeof entry === 'object' && entry.armorSpiBonus != null) ? entry.armorSpiBonus : 0;
             characterManager.updateCharacter(interaction.user.id, character.id, {
@@ -16838,13 +24564,18 @@ async function handleInteraction(interaction) {
                 quantity: 1,
                 weaponType: character.weaponType,
                 weaponAttackMod: character.weaponAttackMod,
+                weaponAtkPct: character.weaponAtkPct,
                 weaponDexPenalty: character.weaponDexPenalty,
                 weaponDamageMode: character.weaponDamageMode,
                 weaponBypass: !!character.weaponBypass,
                 weaponConBonus: character.weaponConBonus || 0,
                 weaponWilBonus: character.weaponWilBonus || 0,
                 weaponSpiDmgPct: character.weaponSpiDmgPct || 0,
-                weaponWilDmgPct: character.weaponWilDmgPct || 0
+                weaponWilDmgPct: character.weaponWilDmgPct || 0,
+                weaponUnarmed: !!character.weaponUnarmed,
+                weaponPunchStrBonus: character.weaponPunchStrBonus || 0,
+                weaponBleedOnHit: character.weaponBleedOnHit || 0,
+                weaponCritRangeBonus: character.weaponCritRangeBonus || 0
             };
             inventory.push(weaponObj);
             characterManager.updateCharacter(interaction.user.id, character.id, {
@@ -16852,13 +24583,19 @@ async function handleInteraction(interaction) {
                 weapon: null,
                 weaponType: null,
                 weaponAttackMod: null,
+                weaponAtkPct: null,
+                weaponDexPct: null,
                 weaponDamageMode: null,
                 weaponBypass: false,
                 weaponDexPenalty: null,
                 weaponConBonus: null,
                 weaponWilBonus: null,
                 weaponSpiDmgPct: null,
-                weaponWilDmgPct: null
+                weaponWilDmgPct: null,
+                weaponUnarmed: null,
+                weaponPunchStrBonus: null,
+                weaponBleedOnHit: null,
+                weaponCritRangeBonus: null
             });
             return interaction.reply(`⚔️ **${character.name}** unequipped **${name}**! It was returned to your inventory.`);
         }
@@ -17013,20 +24750,26 @@ async function handleInteraction(interaction) {
         if (weaponType) {
             let text = `⚔️ **${itemName}**\n\n`;
             if (typeof entry === 'object' && entry.weaponAttackMod != null) {
-                text += `🎯 Attack mod: **+${entry.weaponAttackMod}**\n`;
-                text += `😅 Inhibiting DEX: **-${entry.weaponDexPenalty || 0}**\n`;
+                text += `🎯 Attack mod: **+${entry.weaponAttackMod}** (multiplies total damage by **×${(1 + (entry.weaponAtkPct || 0) / 100).toFixed(2)}**)\n`;
+                text += `😅 Inhibiting DEX: **-${entry.weaponDexPenalty || 0}** (and **-${entry.weaponDexPct || 0}%** of your DEX mod)\n`;
                 if (entry.weaponBypass) text += `💥 Bypasses armor!\n`;
+                if (entry.weaponBleedOnHit) text += `🩸 Causes bleed on hit!\n`;
+                if (entry.weaponCritRangeBonus) text += `🎯 +1 crit range (NAT 19-20)!\n`;
+                if (entry.weaponPunchStrBonus) text += `💪 +${entry.weaponPunchStrBonus} STR bonus to strikes!\n`;
                 if (entry.weaponDamageMode && entry.weaponDamageMode !== 'str') text += `📐 Damage mode: ${entry.weaponDamageMode}\n`;
                 if (entry.weaponConBonus || entry.weaponWilBonus) text += `💪 While wielded: **+${entry.weaponConBonus || 0} CON** / **+${entry.weaponWilBonus || 0} WIL**\n`;
             } else {
                 const base = WEAPON_STATS[weaponType];
                 const q = WEAPON_QUALITY_MODS[getWeaponQuality(itemName)] || { weaponStr: 0, weaponDex: 0 };
-                text += `🎯 Attack mod: **${base.attackMod}** (rolled on equip)\n`;
-                text += `😅 Inhibiting DEX: **${base.dexMod}** (rolled on equip)\n`;
+                text += `🎯 Attack mod: **${base.attackMod}** (rolled on equip, **${base.atkPct}** damage multiplier)\n`;
+                text += `😅 Inhibiting DEX: **${base.dexMod}** (rolled on equip, **${base.dexPct}** DEX penalty)\n`;
                 if (q.weaponStr || q.weaponDex) {
                     text += `✨ Quality bonus: **${q.weaponStr >= 0 ? '+' : ''}${q.weaponStr} ATK** / **${q.weaponDex >= 0 ? '-' : '+'}${q.weaponDex} DEX penalty**\n`;
                 }
                 if (base.bypass) text += `💥 Bypasses armor!\n`;
+                if (base.bleedOnHit) text += `🩸 Causes bleed on hit!\n`;
+                if (base.critRangeBonus) text += `🎯 +1 crit range (NAT 19-20)!\n`;
+                if (base.punchStrBonus) text += `💪 +${base.punchStrBonus} STR bonus to strikes!\n`;
                 if (base.damageMode && base.damageMode !== 'str') text += `📐 Damage mode: ${base.damageMode}\n`;
                 if (base.conBonus || base.wilBonus) text += `💪 While wielded: **+${base.conBonus || 0} CON** / **+${base.wilBonus || 0} WIL**\n`;
             }
@@ -17066,8 +24809,96 @@ async function handleInteraction(interaction) {
         const type = interaction.options.getString('type');
         const name = (interaction.options.getString('name') || '').trim();
 
+        // Basics: a plain-language guide to what training, sparring, missions and canon actions pay.
+        if (type === 'basics') {
+            return interaction.reply(buildBasicsInfo(name));
+        }
+
+        // Passives: racial passives, style passives and mutation abilities/form bonuses.
+        if (type === 'passive') {
+            const index = getPassiveIndex();
+            if (!name) {
+                const mine = getCharacterPassives(character);
+                let text = '💠 **Passive Abilities**\n';
+                if (mine.length) {
+                    text += `\n**YOUR PASSIVES**\n`;
+                    text += mine.map(e => `• **${e.name}** *(${e.source})*\n  ${e.description}`).join('\n');
+                } else {
+                    text += '\nYou have no passives yet — racial passives, a fighting style, or a mutation each grant some.';
+                }
+                text += `\n\n*Look up any passive in the game:* \`/info type:Passive name:<name>\` (${index.length} known)`;
+                text += '\n*Sources:* 🧬 racial · 🥋 fighting style · 🌟 mutation';
+                return interaction.reply(clampInfoText(text));
+            }
+            const matches = index.filter(e => e.name.toLowerCase() === name.toLowerCase());
+            if (!matches.length) {
+                const near = index.filter(e => e.name.toLowerCase().includes(name.toLowerCase())).slice(0, 8);
+                const nearText = near.length
+                    ? `\n\nDid you mean:\n${near.map(e => `• **${e.name}** *(${e.source})*`).join('\n')}`
+                    : '';
+                return interaction.reply(`❌ Unknown passive: **"${name}"**.${nearText}\n\nOmit the name to list YOUR passives.`);
+            }
+            const text = matches.map(e => `💠 **${e.name}**\n*${e.source}*\n\n${e.description || 'No description.'}`).join('\n\n');
+            return interaction.reply(clampInfoText(text));
+        }
+
+        // Statuses: list them all, or explain the one you name.
+        if (type === 'status') {
+            const keys = Object.keys(STATUS_EFFECTS);
+            if (!name) {
+                let text = '📌 **Status Effects**\n';
+                text += keys.map(k => `• **${k}** — ${STATUS_EFFECTS[k].short}`).join('\n');
+                text += '\n\n*Full details:* `/info type:Status name:<name>`';
+                return interaction.reply(clampInfoText(text));
+            }
+            const status = findStatusInfo(name);
+            if (!status) {
+                const near = keys.filter(k => k.toLowerCase().includes(name.toLowerCase())).slice(0, 8);
+                const nearText = near.length ? `\n\nDid you mean:\n${near.map(k => `• **${k}**`).join('\n')}` : '';
+                return interaction.reply(`❌ Unknown status: **"${name}"**.${nearText}\n\nOmit the name to list every status effect.`);
+            }
+            return interaction.reply(`📌 **${status.key}**\n\n${status.desc}`);
+        }
+
+        // Materials: every mineable ore/ingot and exactly what it does when forged.
+        if (type === 'material') {
+            const index = getMaterialIndex();
+            if (!name) {
+                let text = '⛏️ **Smithing Materials**\n';
+                text += '*Mine ores with `/mine` (1d20 + INT), smelt them with `/smith action:Smelt`, then forge with `/smith action:Forge`.*\n\n';
+                text += index.map(e => {
+                    const head = e.ingot ? `**${e.material}** — ${e.ore} → ${e.ingot}` : `**${e.material}** — mined ore`;
+                    return `• ${head}\n   ${e.note || summarizeMaterial(e.material)}`;
+                }).join('\n');
+                text += `\n\n*Details:* \`/info type:Material name:<material>\` (${index.length} materials)`;
+                return interaction.reply(clampInfoText(text));
+            }
+            const key = index.find(e => e.material.toLowerCase() === name.toLowerCase())
+                || index.find(e => (e.ore || '').toLowerCase() === name.toLowerCase())
+                || index.find(e => (e.ingot || '').toLowerCase() === name.toLowerCase())
+                || index.find(e => e.material.toLowerCase().includes(name.toLowerCase()));
+            if (!key) {
+                const near = index.filter(e => e.material.toLowerCase().includes(name.toLowerCase())).slice(0, 8);
+                const nearText = near.length ? `\n\nDid you mean:\n${near.map(e => `• **${e.material}**`).join('\n')}` : '';
+                return interaction.reply(`❌ Unknown material: **"${name}"**.${nearText}\n\nOmit the name to list every material.`);
+            }
+            let text = `⛏️ **${key.material}**\n`;
+            if (key.ingot) {
+                text += `\n**Ore:** ${key.ore} → **${key.ingot}** (make it with \`/smith action:Smelt\`)\n`;
+                text += `**Use:** \`/smith action:Forge item:${key.ingot}\` to forge a weapon or Light/Medium/Heavy armor (burns **Coal ×${FORGE_COAL_COST}** as fuel)\n`;
+            } else {
+                text += `\n**Source:** mined with a **Pickaxe** (\`/mine\`)\n`;
+            }
+            if (key.note) text += `\n${key.note}\n`;
+            text += `\n**⚔️ Forged weapon bonuses**\n${key.weapon.length ? key.weapon.map(l => `• ${l}`).join('\n') : '• None'}`;
+            text += `\n\n**🛡️ Forged armor bonuses**\n${key.armor.length ? key.armor.map(l => `• ${l}`).join('\n') : '• None'}`;
+            text += `\n\n*Forging also rolls a quality (Worthless → Masterwork) that adds its own attack / damage-reduction bonuses.*`;
+            return interaction.reply(clampInfoText(text));
+        }
+
         // Techniques: show what it does + your current mastery & its effect.
         if (type === 'technique') {
+            if (!name) return interaction.reply('❌ Provide a `name` to inspect a technique (e.g. `/info type:Technique name:Kamehameha`).');
             const key = Object.keys(COMBAT_SKILLS).find(k => k.toLowerCase() === name.toLowerCase());
             if (!key) {
                 return interaction.reply(`❌ Unknown technique: **"${name}"**. Try the exact name, or use \`/mastery\` to list your known techniques.`);
@@ -17076,8 +24907,9 @@ async function handleInteraction(interaction) {
             let text = `🧠 **${key}**\n\n${skill.desc}\n`;
             text += `\n**Cost:** ${skill.cost}${skill.ki ? ` — ${skill.ki} Ki` : ''}`;
             if (character) {
-                const level = (character.techniqueMastery || {})[key] || 0;
-                const maxLvl = 5;
+                // Mastery caps at the number of tiers this technique defines (see getTechniqueMaxMastery).
+                const maxLvl = getTechniqueMaxMastery(key);
+                const level = Math.min(maxLvl, Math.trunc(Number((character.techniqueMastery || {})[key]) || 0));
                 text += `\n\n**Your mastery:** ${level}/${maxLvl}`;
                 const effects = getTechniqueMasteryEffectLines(key, level);
                 if (effects.length) text += `\n${effects.map(e => `• ${e}`).join('\n')}`;
@@ -17086,6 +24918,7 @@ async function handleInteraction(interaction) {
         }
 
         // Forms: show base effect + a per-level mastery breakdown (current level marked).
+        if (!name) return interaction.reply('❌ Provide a `name` to inspect a form (e.g. `/info type:Form name:Super Saiyan`).');
         const key = Object.keys(FORMS).find(k => k.toLowerCase() === name.toLowerCase());
         if (!key) {
             return interaction.reply(`❌ Unknown form: **"${name}"**. Try the exact name, or use \`/transform\` to see your forms.`);
@@ -17119,7 +24952,7 @@ async function handleInteraction(interaction) {
         const city = getCityName(location, space);
 
         if (!city) {
-            return interaction.reply(`❌ No merchant here! Merchants only operate in major cities. On Earth: North City (1), East City (6), Satan City (17), South City (31), West City (45).`);
+            return interaction.reply(`❌ No merchant here! Merchants only operate in major cities. On ${location}: ${cityListText(location) || 'none'}.`);
         }
 
         const itemName = interaction.options.getString('item');
@@ -17139,7 +24972,7 @@ async function handleInteraction(interaction) {
         // Gear (weapons & armor): concrete items stocked per city/slot
         if (gearItem) {
             const zeni = character.zeni || 0;
-            const unitPrice = gearItem.salePrice != null ? gearItem.salePrice : gearItem.price;
+            const unitPrice = Math.round((gearItem.salePrice != null ? gearItem.salePrice : gearItem.price) * getMerchantPriceMult(character));
             let bought = Math.min(qty, Math.max(0, gearItem.remaining));
             if (bought <= 0) {
                 return interaction.reply(`❌ The ${city} merchant is sold out of **${itemName}** today! Stock rerolls every day.`);
@@ -17188,7 +25021,7 @@ async function handleInteraction(interaction) {
 
         const zeni = character.zeni || 0;
         const saleInfo = getSaleInfo(location, space, itemName, entry.price);
-        const unitPrice = saleInfo.salePrice != null ? saleInfo.salePrice : entry.price;
+        const unitPrice = Math.round((saleInfo.salePrice != null ? saleInfo.salePrice : entry.price) * getMerchantPriceMult(character));
         const cost = unitPrice * qty;
         if (zeni < cost) {
             return interaction.reply(`❌ Not enough zeni! **${itemName} ×${qty}** costs **${cost.toLocaleString()} zeni**, but you only have **${zeni.toLocaleString()}**.`);
@@ -17249,8 +25082,16 @@ async function handleInteraction(interaction) {
 
         const saga = interaction.options.getInteger('saga');
         globalSaga = saga;
-        saveGlobalSaga();
-        return interaction.reply(`📖 **Global saga is now ${saga}.**`);
+        saveGlobalSagaNow(); // admin-critical — persist immediately, not on the debounce window
+        // If a Tree of Might has matured, bear fruit (and possibly destroy Earth).
+        const treeText = checkTreeOfMight();
+        updateSagaChannelMessage();
+        // With auto-saga on, this stored value is IGNORED for gameplay (the saga is derived from the
+        // strongest player's PL) — say so, otherwise the #saga number looks wrong/stale.
+        const autoNote = AUTO_SAGA_ENABLED
+            ? `\n\n⚠️ **Auto-saga is ON**, so enemies/rewards use the saga derived from the strongest player's PL — currently **SAGA ${getEffectiveSaga()}** (what the #saga channel shows). Your stored value **${saga}** is only used if auto-saga is disabled.`
+            : '';
+        return interaction.reply(`📖 **Global saga is now ${saga}.**${autoNote}${treeText ? `\n\n${treeText}` : ''}`);
     }
 
     if (interaction.commandName === 'reset-cd') {
@@ -17431,6 +25272,7 @@ async function handleInteraction(interaction) {
         const fatigueMultiplier = getFatigueGainMultiplier(fatigueBefore);
 
         let roll = 0;
+        let diceRolled = 0; // the actual training/spar dice value rolled this session (for the message)
         let gains = {};
         const notes = [];
         // Good-alignment training frenzy: 50× training rates on the frenzy planet.
@@ -17451,16 +25293,20 @@ async function handleInteraction(interaction) {
             if (elapsedTurns < 20) return { error: `❌ The spar must last **20 turns**! Currently at **${elapsedTurns}** turns.` };
 
             const sparSpec = (character.mutation === 'Hunter of Legend') ? addDiceToSpec(tier.spar, 2) : tier.spar;
-            roll = rollDiceString(sparSpec) * saga;
+            // Base reward driven by the player's Power Level + relative strength to the opponent (NOT saga).
+            const progressionReward = getProgressionReward(character.powerLevel || 0, 1.0, opponentChar.powerLevel || 0, saga);
+            // Roll the spar dice shown in the message for real and add them on top of the PL reward,
+            // so the advertised roll actually affects the gains (see the solo-training note below).
+            diceRolled = Math.round(rollDiceString(sparSpec) * TRAINING_DICE_GAIN_MULT);
+            roll = Math.max(1, progressionReward + diceRolled);
             if (character.mutation === 'Hunter of Legend') notes.push('🧬 Hunter of Legend: **Hellbent** — +2 training dice!');
 
-            // Power level scaling: opponent 250%+ of you = +250% gains, you 250%+ of them = -70% gains
+            // Relative-strength note: an even or harder matchup trains you more than stomping a weaker foe.
             const ratio = (opponentChar.powerLevel || 0) / (character.powerLevel || 1);
-            let multiplier = 1;
-            if (ratio >= 2.5) { multiplier = 2.5; notes.push(`💪 The opponent's PL is 250%+ of yours — gains ×2.5!`); }
-            else if (ratio <= 0.4) { multiplier = 0.3; notes.push(`😅 Your PL is 250%+ of the opponent's — gains ×0.3!`); }
+            if (ratio >= 2.5) notes.push(`💪 The opponent's PL is 250%+ of yours — a tough spar!`);
+            else if (ratio >= 1.25) notes.push(`💪 The opponent is stronger — gains boosted!`);
+            else if (ratio <= 0.4) notes.push(`😅 Your PL is 250%+ of the opponent's — a lopsided spar!`);
 
-            roll = Math.round(roll * multiplier);
             roll = Math.floor(roll * fatigueMultiplier);
             roll = Math.floor(roll * childGrowthMultiplier);
             // Afterlife/Otherworld bonus: sparring is 2x as effective.
@@ -17484,8 +25330,21 @@ async function handleInteraction(interaction) {
                 if (leechGains.length) notes.push(`🧛 **Leech!** You absorbed **${leechGains.join(' | ')}** from the stronger opponent!`);
             }
         } else {
-            const trainSpec = (character.mutation === 'Hunter of Legend') ? addDiceToSpec(soloSpec, 2) : soloSpec;
-            roll = rollDiceString(trainSpec) * saga;
+            // Sphinxian "Lazy": they roll 1d5 for training unless sparring.
+            const trainSpec = character.race === 'Sphinxian'
+                ? '1d5'
+                : ((character.mutation === 'Hunter of Legend') ? addDiceToSpec(soloSpec, 2) : soloSpec);
+            // Base reward driven by the player's Power Level + the training tier's intensity (NOT saga).
+            const tierValue = TRAIN_TIER_VALUE[GRAVITY_TIERS.indexOf(tier)] ?? 0.5;
+            const progressionReward = getProgressionReward(character.powerLevel || 0, tierValue, null, saga);
+            // Roll the training dice the message advertises ("1d10 per roll") for real and ADD them
+            // to the power-level reward. Previously the dice were only a tiny capped bonus
+            // (min(30% of the PL reward, dice/4)), so the roll barely mattered: a low-PL character
+            // always saw ~+2/+3 whatever they rolled, and racial dice bonuses (Low Class Saiyan 1d15,
+            // Hunter of Legend +2 dice, Sphinxian 1d5) were effectively dead.
+            diceRolled = Math.round(rollDiceString(trainSpec) * TRAINING_DICE_GAIN_MULT);
+            roll = Math.max(1, progressionReward + diceRolled);
+            if (character.race === 'Sphinxian') notes.push('😴 Sphinxian **Lazy**: training rolls **1d5**!');
             if (character.mutation === 'Hunter of Legend') notes.push('🧬 Hunter of Legend: **Hellbent** — +2 training dice!');
             roll = Math.floor(roll * fatigueMultiplier);
             roll = Math.floor(roll * childGrowthMultiplier);
@@ -17518,6 +25377,13 @@ async function handleInteraction(interaction) {
             }
         }
 
+        // Home Training Room: a flat % bonus to training gains (meditation unaffected, like weights).
+        const trainingRoomPct = getBaseBonuses(character).trainingBonusPct || 0;
+        if (type !== 'meditation' && trainingRoomPct > 0) {
+            roll = Math.floor(roll * (1 + trainingRoomPct / 100));
+            notes.push(`🏋️ Training Room (Lv${baseSystem.getFacilityLevel(character, 'trainingRoom')}): **+${trainingRoomPct}%** training gains`);
+        }
+
         // Mutation-based training boosts
         if (character.mutation === 'Extreme Potential') { roll = roll * 3; notes.push('🧬 Extreme Potential: training rolls ×3!'); }
         else if (character.mutation === 'Prodigious Achievement') { roll = Math.round(roll * 1.25); const growthBoost = getRandomInt(2) + 1; roll = roll * growthBoost; notes.push(`🧬 Prodigious Achievement: +25% roll, then ×${growthBoost}!`); }
@@ -17529,7 +25395,7 @@ async function handleInteraction(interaction) {
         if (type === 'meditation') {
             const techniques = Array.isArray(character.techniques) ? [...character.techniques] : [];
             const pl = character.powerLevel || 0;
-            const maxKi = Number(character.maxKi) || calculateKi((character.stats || {}).spi || 0, character.race);
+            const maxKi = Number(character.maxKi) || calculateKi((character.stats || {}).spi || 0, character.race, {}, character);
 
             // Ki Sense: d20, save 19, PL 50+.
             if (!techniques.includes('Ki Sense') && pl >= 50) {
@@ -17564,7 +25430,7 @@ async function handleInteraction(interaction) {
         const stats = { ...(character.stats || {}) };
         Object.entries(gains).forEach(([stat, points]) => { stats[stat] = (stats[stat] || 0) + points; });
 
-        const modifiers = calculateAllModifiers(stats);
+        const modifiers = calculateAllModifiers(stats, character.statMultipliers);
         const vitals = recalcVitals(character, stats);
         const powerLevel = characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi });
         const newTrainingFatigue = Math.min(100, trainingFatigue + 10);
@@ -17582,7 +25448,7 @@ async function handleInteraction(interaction) {
         const typeLabels = { shadow: 'Shadow Boxing', weight: 'Weight Training', meditation: 'Meditation', spar: 'Sparring' };
 
         let message = `🏋️ **${character.name}** did **${typeLabels[type]}**!\n\n`;
-        message += `🌍 Gravity: **x${tier.gravity}** (${type === 'spar' ? tier.spar : soloSpec} per roll, Saga ${saga})\n`;
+        message += `🌍 Gravity: **x${tier.gravity}** (${type === 'spar' ? tier.spar : soloSpec} per roll → **${diceRolled}**, Saga ${saga})\n`;
         message += `📈 Stat gains:\n`;
         const gainParts = [];
         Object.entries(gains).forEach(([stat, points]) => { gainParts.push(`**${stat.toUpperCase()} +${points}**`); });
@@ -17590,7 +25456,7 @@ async function handleInteraction(interaction) {
         if (notes.length > 0) message += `\n\n${notes.join('\n')}`;
         if (learnedTech) message += learnedTech;
         message += `\n\n😓 Fatigue: ${fatigueBefore}% → ${newFatigue}%`;
-        message += `\n⚡ Power Level: ${oldPL} → ${powerLevel}`;
+        message += `\n⚡ Power Level: ${formatPL(oldPL)} → ${formatPL(powerLevel)}`;
         if (roll <= 0) message += `\n⚠️ You gained nothing — you're too fatigued to train effectively!`;
         message += checkSaiyanSuperSaiyanUnlock(interaction.user.id, character);
 
@@ -17739,6 +25605,14 @@ async function handleInteraction(interaction) {
                 startPlayerPregnancy(interaction.user.id, initiatorChar, { id: initiatorChar.id, name: initiatorChar.name, race: initiatorChar.race, userId: interaction.user.id, stats: entityStatsForProcreation(initiatorChar, null) }, false);
                 return interaction.reply(`🌱 **${initiatorChar.name}** (Saibamen) releases a **seed** to procreate on its own! It will **sprout in about an in-game day** into a **battle-ready** child.`);
             }
+            // Namekians reproduce asexually by laying an egg (no partner needed).
+            if (initiatorChar.race === 'Namekian') {
+                if (initiatorChar.pregnancy && !initiatorChar.pregnancy.resolved) {
+                    return interaction.reply(`❌ **${initiatorChar.name}** is already carrying an egg!`);
+                }
+                startPlayerPregnancy(interaction.user.id, initiatorChar, { id: initiatorChar.id, name: initiatorChar.name, race: initiatorChar.race, userId: interaction.user.id, stats: entityStatsForProcreation(initiatorChar, null) }, false);
+                return interaction.reply(`🥚 **${initiatorChar.name}** (Namekian) lays an **egg** to reproduce on its own! It will **hatch in about an in-game day** into a **Namekian** child.`);
+            }
             return interaction.reply('❌ Target a player with `target:` or a bonded companion with `companion:` (companionship 50+).');
         }
         if (targetUser && targetUser.id === interaction.user.id) {
@@ -17754,6 +25628,9 @@ async function handleInteraction(interaction) {
             if (!targetElig.ok) return interaction.reply(`❌ ${targetElig.reason}`);
             if (isSaibamenRace(initiatorChar.race) || isSaibamenRace(targetChar.race)) {
                 return interaction.reply(`🌱 **Saibamen** can only procreate **asexually** (release a seed) — they cannot procreate with another player or character!`);
+            }
+            if (initiatorChar.race === 'Namekian' || targetChar.race === 'Namekian') {
+                return interaction.reply(`🥚 **Namekians** reproduce by laying an **egg** — they cannot procreate with another player! Use \`/procreate\` (no target) to lay an egg.`);
             }
 
             const g1 = String(initiatorChar.gender || '').toLowerCase();
@@ -17794,6 +25671,9 @@ async function handleInteraction(interaction) {
         if (!entityIsChild && !isCompanionProcreationReady(entity)) return interaction.reply(`❌ **${entity.name}** hasn't bonded enough — companionship ${entity.companionship || 0}/${family.FAMILY_CONFIG.companionshipThreshold}.`);
         if (isSaibamenRace(initiatorChar.race) || isSaibamenRace(entity.race)) {
             return interaction.reply(`🌱 **Saibamen** can only procreate **asexually** (release a seed) — they cannot procreate with a companion or character!`);
+        }
+        if (initiatorChar.race === 'Namekian' || entity.race === 'Namekian') {
+            return interaction.reply(`🥚 **Namekians** reproduce by laying an **egg** — they cannot procreate with a companion or character! Use \`/procreate\` (no target) to lay an egg.`);
         }
 
         const gc1 = String(initiatorChar.gender || '').toLowerCase();
@@ -18038,8 +25918,26 @@ async function handleInteraction(interaction) {
             return interaction.reply('You need a character to transform! Use `/character-create` to make one.');
         }
 
+        // Mid-battle transformations MUST go through the battle's own 🔥 Transform / ⬇️ Revert
+        // buttons: those rewrite the combatant's stats and per-turn form drain. Running the command
+        // instead only changes `activeForm`, leaving the combatant draining Ki for a form they just
+        // left (or missing the one they just entered).
+        if (battleManager.hasBattleForUser(interaction.user.id)) {
+            return interaction.reply('❌ You\'re in a battle — use the **🔥 Transform** / **⬇️ Revert** buttons on the battle message instead.');
+        }
+
         const formName = interaction.options.getString('form');
         const form = FORMS[formName];
+
+        // `/transform Base` (or 'base') reverts the character to base form.
+        if (formName && String(formName).toLowerCase() === 'base') {
+            if (!character.activeForm) {
+                return interaction.reply('❌ You are already in base form!');
+            }
+            const oldForm = character.activeForm;
+            characterManager.updateCharacter(interaction.user.id, character.id, { activeForm: null });
+            return interaction.reply(`⬇️ **${character.name}** reverted from **${oldForm}** to base form.`);
+        }
 
         if (!form) {
             return interaction.reply('❌ Unknown form!');
@@ -18068,7 +25966,7 @@ async function handleInteraction(interaction) {
 
         let message = `🔥 **${character.name}** transformed into **${formName}**!\n\n${form.description}`;
         if (formPL > 1) {
-            message += `\n⚡ PL: **${character.powerLevel}** → **${Math.floor(character.powerLevel * formPL)}**`;
+            message += `\n⚡ PL: **${formatPL(character.powerLevel)}** → **${formatPL(Math.floor(character.powerLevel * formPL))}**`;
         }
         if (masteryLevel > 0) {
             message += `\n⭐ Mastery level ${masteryLevel}: form bonuses ×${1 + masteryLevel * 0.1}`;
@@ -18131,8 +26029,8 @@ async function handleInteraction(interaction) {
             }
             const cStats = getCompanionBattleStats(cmp, character);
             const cMods = calculateAllModifiers(cStats);
-            const cmaxHP = calculateHP(cStats.con, cmp.race || null);
-            const cmaxKi = calculateKi(cStats.spi, cmp.race || null);
+            const cmaxHP = calculateHP(cStats.con, cmp.race || null, {}, cmp);
+            const cmaxKi = calculateKi(cStats.spi, cmp.race || null, {}, cmp);
             const cPL = characterManager.calculatePowerLevel({ str: cStats.str, dex: cStats.dex, con: cStats.con, wil: cStats.wil, spi: cStats.spi, maxHP: cmaxHP, maxKi: cmaxKi });
             partner = {
                 name: cmp.name,
@@ -18196,7 +26094,7 @@ async function handleInteraction(interaction) {
             namekianFused: true,
             fusionCooldownSaga: globalSaga + 2
         });
-        return interaction.reply(`🧬 **SUPER NAMEKIAN FUSION SUCCESS!** (1d${rollDie} = **${roll} — CRITICAL!**)\n**${character.name}** fuses with **${partner.name}**!\n\n• Stat mods: **(yours + theirs) × 2**, permanent\n• Power Level: **(yours + theirs) × 2** → **${newPL}**\n• Unlocked forms: **Great Namekian** & **Super Namekian**\n\nCooldown: **2 sagas**. Use \`/transform\` to take a fused form!`);
+        return interaction.reply(`🧬 **SUPER NAMEKIAN FUSION SUCCESS!** (1d${rollDie} = **${roll} — CRITICAL!**)\n**${character.name}** fuses with **${partner.name}**!\n\n• Stat mods: **(yours + theirs) × 2**, permanent\n• Power Level: **(yours + theirs) × 2** → **${formatPL(newPL)}**\n• Unlocked forms: **Great Namekian** & **Super Namekian**\n\nCooldown: **2 sagas**. Use \`/transform\` to take a fused form!`);
     }
 
     if (interaction.commandName === 'mastery') {
@@ -18226,29 +26124,40 @@ async function handleInteraction(interaction) {
             return interaction.reply('❌ The **Shogun** style can only be unlocked in battle by defeating an enemy with a **STR/DEX weapon**. It can\'t be learned through training.');
         }
 
-        // Super Saiyan awakening: after each training/battle, a Saiyan/Half-Saiyan can roll
-        // 1d200 to unlock the Super Saiyan form (until they have it). Once they have it, this
-        // falls through to the generic form-mastery roll so they can raise its mastery.
-        if (target === 'Super Saiyan') {
-            if (character.race !== 'Saiyan' && character.race !== 'Half-Saiyan') {
-                return interaction.reply('❌ Only **Saiyans** and **Half-Saiyans** can awaken **Super Saiyan**!');
+        // Form awakening via /mastery: rolling on a form you don't yet have tries to AWAKEN it,
+        // like the original Super Saiyan roll. Applies to any form in MASTERY_AWAKEN (the SSJ
+        // chain), and the previous form in the chain must already be owned. A Saiyan with the
+        // Legendary Super Saiyan mutation rolls Legendary Super Saiyan INSTEAD of Super Saiyan.
+        const lssjMutation = character.mutation === 'Legendary Super Saiyan';
+        const awakenTarget = (target === 'Super Saiyan' && lssjMutation) ? 'Legendary Super Saiyan' : target;
+        const awakenInfo = MASTERY_AWAKEN[awakenTarget];
+        if (isForm && awakenInfo && !(Array.isArray(character.forms) && character.forms.includes(awakenTarget))) {
+            if (!awakenInfo.races.includes(character.race)) {
+                return interaction.reply(`❌ Only **${awakenInfo.races.join(' and ')}** can awaken **${awakenTarget}**!`);
             }
-            if (!(Array.isArray(character.forms) && character.forms.includes('Super Saiyan'))) {
-                const ssRoll = getRandomInt(200);
-                const ssSave = 200;
-                // One awakening attempt per training/battle.
-                characterManager.updateCharacter(interaction.user.id, character.id, { masteryReady: false });
-                let msg = `⚡ **Super Saiyan awakening roll** (1d200): **${ssRoll}**\nSave: **${ssSave}**\n\n`;
-                if (ssRoll >= ssSave) {
-                    const forms = Array.isArray(character.forms) ? character.forms : [];
-                    if (!forms.includes('Super Saiyan')) forms.push('Super Saiyan');
-                    characterManager.updateCharacter(interaction.user.id, character.id, { forms });
-                    msg += `💥 **SUPER SAIYAN UNLOCKED!** **${character.name}**'s hair flares golden! (+10 ALL MODS, x50 PL)`;
-                } else {
-                    msg += `❌ **Failed!** The golden power slips away... Finish another training and try again.`;
+            // Require the previous form in the chain (none for the first form).
+            const prevIndex = awakenInfo.index - 1;
+            if (prevIndex >= 0) {
+                const prevForm = awakenInfo.chain[prevIndex];
+                if (!(Array.isArray(character.forms) && character.forms.includes(prevForm))) {
+                    return interaction.reply(`❌ You need the **${prevForm}** form before you can awaken **${awakenTarget}**!`);
                 }
-                return interaction.reply(msg);
             }
+            const awRoll = getRandomInt(awakenInfo.save);
+            const awSave = awakenInfo.save;
+            // One awakening attempt per training/battle.
+            characterManager.updateCharacter(interaction.user.id, character.id, { masteryReady: false });
+            let msg = `⚡ **${awakenTarget} awakening roll** (1d${awSave}): **${awRoll}**\nSave: **${awSave}**\n\n`;
+            if (awRoll >= awSave) {
+                const forms = Array.isArray(character.forms) ? character.forms : [];
+                if (!forms.includes(awakenTarget)) forms.push(awakenTarget);
+                characterManager.updateCharacter(interaction.user.id, character.id, { forms });
+                const fdesc = FORMS[awakenTarget] ? FORMS[awakenTarget].description : '';
+                msg += `💥 **${awakenTarget.toUpperCase()} UNLOCKED!**${fdesc ? `\n\n${fdesc}` : ''}`;
+            } else {
+                msg += `❌ **Failed!** The power slips away... Finish another training and try again.`;
+            }
+            return interaction.reply(msg);
         }
 
         if (isForm && (!Array.isArray(character.forms) || !character.forms.includes(target))) {
@@ -18262,6 +26171,9 @@ async function handleInteraction(interaction) {
         let save = isForm ? 50 : 20;
         // Raphael (Hunter of Legend): any mastery requirement is lowered by 25%.
         if (character.mutation === 'Hunter of Legend') save = Math.max(1, Math.floor(save * 0.75));
+        // Konatsian racial affinity: Ki Sharpening mastery requirements are 20% lower.
+        const konatsianSharpening = target === 'Ki Sharpening' && character.race === 'Konatsian';
+        if (konatsianSharpening) save = Math.max(1, Math.floor(save * 0.8));
         const bonus = (character.masteryBonus || {})[target] || 0;
         const total = roll + bonus;
 
@@ -18274,16 +26186,18 @@ async function handleInteraction(interaction) {
         // abilityMastery (their effect readers look there), everything else uses techniqueMastery.
         const masteryContainer = isForm ? 'formMastery' : (isAbility ? 'abilityMastery' : 'techniqueMastery');
 
-        // Mastery caps: forms and Ki Application/Ki Efficiency cap at 3, other techniques cap at 5.
-        // A form with a `mastery` config (Super Saiyan family) caps at 5; otherwise it caps at the
-        // highest masteryMods level (so Ultimate Power's 4/5 perks are reachable), or 3 if none.
-        const maxLevel = isForm ? (FORMS[target] && (FORMS[target].mastery ? 5 : Math.max(3, ...Object.keys(FORMS[target].masteryMods || {}).map(Number)))) : (isAbility ? 3 : 5);
-        const currentLevel = (character[masteryContainer])[target] || 0;
+        // Mastery caps: a form with a `mastery` config (Super Saiyan family) caps at 5, otherwise it
+        // caps at the highest masteryMods level (so Ultimate Power's 4/5 perks are reachable), or 3.
+        // Ki Application/Ki Efficiency cap at 3. Every other technique caps at the number of mastery
+        // tiers IT defines (getTechniqueMaxMastery) — e.g. Whirlwind Kick's 1d9->1d13 table caps at
+        // 3, Thrusting Strikes' 6-entry Ki ladder caps at 5.
+        const maxLevel = isForm ? (FORMS[target] && (FORMS[target].mastery ? 5 : Math.max(3, ...Object.keys(FORMS[target].masteryMods || {}).map(Number)))) : (isAbility ? 3 : getTechniqueMaxMastery(target));
+        const currentLevel = Math.min(maxLevel, Math.trunc(Number((character[masteryContainer])[target]) || 0));
         if (currentLevel >= maxLevel) {
             return interaction.reply(`❌ **${target}** is already at **mastery ${currentLevel}/${maxLevel}** — it can't be mastered any further!`);
         }
 
-        let message = `🎲 **Mastery roll** for ${isForm ? 'form' : 'technique'} **${target}** (d${isForm ? 50 : 20}): **${roll}**${bonus > 0 ? ` +${bonus} bonus = **${total}**` : ''}\nSave: **${save}**${character.mutation === 'Hunter of Legend' ? ' *(Raphael: -25%)*' : ''}\n\n`;
+        let message = `🎲 **Mastery roll** for ${isForm ? 'form' : 'technique'} **${target}** (d${isForm ? 50 : 20}): **${roll}**${bonus > 0 ? ` +${bonus} bonus = **${total}**` : ''}\nSave: **${save}**${character.mutation === 'Hunter of Legend' ? ' *(Raphael: -25%)*' : ''}${konatsianSharpening ? ' *(Konatsian: -20%)*' : ''}\n\n`;
 
         if (total >= save) {
             const masteries = character[masteryContainer];
@@ -18306,7 +26220,10 @@ async function handleInteraction(interaction) {
                 } else if (target === 'Ki Efficiency') {
                     message += `\n🔋 +SPI/WIL mods increased (at mastery 3: -5 Ki drain).`;
                 } else {
-                    message += `\n⚡ Ki costs reduced by **${newLevel * 20}%**.`;
+                    // Generic technique: report the real mastery effects (this technique's own
+                    // Ki-cost ladder if it has one, plus the flat + pct scaling).
+                    const effects = getTechniqueMasteryEffectLines(target, newLevel);
+                    if (effects.length) message += `\n${effects.map(e => `• ${e}`).join('\n')}`;
                 }
             } else {
                 const effects = getFormMasteryEffectLines(target, newLevel);
@@ -18393,6 +26310,11 @@ async function handleInteraction(interaction) {
             if (mutation.raceRestrictions.length > 0 && !mutation.raceRestrictions.includes(targetChar.race)) {
                 return interaction.reply(`❌ **${mutationName}** is restricted to ${mutation.raceRestrictions.join('/')} — ${target.username} is ${targetChar.race}!`);
             }
+            if (mutation.clanRestrictions) {
+                if (!targetChar.clan || !mutation.clanRestrictions.includes(targetChar.clan)) {
+                    return interaction.reply(`❌ **${mutationName}** is restricted to the **${mutation.clanRestrictions.join('/')}** — ${target.username} is ${targetChar.clan || 'clanless'}!`);
+                }
+            }
 
             applyMutationEffects(target.id, targetChar, mutationName);
             characterManager.updateCharacter(target.id, targetChar.id, {
@@ -18406,7 +26328,10 @@ async function handleInteraction(interaction) {
                 currentKi: targetChar.currentKi,
                 powerLevel: targetChar.powerLevel,
                 kiEfficiency: targetChar.kiEfficiency,
-                abilityMastery: targetChar.abilityMastery
+                kiSense: targetChar.kiSense,
+                abilityMastery: targetChar.abilityMastery,
+                techniqueMastery: targetChar.techniqueMastery,
+                techniques: targetChar.techniques
             });
 
             return interaction.reply(`🧬 **${target.username}** received the **${mutationName}** mutation!\n\n${formatMutation(mutation)}`);
@@ -18468,6 +26393,14 @@ async function handleInteraction(interaction) {
         const selectedRace = interaction.options.getString('race');
         const ageInput = interaction.options.getInteger('age');
         const backgroundInput = (interaction.options.getString('background') || '').trim();
+        // Optional gender choice — rolled at random if the player omits it.
+        const genderInput = interaction.options.getString('gender') || (getRandomInt(2) === 1 ? 'Male' : 'Female');
+
+        // Method races (Android, Bio-Android, Majin, Vampire, Super Cerealian, Baby Tuffle, etc.)
+        // are obtained through in-game methods, not character creation. Guard against any bypass.
+        if (races[selectedRace] && races[selectedRace].type !== 'birth') {
+            return interaction.reply(`❌ **${selectedRace}** is obtained through methods, not character creation! Only birth races are available — use \`/races\` for details.`);
+        }
 
         // Age limits: a character must be at least 1 and at most 1,000,000 years old.
         const MAX_AGE = 1000000;
@@ -18538,12 +26471,26 @@ async function handleInteraction(interaction) {
             }
         }
 
-        // Calculate HP and Ki based on stats
-        const maxHP = calculateHP(rolledStats.con, selectedRace);
-        const maxKi = calculateKi(rolledStats.spi, selectedRace);
+        // Half-Saiyan roll for a tail (1d2): the "To Tail or to Not" passive decides whether they
+        // grow a tail. 1 = No Tail, 2 = Tail.
+        let halfSaiyanTail = null;
+        if (selectedRace === 'Half-Saiyan') {
+            halfSaiyanTail = getRandomInt(2) === 2 ? 'Tail' : 'No Tail';
+        }
 
-        // Calculate modifiers
-        const modifiers = calculateAllModifiers(rolledStats);
+        // Calculate HP and Ki based on stats (stat-multiplier points applied to CON/SPI mods).
+        // Pass a clan stub so character-gated racial mods (Namekian Demon/Dragon Clan)
+        // count toward the starting vitals.
+        const maxHP = calculateHP(rolledStats.con, selectedRace, {}, { race: selectedRace, clan: namekianClan });
+        const maxKi = calculateKi(rolledStats.spi, selectedRace, {}, { race: selectedRace, clan: namekianClan });
+
+        // Stat-multiplier points: each race gets a different pool to allocate across
+        // STR/DEX/CON/WIL/SPI (INT is excluded). Points start at 0 (all stats ×1.0).
+        const statMultiplierPoints = getRaceStatMultiplierPoints(selectedRace);
+        const statMultipliers = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
+
+        // Calculate modifiers (with stat-multiplier points, all 0 at creation)
+        const modifiers = calculateAllModifiers(rolledStats, statMultipliers);
 
         // New characters spawn at a random slot on their home planet
         const spawnLocation = getDefaultLocation(selectedRace);
@@ -18552,6 +26499,10 @@ async function handleInteraction(interaction) {
         const characterData = {
             name: interaction.options.getString('name'),
             race: selectedRace,
+            gender: genderInput,
+            // Beauty (1d5): 1=hideous, 2=ugly, 3=normal, 4=pretty/good-looking, 5=beautiful/handsome.
+            // Influences how fast this character's companionship grows.
+            beauty: getRandomInt(5),
             class: saiyanClass,
             eliteBonus: saiyanEliteBonus,
             location: spawnLocation,
@@ -18560,14 +26511,14 @@ async function handleInteraction(interaction) {
             techniques: selectedRace === 'Frost Demon' ? ['Fly'] : [],
             searchesUsed: 0,
             searchArea: `${spawnLocation}-${spawnSpace}`,
-            searchResetDate: new Date().toDateString(),
+            searchResetDate: centralDateString(),
             zeni: 0,
             lastAgeCheck: Date.now(),
             resources: 0,
             unspentPoints: 0,
             gathersUsed: 0,
             gatherArea: `${spawnLocation}-${spawnSpace}`,
-            gatherResetDate: new Date().toDateString(),
+            gatherResetDate: centralDateString(),
             fightingStyle: null,
             kiEfficiency: 0,
             gravityChamber: 0,
@@ -18581,6 +26532,7 @@ async function handleInteraction(interaction) {
             weightsEquipped: false,
             forms: selectedRace === 'Frost Demon' ? ['1st Form', '2nd Form', '3rd Form', '4th Form', '100% 4th Form'] : [],
             clan: namekianClan,
+            hasTail: selectedRace === 'Half-Saiyan' ? (halfSaiyanTail === 'Tail') : null,
             namekianEgg: selectedRace === 'Namekian',
             rebirthSaga: null,
             activeForm: null,
@@ -18591,6 +26543,8 @@ async function handleInteraction(interaction) {
             age: ageInput,
             stats: rolledStats,
             modifiers: modifiers,
+            statMultipliers: statMultipliers,
+            statMultiplierPoints: statMultiplierPoints,
             maxHP: maxHP,
             maxKi: maxKi,
             background: backgroundInput || 'None provided',
@@ -18633,7 +26587,7 @@ async function handleInteraction(interaction) {
         else if (selectedRace === 'Tuffle') intRollDesc = '1d12+3';
 
         let message = `✨ **Character Preview!** ✨\n\n`;
-        message += `**${characterData.name}** - ${characterData.race} (Age ${characterData.age})\n`;
+        message += `**${characterData.name}** - ${characterData.race} ${characterData.gender || ''} (Age ${characterData.age})\n`;
         if (saiyanClass) {
             message += `⭐ **Class Roll:** 1d100 → **${classRoll}** — **${saiyanClass}**\n`;
             if (saiyanEliteBonus) {
@@ -18648,8 +26602,12 @@ async function handleInteraction(interaction) {
                 message += `   *Dragon Clan: 1d10+2 INT & +5 WIL, +5 SPI mod.*\n`;
             }
         }
+        if (halfSaiyanTail) {
+            message += `🐒 **Tail Roll:** 1d2 → **${halfSaiyanTail}**\n`;
+        }
+        message += `🎭 **Beauty Roll:** 1d5 → **${characterData.beauty}** (${getBeautyLabel(characterData.beauty)})\n`;
         message += `📍 **Spawn:** ${characterData.location} - Space ${characterData.space}\n`;
-        message += `**Power Level:** ${characterData.powerLevel}\n\n`;
+        message += `**Power Level:** ${formatPL(characterData.powerLevel)}\n\n`;
         message += `**Stats (${statRollDesc} for STR/DEX/CON/WIL/SPI, ${intRollDesc} for INT):**\n`;
         message += `STR: ${characterData.stats.str} (${modifiers.str >= 0 ? '+' : ''}${modifiers.str})${racialMods.str !== 0 ? `(${racialMods.str >= 0 ? '+' : ''}${racialMods.str})` : ''} | DEX: ${characterData.stats.dex} (${modifiers.dex >= 0 ? '+' : ''}${modifiers.dex})${racialMods.dex !== 0 ? `(${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex})` : ''} | CON: ${characterData.stats.con} (${modifiers.con >= 0 ? '+' : ''}${modifiers.con})${racialMods.con !== 0 ? `(${racialMods.con >= 0 ? '+' : ''}${racialMods.con})` : ''}\n`;
         message += `WIL: ${characterData.stats.wil} (${modifiers.wil >= 0 ? '+' : ''}${modifiers.wil})${racialMods.wil !== 0 ? `(${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil})` : ''} | SPI: ${characterData.stats.spi} (${modifiers.spi >= 0 ? '+' : ''}${modifiers.spi})${racialMods.spi !== 0 ? `(${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi})` : ''} | INT: ${characterData.stats.int} (${modifiers.int >= 0 ? '+' : ''}${modifiers.int})${racialMods.int !== 0 ? `(${racialMods.int >= 0 ? '+' : ''}${racialMods.int})` : ''}\n`;
@@ -18657,15 +26615,7 @@ async function handleInteraction(interaction) {
         // Show racial modifiers if any exist
         const hasRacialMods = Object.values(racialMods).some(mod => mod !== 0);
         if (hasRacialMods) {
-            message += `\n**Racial Modifiers:** `;
-            const modParts = [];
-            if (racialMods.str !== 0) modParts.push(`STR ${racialMods.str >= 0 ? '+' : ''}${racialMods.str}`);
-            if (racialMods.dex !== 0) modParts.push(`DEX ${racialMods.dex >= 0 ? '+' : ''}${racialMods.dex}`);
-            if (racialMods.con !== 0) modParts.push(`CON ${racialMods.con >= 0 ? '+' : ''}${racialMods.con}`);
-            if (racialMods.wil !== 0) modParts.push(`WIL ${racialMods.wil >= 0 ? '+' : ''}${racialMods.wil}`);
-            if (racialMods.spi !== 0) modParts.push(`SPI ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi}`);
-            if (racialMods.int !== 0) modParts.push(`INT ${racialMods.int >= 0 ? '+' : ''}${racialMods.int}`);
-            message += modParts.join(' | ') + `\n`;
+            message += `\n**Racial Modifiers:** ${formatRacialModLine(racialMods, characterData)}\n`;
         }
         
         message += `\nHP: ${characterData.maxHP}${racialMods.con !== 0 ? ` (includes ${racialMods.con >= 0 ? '+' : ''}${racialMods.con * 10} from CON racial bonus)` : ''} | Ki: ${characterData.maxKi}${racialMods.spi !== 0 ? ` (includes ${racialMods.spi >= 0 ? '+' : ''}${racialMods.spi * 10} from SPI racial bonus)` : ''}\n\n`;
@@ -18679,7 +26629,8 @@ async function handleInteraction(interaction) {
         }
 
         message += `⚠️ You can reroll stats **once** or confirm to create this character.\n`;
-        message += `🧬 Choose ONE: Roll for mutation (1d20, need 19+) OR boost all stats (5d100+20)!`;
+        message += `🧬 Choose ONE: Roll for mutation (1d20, need 19+) OR boost all stats (5d100+20)!\n`;
+        message += `🎯 **Stat Multipliers:** Allocate **${statMultiplierPoints}** points to boost your stat modifier gains (each +1 = +0.1×, min 0.7×, INT excluded).`;
 
         // Create buttons
         const row = new ActionRowBuilder()
@@ -18687,6 +26638,10 @@ async function handleInteraction(interaction) {
                 new ButtonBuilder()
                     .setCustomId('reroll_stats')
                     .setLabel('🎲 Reroll Stats')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('open_stat_multipliers')
+                    .setLabel('🎯 Stat Multipliers')
                     .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
                     .setCustomId('roll_mutation')
@@ -18702,6 +26657,10 @@ async function handleInteraction(interaction) {
                     .setStyle(ButtonStyle.Success)
             );
 
+        // Remember the preview so returning from the stat-multiplier screen restores it.
+        const pendingPreview = pendingCharacters.get(interaction.user.id);
+        if (pendingPreview) pendingPreview.lastPreview = { content: message, components: [row] };
+
         interaction.reply({ content: message, components: [row] });
     }
 
@@ -18712,6 +26671,61 @@ async function handleInteraction(interaction) {
         }
         const result = performReincarnation(interaction.user.id, character);
         return interaction.reply(result.text);
+    }
+
+    if (interaction.commandName === 'potential-unlock') {
+        const targetUser = interaction.options.getUser('target');
+        // Wise Old One "Understanding of Dormant Power": unlock another player's potential.
+        if (targetUser) {
+            const casterChar = characterManager.getCharacter(interaction.user.id);
+            if (!isWiseOldOne(casterChar)) {
+                return interaction.reply('❌ Only a **Wise Old One** can unlock someone else\'s potential!');
+            }
+            const targetChar = characterManager.getCharacter(targetUser.id);
+            if (!targetChar) {
+                return interaction.reply(`❌ **${targetUser.username}** doesn't have a character to unlock!`);
+            }
+            const block = getPotentialUnlockBlock(targetChar);
+            if (block) return interaction.reply(block);
+            const text = performPotentialUnlock(interaction, targetChar, `🧓 **Grand Elder Guru** (drawn out by **${casterChar.name}**, the Wise Old One)`, targetUser.id);
+            await interaction.reply(`🧓 **${casterChar.name}** draws out **${targetChar.name}**'s dormant power!\n\n${text}`);
+            try {
+                const targetDiscord = await client.users.fetch(targetUser.id);
+                if (targetDiscord) await targetDiscord.send(`🧓 **${casterChar.name}** (Wise Old One) unlocked your potential!\n\n${text}`);
+            } catch (_) { /* DM may be closed — ignore. */ }
+            return;
+        }
+
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) {
+            return interaction.reply('❌ You need a character to unlock your potential! Use `/character-create` first.');
+        }
+        const block = getPotentialUnlockBlock(character);
+        if (block) return interaction.reply(block);
+        const text = performPotentialUnlock(interaction, character, '🧓 **Grand Elder Guru**');
+        return interaction.reply(text);
+    }
+
+    if (interaction.commandName === 'auto-saga') {
+        const plInput = interaction.options.getInteger('pl');
+        const preview = plInput !== null && plInput !== undefined;
+        const maxPL = getServerMaxPL();
+        const showPL = preview ? Math.max(0, plInput) : maxPL;
+        const saga = sagaFromPL(showPL);
+        const enabled = AUTO_SAGA_ENABLED;
+        let msg = `📈 **Auto-Saga** — the saga scales from the strongest player's power level.\n\n`;
+        msg += `⚙️ **Enabled:** ${enabled ? '✅' : '❌ (using the admin \`/set-saga\` value)'}\n`;
+        msg += `🏆 **Server strongest PL:** ${formatPL(maxPL)}\n`;
+        if (preview) msg += `🔎 **Preview PL:** ${formatPL(showPL)}\n`;
+        msg += `📊 **Derived saga:** **${saga}** (admin globalSaga: **${globalSaga}**)\n\n`;
+        msg += `**Formula:**\n`;
+        msg += `\`saga = clamp(1, 1 + floor( log(maxPL ÷ ${AUTO_SAGA_BASE_PL.toLocaleString()}) ÷ log(${AUTO_SAGA_STEP}) ), ${AUTO_SAGA_MAX})\`\n`;
+        msg += `\`maxPL < ${AUTO_SAGA_BASE_PL.toLocaleString()} → saga 1\`\n\n`;
+        msg += `**Examples** (base ${AUTO_SAGA_BASE_PL.toLocaleString()}, step ×${AUTO_SAGA_STEP}):\n`;
+        [AUTO_SAGA_BASE_PL, AUTO_SAGA_BASE_PL * AUTO_SAGA_STEP, AUTO_SAGA_BASE_PL * AUTO_SAGA_STEP ** 2, AUTO_SAGA_BASE_PL * AUTO_SAGA_STEP ** 3, AUTO_SAGA_BASE_PL * AUTO_SAGA_STEP ** 4].forEach((p, i) => {
+            msg += `- ${formatPL(p)} → saga **${i + 1}**\n`;
+        });
+        return interaction.reply(msg);
     }
 
     if (interaction.commandName === 'king-yemma') {
@@ -18729,31 +26743,16 @@ async function handleInteraction(interaction) {
         if (deathAlign < 1000) {
             return interaction.reply(`❌ **King Yemma** is unmoved by **${character.name}** — you need **1000+ positive alignment** when you died to beg for revival. (You died with **${deathAlign}**.)`);
         }
-        const now = Date.now();
-        const lastRoll = character.yemmaRollAt || 0;
-        const cooldownMs = 10 * 60 * 1000;
-        const wait = lastRoll + cooldownMs - now;
-        if (wait > 0) {
-            return interaction.reply(`⏳ You can roll again in **${formatDuration(wait)}**.`);
-        }
-        const roll = getRandomInt(20);
-        if (roll > 15) {
-            const reviveLocation = character.deathLocation || character.homeLocation || getDefaultLocation(character.race);
-            const reviveSpace = character.deathSpace || character.homeSpace || 1;
-            characterManager.updateCharacter(interaction.user.id, character.id, {
-                dead: false,
-                location: reviveLocation,
-                space: reviveSpace,
-                currentHP: character.maxHP,
-                currentKi: character.maxKi,
-                fatigue: 0,
-                peakFatigue: 0,
-                yemmaRollAt: now
-            });
-            return interaction.reply(`😇 **King Yemma** smiles upon **${character.name}**! (d20 = **${roll}**, save **15**)\n✨ **${character.name} is revived!** You return to life at **${reviveLocation} - Space ${reviveSpace}** with **full HP/Ki**.`);
-        }
-        characterManager.updateCharacter(interaction.user.id, character.id, { yemmaRollAt: now });
-        return interaction.reply(`👿 **King Yemma** shakes his head... (d20 = **${roll}**, save **15**)\n**${character.name}** remains in the **Otherworld**. You can roll again in **10 minutes**.`);
+        const isYokai = character.race === 'Yokai';
+        const quest = character.yokaiQuest;
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`yemma_revive_${interaction.user.id}`).setLabel('😇 Ask for revival (d20)').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`yemma_yokai_${interaction.user.id}`)
+                .setLabel(isYokai ? '👻 Already a Yokai' : (quest && quest.mode === 'proving' ? `👻 Prove your worth (${quest.completed || 0}/${quest.target})` : '👻 Prove your worth (Yokai)'))
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(isYokai)
+        );
+        return interaction.reply({ content: `**King Yemma** regards **${character.name}**...\n\nWhat do you ask?`, components: [row] });
     }
 
     if (interaction.commandName === 'character-view') {
@@ -18774,11 +26773,14 @@ async function handleInteraction(interaction) {
 
         finalizeTravel(interaction.user.id, character);
         applyAging(interaction.user.id, character);
+        // Refresh time-based rest-charge regeneration so the displayed count is current.
+        updateRestCharges(interaction.user.id, character);
         // Resolve any due births/feedings while viewing (persistent timestamps survive restarts).
         processPendingBirths();
         handleBabyFeeding(interaction.user.id, character);
         character = characterManager.getCharacter(interaction.user.id) || character;
         const birthNotice = takeBirthNotice(interaction.user.id);
+        const nicknameNotice = takeNicknameNotice(interaction.user.id);
         checkSaiyanSuperSaiyanUnlock(interaction.user.id, character);
 
         // Family / children summary.
@@ -18809,7 +26811,7 @@ async function handleInteraction(interaction) {
 
         // Calculate modifiers if not stored
         if (!character.modifiers) {
-            character.modifiers = calculateAllModifiers(character.stats);
+            character.modifiers = calculateAllModifiers(character.stats, character.statMultipliers);
         }
 
         // Get racial modifiers
@@ -18818,6 +26820,10 @@ async function handleInteraction(interaction) {
         // Only Tortles have a shell to show on their sheet.
         const shellField = character.race === 'Tortle'
             ? [{ name: '🐢 Shell', value: hasActiveShell(character) ? '🐢 Shelled (+10 CON / -5 DEX)' : '💨 Shed (+10 DEX / -5 CON)', inline: false }]
+            : [];
+        // Half-Saiyans roll for a tail at creation ("To Tail or to Not").
+        const tailField = character.race === 'Half-Saiyan'
+            ? [{ name: '🐒 Tail', value: character.hasTail === false ? '🚫 No Tail' : '🐒 Tail', inline: false }]
             : [];
 
         // Techniques list: known techniques (Ki Sense, Fly, style moves, etc.) plus
@@ -18828,14 +26834,15 @@ async function handleInteraction(interaction) {
         const techniquesText = techniquesList.length > 0 ? techniquesList.join(', ') : 'None';
 
         // Create embedded character sheet
+        const activeNick = getActiveNickname(character);
         const embed = new EmbedBuilder()
             .setColor(0x0099FF)
-            .setTitle(`${character.name}`)
-            .setDescription(`${zenkaiNotice}${vampConversion}${birthNotice}**${character.race}${character.class ? ` | ${character.class}` : ''}** | Age ${character.age}\n📍 **${viewLocation}** - Space ${viewSpace}${specialName ? ` (${specialName})` : ''}${homeText}${gearText}${hasSpaceship(character) ? ` 🚀 Lv${character.spaceshipLevel || 1}` : ''}${hasSpacePod(character) ? ' 🛸' : ''}${character.gravityChamber ? ` ⚖️ x${character.gravityChamber}` : ''}${character.weightsEquipped && character.weightsType ? ` 🏋️ ${WEIGHTS_TYPES[character.weightsType].name}` : ''}${character.activeForm ? ` 🔥 ${character.activeForm}` : ''}${hasActiveTalisman(character) ? ' 🧿 Talisman' : ''}${isVampire(character) ? `\n🩸 Blood: **${character.bloodBar || 0}/${getVampireBloodMax(character)}**` : ''}${travelRemaining > 0 ? `\n✈️ In transit — arriving in ~${formatDuration(travelRemaining)}` : ''}`)
+            .setTitle(activeNick ? `${character.name} — ${activeNick.emoji} ${activeNick.text}` : `${character.name}`)
+            .setDescription(`${nicknameNotice}${zenkaiNotice}${vampConversion}${birthNotice}**${character.race}${character.gender ? ` ${character.gender}` : ''}${character.class ? ` | ${character.class}` : ''}${character.beauty ? ` | 🎭 ${getBeautyLabel(character.beauty)}` : ''}** | Age ${character.age}${character.gender ? ` | ${character.gender}` : ''}${getNicknameList(character).length ? `\n🏷️ ${formatNicknameList(character)}` : ''}\n📍 **${viewLocation}** - Space ${viewSpace}${caveMarker(viewLocation, viewSpace)}${specialName ? ` (${specialName})` : ''}${homeText}${gearText}${hasSpaceship(character) ? ` 🚀 Lv${character.spaceshipLevel || 1}` : ''}${hasSpacePod(character) ? ' 🛸' : ''}${character.gravityChamber ? ` ⚖️ x${character.gravityChamber}` : ''}${character.weightsEquipped && character.weightsType ? ` 🏋️ ${WEIGHTS_TYPES[character.weightsType].name}` : ''}${character.activeForm ? ` 🔥 ${character.activeForm}` : ''}${hasActiveTalisman(character) ? ' 🧿 Talisman' : ''}${isVampire(character) ? `\n🩸 Blood: **${character.bloodBar || 0}/${getVampireBloodMax(character)}**` : ''}${travelRemaining > 0 ? `\n✈️ In transit — arriving in ~${formatDuration(travelRemaining)}` : ''}`)
             .addFields(
                 { 
                     name: '⚡ Power Level', 
-                    value: `**${character.powerLevel}**${character.activeForm && FORMS[character.activeForm] ? ` → **${Math.floor(character.powerLevel * getFormPLMultiplier(character.activeForm, (character.formMastery || {})[character.activeForm] || 0))}** in ${character.activeForm}` : ''}`, 
+                    value: `**${formatPL(character.powerLevel)}**${character.activeForm && FORMS[character.activeForm] ? ` → **${formatPL(Math.floor(character.powerLevel * getFormPLMultiplier(character.activeForm, (character.formMastery || {})[character.activeForm] || 0)))}** in ${character.activeForm}` : ''}`, 
                     inline: false 
                 },
                 { 
@@ -18871,6 +26878,11 @@ async function handleInteraction(interaction) {
                 { 
                     name: '🔍 Modifier Breakdown', 
                     value: `**STR:** ${getStatModifierBreakdown(character, 'str')}\n\n**DEX:** ${getStatModifierBreakdown(character, 'dex')}`, 
+                    inline: false 
+                },
+                { 
+                    name: '🎯 Stat Multipliers', 
+                    value: `STR **${formatStatMultiplier((character.statMultipliers||{}).str || 0)}** · DEX **${formatStatMultiplier((character.statMultipliers||{}).dex || 0)}** · CON **${formatStatMultiplier((character.statMultipliers||{}).con || 0)}** · WIL **${formatStatMultiplier((character.statMultipliers||{}).wil || 0)}** · SPI **${formatStatMultiplier((character.statMultipliers||{}).spi || 0)}**`, 
                     inline: false 
                 },
                 { 
@@ -18914,6 +26926,7 @@ async function handleInteraction(interaction) {
                     inline: false 
                 },
                 ...shellField,
+                ...tailField,
                 { 
                     name: '🧬 Mutation', 
                     value: character.mutation && character.mutation !== 'None' ? character.mutation : 'None', 
@@ -19040,7 +27053,7 @@ async function handleInteraction(interaction) {
 
         const target = interaction.options.getUser('user') || interaction.user;
         const stat = interaction.options.getString('stat');
-        const value = interaction.options.getInteger('value');
+        const value = (interaction.options.getString('value') || '').trim();
 
         const character = characterManager.getCharacter(target.id);
 
@@ -19048,21 +27061,38 @@ async function handleInteraction(interaction) {
             return interaction.reply(`❌ ${target.username} doesn't have a character!`);
         }
 
+        // Gender uses the raw string value (e.g. `/set-stat Gender Male`).
+        if (stat === 'gender') {
+            const g = value.toLowerCase();
+            if (g !== 'male' && g !== 'female') {
+                return interaction.reply({ content: '❌ Pick a **gender**: `Male` or `Female`.', ephemeral: true });
+            }
+            const gender = g === 'male' ? 'Male' : 'Female';
+            characterManager.updateCharacter(target.id, character.id, { gender });
+            return interaction.reply(`🚻 Set **${target.username}**'s **Gender** to **${gender}**.`);
+        }
+
+        // All other stats are numeric — parse the provided value.
+        const numVal = Number.parseInt(value, 10);
+        if (!Number.isFinite(numVal)) {
+            return interaction.reply({ content: '❌ A numeric **value** is required for this stat.', ephemeral: true });
+        }
+
         // Non-stat fields (zeni / resources / age) just get set directly.
         if (stat === 'zeni' || stat === 'resources') {
-            characterManager.updateCharacter(target.id, character.id, { [stat]: value });
-            return interaction.reply(`💰 Set **${target.username}**'s **${stat === 'zeni' ? 'Zeni' : 'Resources'}** to **${value.toLocaleString()}**.`);
+            characterManager.updateCharacter(target.id, character.id, { [stat]: numVal });
+            return interaction.reply(`💰 Set **${target.username}**'s **${stat === 'zeni' ? 'Zeni' : 'Resources'}** to **${(numVal || 0).toLocaleString()}**.`);
         }
         if (stat === 'age') {
             // Reset the age clock so the set value sticks.
-            characterManager.updateCharacter(target.id, character.id, { age: value, lastAgeCheck: Date.now() });
-            return interaction.reply(`⌛ Set **${target.username}**'s **Age** to **${value}**.`);
+            characterManager.updateCharacter(target.id, character.id, { age: numVal, lastAgeCheck: Date.now() });
+            return interaction.reply(`⌛ Set **${target.username}**'s **Age** to **${numVal}**.`);
         }
 
         const stats = { ...(character.stats || {}) };
-        stats[stat] = value;
+        stats[stat] = numVal;
 
-        const modifiers = calculateAllModifiers(stats);
+        const modifiers = calculateAllModifiers(stats, character.statMultipliers);
         const vitals = recalcVitals(character, stats);
         characterManager.updateCharacter(target.id, character.id, {
             stats,
@@ -19071,7 +27101,7 @@ async function handleInteraction(interaction) {
             powerLevel: characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi })
         });
 
-        return interaction.reply(`📊 Set **${target.username}**'s **${stat.toUpperCase()}** to **${value}**!\n\nUpdated stats, vitals, and power level (PL **${characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }).toLocaleString()}**).`);
+        return interaction.reply(`📊 Set **${target.username}**'s **${stat.toUpperCase()}** to **${numVal}**!\n\nUpdated stats, vitals, and power level (PL **${formatPL(characterManager.calculatePowerLevel({ ...stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi }))}**).`);
     }
 
     if (interaction.commandName === 'character-inventory') {
@@ -19141,6 +27171,9 @@ async function handleInteraction(interaction) {
             return interaction.reply('You don\'t have a character! Use `/character-create` to make one.');
         }
 
+        // A matured Tree of Might bears fruit (and may destroy Earth) on the next relevant action.
+        checkTreeOfMight();
+
         const slot = interaction.options.getInteger('slot');
         
         if (!character.inventory || character.inventory.length === 0) {
@@ -19195,10 +27228,12 @@ async function handleInteraction(interaction) {
         // Dragon Radar: reports the nearest dragon ball (or nearest player holding one).
         if (legendaryName === 'Dragon Radar') {
             const info = getNearestDragonBallInfo(character);
+            const unclaimed = dragonBallState.filter(b => !b.foundBy).length + namekianDragonBallState.filter(b => !b.foundBy).length;
             if (info.type === 'ball') {
-                return interaction.reply(`📡 **${character.name}** scans the **Dragon Radar**...\n🐉 A **Dragon Ball** is **${info.distance} space${info.distance === 1 ? '' : 's'}** away! (${info.key.replace('-', ' - Space ')})`);
+                const meta = info.meta || DRAGON_BALL_SETS.shenron;
+                return interaction.reply(`📡 **${character.name}** scans the **Dragon Radar**...\n${meta.emoji} A **${meta.ballName}** is **${info.distance} space${info.distance === 1 ? '' : 's'}** away! (${info.key.replace('-', ' - Space ')})`);
             } else if (info.type === 'elsewhere') {
-                return interaction.reply(`📡 **${character.name}** scans the **Dragon Radar**...\n🐉 The remaining Dragon Balls are on another planet! (**${dragonBallState.filter(b => !b.foundBy).length}** still unclaimed)`);
+                return interaction.reply(`📡 **${character.name}** scans the **Dragon Radar**...\n🐉 The remaining Dragon Balls are on another planet! (**${unclaimed}** still unclaimed)`);
             } else if (info.type === 'holder') {
                 return interaction.reply(`📡 **${character.name}** scans the **Dragon Radar**...\n🐉 All Dragon Balls are held! **${info.holder.name}** (holding one) is **${info.distance} space${info.distance === 1 ? '' : 's'}** away!`);
             }
@@ -19225,7 +27260,7 @@ async function handleInteraction(interaction) {
 
             if (mutationRoll >= 19) {
                 if (!character.mutation || character.mutation === 'None') {
-                    const available = getAvailableMutations(character.race);
+                    const available = getAvailableMutations(character.race, character.clan);
                     if (available.length > 0) {
                         const mut = available[getRandomInt(available.length) - 1];
                         applyMutationEffects(interaction.user.id, character, mut.name);
@@ -19241,7 +27276,7 @@ async function handleInteraction(interaction) {
                 message += `You rolled below **19** — no mutation gained.`;
             }
 
-            const modifiers = calculateAllModifiers(character.stats);
+            const modifiers = calculateAllModifiers(character.stats, character.statMultipliers);
             const vitals = recalcVitals(character, character.stats);
             characterManager.updateCharacter(interaction.user.id, character.id, {
                 stats: character.stats,
@@ -19253,9 +27288,116 @@ async function handleInteraction(interaction) {
                 mutation: character.mutation,
                 forms: character.forms,
                 kiEfficiency: character.kiEfficiency,
+                kiSense: character.kiSense,
                 abilityMastery: character.abilityMastery,
+                techniqueMastery: character.techniqueMastery,
+                techniques: character.techniques,
                 inventory: character.inventory
             });
+            return interaction.reply(message);
+        }
+
+        // Seed of Might: plant the legendary Tree of Might on your current planet.
+        if (legendaryName === 'Seed of Might') {
+            if (globalSaga <= 1) return interaction.reply('🌱 The Tree of Might can only be planted **after the Saiyan saga**!');
+            const planet = character.location || 'Earth';
+            if (!TREE_OF_MIGHT_PLANETS.includes(planet)) {
+                return interaction.reply(`❌ The Tree of Might can only grow on **${TREE_OF_MIGHT_PLANETS.join('/')}** (a planet with an atmosphere)!`);
+            }
+            if (treeOfMight.planet) return interaction.reply('❌ A Tree of Might is already growing! Wait for it to bear fruit first.');
+            if (treeOfMightUsedPlanets.includes(planet)) return interaction.reply(`❌ **${planet}** has already harbored a Tree of Might! The seed can only be replanted on a fresh planet.`);
+            // Planting a Tree of Might counts as a canon action (uses the canon cooldown).
+            const lastUsed = character.canonActionUsedAt || 0;
+            if (Date.now() - lastUsed < CANON_ACTION_CD_MS) {
+                const leftH = Math.ceil((CANON_ACTION_CD_MS - (Date.now() - lastUsed)) / 3600000);
+                return interaction.reply(`❌ You've just used a canon action! Wait **${leftH}h**.`);
+            }
+            consumeInventorySlot(character.inventory, slot - 1);
+            treeOfMight.planet = planet;
+            treeOfMight.plantedBy = interaction.user.id;
+            treeOfMight.expiresAt = Date.now() + CANON_ACTION_WINDOW_MS;
+            treeOfMight.status = 'growing';
+            treeOfMight.earthDestroyed = false;
+            treeOfMightUsedPlanets.push(planet);
+            characterManager.updateCharacter(interaction.user.id, character.id, { inventory: character.inventory, canonActionUsedAt: Date.now() });
+            return interaction.reply(`🌱 **${character.name}** plants the **Seed of Might** on **${planet}**! The **Tree of Might** will bear fruit in **${formatCanonActionWindow()}** (counts as a canon action).${planet === 'Earth' ? '\n⚠️ **Earth will be destroyed when it blooms!** Defend the tree from being destroyed!' : '\n⚔️ Anyone who defeats you can **destroy the tree** and save the planet!'}`);
+        }
+
+        // Fruit of Might: eating it cultivates you to unheard-of levels (escalating effects).
+        if (legendaryName === 'Fruit of Might') {
+            const eaten = character.fruitsOfMightEaten || 0;
+            if (eaten >= 3) {
+                return interaction.reply('❌ You have already endured the **Fruit of Might** twice beyond mortal limits!');
+            }
+            consumeInventorySlot(character.inventory, slot - 1);
+            const stats = { ...(character.stats || {}) };
+            let message = `🍎 **${character.name}** eats a **Fruit of Might**!`;
+            let dead = false;
+            let lostKi = false;
+            if (eaten === 0) {
+                const boost = rollXdY(2, 2000) + 300; // 2d2000+300
+                ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = (stats[s] || 0) + boost; });
+                message += `\n⚡ First fruit: **+${boost}** to every combat stat!`;
+            } else if (eaten === 1) {
+                ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = Math.max(1, (stats[s] || 0) * 2); });
+                message += `\n⚡ Second fruit: **×2** to every combat stat!`;
+            } else {
+                const roll = getRandomInt(100);
+                message += `\n🎲 Third fruit — d100: **${roll}**`;
+                if (roll <= 20) {
+                    dead = true;
+                    message += `\n💀 **You perish!** The divine power disagrees with your mortal body.`;
+                } else if (roll <= 40) {
+                    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = Math.max(1, Math.floor((stats[s] || 0) * 0.2)); });
+                    lostKi = true;
+                    message += `\n🔥 You lose **80% of your power**, and all **ki abilities/mastery** (they can be relearned).`;
+                } else if (roll <= 60) {
+                    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = Math.max(1, Math.floor((stats[s] || 0) * 0.6)); });
+                    message += `\n💢 You only lose **40% of your power** (retain your ki mastery).`;
+                } else if (roll <= 90) {
+                    message += `\n😌 The fruit surprisingly does not affect your body.`;
+                } else if (roll <= 99) {
+                    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = Math.max(1, (stats[s] || 0) * 2); });
+                    message += `\n✨ The fruit cultivates with you — your power is **doubled**!`;
+                } else {
+                    ['str', 'dex', 'con', 'wil', 'spi'].forEach(s => { stats[s] = Math.max(1, (stats[s] || 0) * 4); });
+                    message += `\n🌟 The fruit resonates with your soul — your power is **quadrupled**!`;
+                }
+            }
+
+            const updates = { stats, fruitsOfMightEaten: eaten + 1 };
+            if (!dead) {
+                const modifiers = calculateAllModifiers(updates.stats, character.statMultipliers);
+                const vitals = recalcVitals(character, updates.stats);
+                updates.modifiers = modifiers;
+                updates.maxHP = vitals.maxHP;
+                updates.maxKi = vitals.maxKi;
+                updates.currentHP = vitals.maxHP;
+                updates.currentKi = vitals.maxKi;
+                updates.powerLevel = characterManager.calculatePowerLevel({ ...updates.stats, maxHP: vitals.maxHP, maxKi: vitals.maxKi });
+                updates.inventory = character.inventory;
+                if (lostKi) {
+                    // Remove ki abilities + mastery (relearnable).
+                    const techs = (character.techniques || []).filter(t => !['Ki Sense', 'Ki Application', 'Ki Efficiency'].includes(String(typeof t === 'string' ? t : (t.name || t))));
+                    updates.techniques = techs;
+                    updates.kiSense = false;
+                    updates.kiEfficiency = false;
+                    updates.kiApplicationLearned = false;
+                    updates.abilityMastery = {};
+                    updates.techniqueMastery = (character.techniqueMastery || {}) ? { ...character.techniqueMastery } : {};
+                    ['Ki Sense', 'Ki Application', 'Ki Efficiency'].forEach(k => { delete updates.techniqueMastery[k]; });
+                    delete updates.abilityMastery['Ki Efficiency'];
+                }
+            } else {
+                updates.dead = true;
+                updates.currentHP = 0;
+                updates.currentKi = 0;
+                updates.location = 'Otherworld';
+                updates.space = 1;
+                updates.inventory = character.inventory;
+                if (character.zenkaiPending) updates.zenkaiPending = null;
+            }
+            characterManager.updateCharacter(interaction.user.id, character.id, updates);
             return interaction.reply(message);
         }
 
@@ -19312,7 +27454,7 @@ async function handleInteraction(interaction) {
             const oldAge = character.age || 0;
             const newAge = Math.max(1, Math.floor(oldAge * 0.25));
 
-            const modifiers = calculateAllModifiers(character.stats);
+            const modifiers = calculateAllModifiers(character.stats, character.statMultipliers);
             const vitals = recalcVitals(character, character.stats);
             characterManager.updateCharacter(interaction.user.id, character.id, {
                 stats: character.stats,
@@ -19325,6 +27467,16 @@ async function handleInteraction(interaction) {
                 inventory: character.inventory
             });
             return interaction.reply(`💧 **${character.name}** drank from the **Fountain of Youth**!\n\n🎲 1d20 = **${roll}** → permanent stat multiplier **${multLabel}**\n⏳ Age: ${oldAge} → **${newAge}**`);
+        }
+
+        // Ultra Divine Water: unlock your potential — roll d100, add that % of your stats onto
+        // themselves. Usable once every 3 sagas AFTER the Saiyan saga.
+        if (legendaryName === 'Ultra Divine Water') {
+            const block = getPotentialUnlockBlock(character);
+            if (block) return interaction.reply(block);
+            consumeInventorySlot(character.inventory, slot - 1);
+            const text = performPotentialUnlock(interaction, character, '💧 **Ultra Divine Water**');
+            return interaction.reply(text);
         }
 
         // Bag of Senzu (16x): open it to receive 16 Senzu Beans.
@@ -19365,7 +27517,7 @@ async function handleInteraction(interaction) {
             if (roll >= save) {
                 const stats = { ...(character.stats || {}) };
                 stats.int = currentInt + 1;
-                const modifiers = calculateAllModifiers(stats);
+                const modifiers = calculateAllModifiers(stats, character.statMultipliers);
                 const vitals = recalcVitals(character, stats);
                 characterManager.updateCharacter(interaction.user.id, character.id, {
                     stats,
@@ -19460,10 +27612,88 @@ async function handleInteraction(interaction) {
             pendingCharacters.delete(interaction.user.id);
             activeCreations.delete(interaction.user.id);
 
-            return interaction.reply(`🗑️ **Character Deleted**\n\n**${character.name}** (${character.race}, PL: ${character.powerLevel}) has been permanently wiped from the database.\n\nYou can create a new character with \`/character-create\`.`);
+            return interaction.reply(`🗑️ **Character Deleted**\n\n**${character.name}** (${character.race}, PL: ${formatPL(character.powerLevel)}) has been permanently wiped from the database.\n\nYou can create a new character with \`/character-create\`.`);
         } else {
             return interaction.reply('❌ Failed to delete character. Please try again.');
         }
+    }
+
+    if (interaction.commandName === 'character-wipe-admin') {
+        if (interaction.memberPermissions === null || !interaction.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+            return interaction.reply({ content: '❌ This command is admin-only.', ephemeral: true });
+        }
+
+        const target = interaction.options.getUser('user');
+        if (!target) {
+            return interaction.reply({ content: '❌ Please provide a user to wipe.', ephemeral: true });
+        }
+        const confirmation = interaction.options.getString('confirmation');
+        if (confirmation !== 'DELETE') {
+            return interaction.reply({ content: '❌ Wipe cancelled. You must type "DELETE" exactly to confirm.', ephemeral: true });
+        }
+
+        const characters = characterManager.getAllCharacters(target.id);
+        if (characters.length === 0) {
+            return interaction.reply({ content: `❌ **${target.username}** has no character data to wipe.`, ephemeral: true });
+        }
+
+        // End any battle the target is currently in, so we don't leave stale in-memory state.
+        const battle = battleManager.getBattleForUser(target.id);
+        if (battle) {
+            const bid = battle.id;
+            battleManager.endBattle(bid);
+            battleMessages.delete(bid);
+            clearBattleTurnTimer(battle);
+            activeHunts.delete(bid);
+            activeMissions.delete(bid);
+        }
+        pendingMissions.delete(target.id);
+        pendingRivalResolutions.delete(target.id);
+
+        const count = characterManager.deleteAllCharacters(target.id);
+        // Clear per-user transient creation state + cooldown so they can start fresh.
+        pendingCharacters.delete(target.id);
+        activeCreations.delete(target.id);
+        if (creationCooldowns[target.id]) {
+            delete creationCooldowns[target.id];
+            saveCreationCooldowns();
+        }
+
+        const names = characters.map(c => `${c.name} (${c.race}, PL: ${c.powerLevel ?? '?'})`).join(', ');
+        return interaction.reply(`🗑️ **Wiped ${target.username}**'s character data (**${count}** character${count === 1 ? '' : 's'}):\n\n${names}\n\nThey can create a new character with \`/character-create\`.`);
+    }
+
+    if (interaction.commandName === 'wipe-game') {
+        if (interaction.memberPermissions === null || !interaction.memberPermissions.has(PermissionsBitField.Flags.Administrator)) {
+            return interaction.reply({ content: '❌ This command is admin-only.', ephemeral: true });
+        }
+
+        const confirmation = interaction.options.getString('confirmation');
+        if (confirmation !== 'WIPE GAME') {
+            return interaction.reply({ content: '❌ Wipe cancelled. You must type `WIPE GAME` exactly to confirm.', ephemeral: true });
+        }
+
+        // The wipe can take a moment (round-trips to blank open battle messages), so acknowledge
+        // first and fill in the summary when it's done.
+        await interaction.deferReply();
+        try {
+            const s = await resetAllGameState();
+            await interaction.editReply(
+                `💥 **GAME WIPED** — the server is back to a fresh install.\n\n` +
+                `👥 Players cleared: **${s.players}** (**${s.characters}** character${s.characters === 1 ? '' : 's'})\n` +
+                `⚔️ Battles ended: **${s.battles}**\n` +
+                `⏳ Creation cooldowns cleared: **${s.cooldowns}**\n` +
+                `🪐 Planets restored: **${s.planets}** · locations cleared: **${s.locations}**\n` +
+                `📖 Saga reset: **${s.saga}** → **1**\n` +
+                `🐉 Dragon balls re-scattered (none found)\n` +
+                `👑 Dungeon Master cleared\n\n` +
+                `Everyone can start over with \`/character-create\`. Restarting the bot is not required.`
+            );
+        } catch (e) {
+            console.error('[wipe-game] failed:', e && e.stack ? e.stack : e);
+            await interaction.editReply(`❌ The wipe failed partway: \`${e && e.message ? e.message : e}\`\nCheck the bot logs — the game may be in a partial state.`);
+        }
+        return;
     }
 
     if (interaction.commandName === 'races') {
@@ -19482,9 +27712,9 @@ async function handleInteraction(interaction) {
 
             let message = `## ${raceInfo.name}\n\n`;
             message += `**Description:** ${raceInfo.description}\n\n`;
-            message += `**Type:** ${raceInfo.type === 'birth' ? 'Obtainable Through Birth' : 'Obtainable Through Reincarnation'}\n\n`;
+            message += `**Type:** ${raceInfo.type === 'birth' ? 'Obtainable Through Birth' : 'Obtainable Through Methods'}\n\n`;
             if (raceInfo.type !== 'birth') {
-                message += `⚠️ **Not selectable at character creation** — this race is obtained through reincarnation or modification.\n\n`;
+                message += `⚠️ **Not selectable at character creation** — this race is obtained through methods (reincarnation, modification, conversion, etc.).\n\n`;
             }
             message += `**Racial Abilities:**\n`;
             if (raceInfo.passives && raceInfo.passives.length > 0) {
@@ -19513,7 +27743,7 @@ async function handleInteraction(interaction) {
         Object.values(races).filter(r => r.type === 'birth').forEach(race => {
             message += `• **${race.name}**\n`;
         });
-        message += `\n**Reincarnation Races (not selectable at creation):**\n`;
+        message += `\n**Method Races (not selectable at creation):**\n`;
         Object.values(races).filter(r => r.type === 'method').forEach(race => {
             message += `• **${race.name}**\n`;
         });
@@ -19550,61 +27780,74 @@ async function handleInteraction(interaction) {
     if (interaction.commandName === 'leaderboard') {
         const stat = interaction.options.getString('stat');
 
-        // First character per user
-        const entries = [];
+        // PERF: single pass over the whole character store. The previous implementation scanned
+        // it once for entries, then AGAIN per leaderboard variant for companions, and re-sorted
+        // every category in the "strongest in each category" view. Output is byte-identical.
+        const entries = [];       // first character per user
+        const allCompanions = []; // every companion: { ownerName, companion, value }
         Object.values(characterManager.characters || {}).forEach(chars => {
-            if (Array.isArray(chars) && chars.length > 0) entries.push(chars[0]);
+            if (!Array.isArray(chars)) return;
+            chars.forEach((c, idx) => {
+                if (idx === 0) entries.push(c);
+                if (Array.isArray(c.companions)) c.companions.forEach(cmp => {
+                    allCompanions.push({ ownerName: c.name, companion: cmp, value: getCompanionPowerLevel(cmp, c) });
+                });
+            });
         });
 
         if (entries.length === 0) {
             return interaction.reply('📊 No characters found yet!');
         }
 
+        // Strongest single character for one accessor (value desc, name-asc tie-break) — one
+        // O(n) scan instead of a full sort per category.
+        const bestFor = (accessor) => entries.reduce((acc, c) => {
+            const value = accessor(c) || 0;
+            if (value <= 0) return acc;
+            if (!acc || value > acc.value
+                || (value === acc.value && String(c.name).localeCompare(String(acc.character.name)) < 0)) {
+                return { character: c, value };
+            }
+            return acc;
+        }, null);
+
         // No stat given: show the strongest character in EVERY category
         if (!stat) {
             let message = `🏆 **Strongest in each category**\n\n`;
             Object.entries(STAT_ACCESSORS).forEach(([label, accessor]) => {
-                const best = entries
-                    .map(c => ({ character: c, value: accessor(c) }))
-                    .sort((a, b) => (b.value - a.value) || String(a.character.name).localeCompare(String(b.character.name)))[0];
-                if (best && best.value > 0) {
+                const best = bestFor(accessor);
+                if (best) {
                     const unit = label === 'Heaviest Fish' ? ' kg' : '';
-                    message += `**${label}**: ${best.character.name} — ${best.value.toLocaleString()}${unit}\n`;
+                    const valueText = label === 'Power Level' ? formatPL(best.value) : best.value.toLocaleString();
+                    message += `**${label}**: ${best.character.name} — ${valueText}${unit}\n`;
                 }
             });
             // Strongest companion by power level
-            const comps = [];
-            Object.values(characterManager.characters || {}).forEach(chars => {
-                if (Array.isArray(chars)) chars.forEach(c => {
-                    if (Array.isArray(c.companions)) c.companions.forEach(cmp => comps.push({ name: cmp.name, owner: c.name, value: getCompanionPowerLevel(cmp, c) }));
-                });
-            });
-            if (comps.length > 0) {
-                const best = comps.sort((a, b) => (b.value - a.value) || String(a.name).localeCompare(String(b.name)))[0];
-                if (best) message += `**🐾 Companion Power Level**: ${best.name} (${best.owner}) — ${best.value.toLocaleString()}\n`;
+            if (allCompanions.length > 0) {
+                const best = allCompanions.reduce((acc, e) => {
+                    if (!acc || e.value > acc.value
+                        || (e.value === acc.value && String(e.companion.name).localeCompare(String(acc.companion.name)) < 0)) {
+                        return e;
+                    }
+                    return acc;
+                }, null);
+                if (best) message += `**🐾 Companion Power Level**: ${best.companion.name} (${best.ownerName}) — ${formatPL(best.value)}\n`;
             }
             return interaction.reply(message);
         }
 
         // Companion leaderboard: rank every companion by power level.
         if (stat === 'Companion Power Level') {
-            const compEntries = [];
-            Object.values(characterManager.characters || {}).forEach(chars => {
-                if (Array.isArray(chars)) chars.forEach(c => {
-                    if (Array.isArray(c.companions)) c.companions.forEach(cmp => {
-                        compEntries.push({ owner: c.name, companion: cmp, value: getCompanionPowerLevel(cmp, c) });
-                    });
-                });
-            });
-            if (compEntries.length === 0) return interaction.reply('📊 No companions found yet!');
-            const sorted = compEntries
+            if (allCompanions.length === 0) return interaction.reply('📊 No companions found yet!');
+            const sorted = allCompanions
+                .slice()
                 .sort((a, b) => (b.value - a.value) || String(a.companion.name).localeCompare(String(b.companion.name)))
                 .slice(0, 10);
             const medals = ['🥇', '🥈', '🥉'];
             let message = `🏆 **Leaderboard — Companion Power Level**\n\n`;
             sorted.forEach((entry, index) => {
                 const rank = index < 3 ? medals[index] : `${index + 1}.`;
-                message += `${rank} **${entry.companion.name}** (${entry.owner}) — ${entry.value.toLocaleString()}\n`;
+                message += `${rank} **${entry.companion.name}** (${entry.ownerName}) — ${formatPL(entry.value)}\n`;
             });
             return interaction.reply(message);
         }
@@ -19621,10 +27864,11 @@ async function handleInteraction(interaction) {
 
         const medals = ['🥇', '🥈', '🥉'];
         const unit = stat === 'Heaviest Fish' ? ' kg' : '';
+        const isPL = stat === 'Power Level';
         let message = `🏆 **Leaderboard — ${stat}**\n\n`;
         sorted.forEach((entry, index) => {
             const rank = index < 3 ? medals[index] : `${index + 1}.`;
-            message += `${rank} **${entry.character.name}** — ${entry.value.toLocaleString()}${unit}\n`;
+            message += `${rank} **${entry.character.name}** — ${isPL ? formatPL(entry.value) : entry.value.toLocaleString()}${unit}\n`;
         });
         return interaction.reply(message);
     }
@@ -19632,14 +27876,115 @@ async function handleInteraction(interaction) {
     if (interaction.commandName === 'wish') {
         const character = characterManager.getCharacter(interaction.user.id);
         if (!character) return interaction.reply('You need a character to wish! Use `/character-create` to make one.');
-        const count = getDragonBallCount(interaction.user.id);
-        if (!hasAllDragonBalls(interaction.user.id)) {
-            return interaction.reply(`❌ You need all **${dragonBallState.length}** Dragon Balls to summon Shenron! You have **${count}/${dragonBallState.length}**. Search a dragon-ball space (use a **Dragon Radar** to locate them).`);
+        // Determine which dragon was summoned: Shenron (Earth set) or Porunga (Namek set).
+        const set = hasAllDragonBalls(interaction.user.id, 'shenron') ? 'shenron'
+            : hasAllDragonBalls(interaction.user.id, 'porunga') ? 'porunga' : null;
+        if (!set) {
+            const sCount = getDragonBallCount(interaction.user.id, 'shenron');
+            const pCount = getDragonBallCount(interaction.user.id, 'porunga');
+            return interaction.reply(`❌ You need all **${DRAGON_BALL_COUNT}** Dragon Balls of a set to summon a dragon! You have **${sCount}/${DRAGON_BALL_COUNT}** Shenron balls and **${pCount}/${DRAGON_BALL_COUNT}** Namekian balls. Search a dragon-ball space (use a **Dragon Radar** to locate them).`);
         }
+        const meta = DRAGON_BALL_SETS[set];
+        const state = getDragonState(set);
+        // A fresh summon starts with a clean wish counter.
+        characterManager.updateCharacter(interaction.user.id, character.id, { shenronWishesUsed: 0 });
+        const allowance = getWishAllowance(character);
         return interaction.reply({
-            content: `🐉 **Shenron appears!** All **${dragonBallState.length}** Dragon Balls glow brightly...\n\n🏮 **Make your wish:**`,
+            content: `${meta.emoji} **${meta.dragonName} appears!** All **${state.length}** ${meta.ballName}s glow brightly...\n\n🏮 **Make your wish${allowance > 1 ? ' (you may wish **twice** with your pure alignment!)' : ''}:**`,
             components: buildWishComponents()
         });
+    }
+
+    // ---------- Magic Materialization (Namekian ability) ----------
+    if (interaction.commandName === 'materialize') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) return interaction.reply('You need a character to materialize! Use `/character-create` to make one.');
+        if ((character.race || '') !== 'Namekian') {
+            return interaction.reply('❌ Only **Namekians** can use **Magic Materialization**!');
+        }
+
+        const kind = interaction.options.getString('kind');
+        const customName = (interaction.options.getString('name') || '').trim();
+
+        // Magic Materialization: spend 1d10% of max Ki; heavier weights cost extra Ki.
+        const maxKi = character.maxKi || 100;
+        const die = 1 + Math.floor(Math.random() * 10); // 1..10
+        let kiCost = Math.ceil(maxKi * die / 100);
+        let itemName;
+
+        if (kind === 'weapon') {
+            if (!customName) return interaction.reply('❌ Please provide a **name** for the weapon to conjure.');
+            itemName = customName;
+        } else if (kind === 'armor') {
+            if (!customName) return interaction.reply('❌ Please provide a **name** for the armor to conjure.');
+            itemName = customName;
+        } else if (kind === 'med') {
+            kiCost += MATERIALIZE_MED_KI_DIFF;
+            itemName = customName || 'Med. weight';
+        } else if (kind === 'heavy') {
+            kiCost += MATERIALIZE_HEAVY_KI_DIFF;
+            itemName = customName || 'Heavy weight';
+        } else {
+            itemName = customName || 'Light weight';
+        }
+
+        if ((character.currentKi || 0) < kiCost) {
+            return interaction.reply(`❌ Magic Materialization costs **${kiCost} Ki**, but you only have **${character.currentKi || 0}**!`);
+        }
+
+        characterManager.modifyKi(interaction.user.id, character.id, -kiCost);
+        const result = characterManager.addItem(interaction.user.id, character.id, itemName);
+        if (!result || !result.success) {
+            return interaction.reply(result ? `❌ ${result.message}` : '❌ Could not add the item to your inventory!');
+        }
+
+        const qualityNote = kind === 'weapon' || kind === 'armor' ? 'It is of **Regular** quality.' : 'It is a standard **Regular** training weight.';
+        return interaction.reply(`✨ **${character.name}** channels their ki and materializes **${itemName}** out of thin air! (Cost: **${kiCost} Ki**)\n${qualityNote}`);
+    }
+
+    // ---------- Create Dragon Ball (Namekian ability) ----------
+    if (interaction.commandName === 'create-dragon-ball') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) return interaction.reply('You need a character to use this! Use `/character-create` to make one.');
+        if ((character.race || '') !== 'Namekian') {
+            return interaction.reply('❌ Only **Namekians** can create **Dragon Balls**!');
+        }
+
+        const inv = Array.isArray(character.inventory) ? character.inventory : [];
+        if (countInventoryItem(inv, 'Dragon Ball Stone') <= 0) {
+            return interaction.reply('❌ You need a **Dragon Ball Stone** to create a Dragon Ball! Craft one with `/craft item:Dragon Ball Stone`.');
+        }
+
+        // Wise Old One "Maker": creating a Dragon Ball costs much less Ki.
+        const dragonBallCost = character.mutation === 'Wise Old One' ? WISE_OLD_ONE_MAKER_KI_COST : CREATE_DRAGON_BALL_KI_COST;
+        if ((character.currentKi || 0) < dragonBallCost) {
+            return interaction.reply(`❌ Creating a Dragon Ball costs **${dragonBallCost} Ki**, but you only have **${character.currentKi || 0}**!`);
+        }
+
+        const areaKey = `${character.location || 'Earth'}-${character.space || 1}`;
+        if (getDragonBallAt(areaKey)) {
+            return interaction.reply(`❌ A Dragon Ball already exists at **${areaKey.replace('-', ' - Space ')}**!`);
+        }
+
+        characterManager.modifyKi(interaction.user.id, character.id, -dragonBallCost);
+        removeInventoryItems(inv, 'Dragon Ball Stone', 1);
+        characterManager.updateCharacter(interaction.user.id, character.id, { inventory: inv });
+
+        // Never inflate the world past the standard set (DRAGON_BALL_COUNT). If the set is already
+        // full, relocate an UNCLAIMED ball to the creator's slot instead of adding an 8th sphere.
+        if (dragonBallState.length >= DRAGON_BALL_COUNT) {
+            const unclaimed = dragonBallState.filter(b => !b.foundBy);
+            if (unclaimed.length === 0) {
+                return interaction.reply(`❌ All **${DRAGON_BALL_COUNT}** Dragon Balls are already claimed! Use **\`/wish\`** to summon Shenron first.`);
+            }
+            const moved = unclaimed[getRandomInt(unclaimed.length) - 1];
+            moved.key = areaKey;
+        } else {
+            dragonBallState.push({ key: areaKey, foundBy: null });
+        }
+        saveGlobalSaga();
+
+        return interaction.reply(`🐉 **${character.name}** pours **${dragonBallCost} Ki** into the Dragon Ball Stone... a **Dragon Ball** materializes at **${areaKey.replace('-', ' - Space ')}**!`);
     }
 
     if (interaction.commandName === 'canon-action') {
@@ -19670,6 +28015,22 @@ async function handleInteraction(interaction) {
             return interaction.reply(`❌ Canon actions are on cooldown! **${leftH}h** remaining.`);
         }
 
+        // Bounty: declare a WORLD bounty — during the window, defeating an opposite-alignment
+        // player in battle grants stat points (scaled by the defeated player's PL).
+        if (action === 'bounty') {
+            if (bountyEvent.active && Date.now() < bountyEvent.expiresAt) {
+                return interaction.reply(`❌ A bounty is already active! It ends in **${formatDuration(bountyEvent.expiresAt - Date.now())}**.`);
+            }
+            bountyEvent.active = true;
+            bountyEvent.expiresAt = Date.now() + CANON_ACTION_WINDOW_MS;
+            bountyEvent.startedBy = interaction.user.id;
+            characterManager.updateCharacter(interaction.user.id, character.id, { canonActionUsedAt: Date.now() });
+            const ch = getCanonActionChannel();
+            if (ch) ch.send(`@everyone 💰 **${character.name}** has declared a **BOUNTY**! For the next **${formatCanonActionWindow()}**, defeat **opposite-alignment** players in battle to earn **stat points**!`).catch(() => {});
+            const bountyNick = awardNickname(interaction.user.id, character, 'bounty');
+            return interaction.reply(`💰 **${character.name}** declared a **BOUNTY**! For the next **${formatCanonActionWindow()}**, beat **opposite-alignment** players in battle to earn stat points!${bountyNick ? `\n🏷️ New nickname earned: **${bountyNick.emoji} ${bountyNick.text}**!` : ''}`);
+        }
+
         if (isEvil) {
             // Evil players can't take canon actions during a good-alignment training frenzy.
             if (getTrainingFrenzyActive()) {
@@ -19677,7 +28038,8 @@ async function handleInteraction(interaction) {
             }
             let ch = getCanonActionChannel();
             if (action === 'blow-planet') {
-                if (character.powerLevel < 50000) return interaction.reply(`❌ Destroying a planet requires **50,000 PL** (you have **${character.powerLevel}**).`);
+                if (!isDestructiblePlanet(character.location || 'Earth')) return interaction.reply(`❌ **${character.location || 'Earth'}** cannot be destroyed!`);
+                if (character.powerLevel < 50000) return interaction.reply(`❌ Destroying a planet requires **50,000 PL** (you have **${formatPL(character.powerLevel)}**).`);
                 if (isMajorLocationSlot(character.location, character.space)) return interaction.reply('❌ You\'re at a **major location**! Use the **Destroy major location** action instead.');
                 if (pendingCanonAction.villainUserId) return interaction.reply('❌ A canon action is already underway!');
                 pendingCanonAction.villainUserId = interaction.user.id;
@@ -19687,11 +28049,12 @@ async function handleInteraction(interaction) {
                 pendingCanonAction.expiresAt = Date.now() + CANON_ACTION_WINDOW_MS;
                 pendingCanonAction.interveners = [];
                 characterManager.updateCharacter(interaction.user.id, character.id, { canonActionUsedAt: Date.now() });
-                if (ch) ch.send(`@everyone ☠️ **${character.name}** is about to **destroy the planet ${pendingCanonAction.planet}**! Good-alignment players, use \`/canon-action action:intervene\` now to stop them! (2 min)`).catch(() => {});
+                if (ch) ch.send(`@everyone ☠️ **${character.name}** is about to **destroy the planet ${pendingCanonAction.planet}**! Good-alignment players, use \`/canon-action action:intervene\` now to stop them! (**${formatCanonActionWindow()}** to intervene)`).catch(() => {});
                 setTimeout(resolveCanonAction, CANON_ACTION_WINDOW_MS);
-                return interaction.reply(`☠️ **${character.name}** has begun destroying **${pendingCanonAction.planet}**! Everyone has **2 minutes** to intervene!`);
+                return interaction.reply(`☠️ **${character.name}** has begun destroying **${pendingCanonAction.planet}**! Everyone has **${formatCanonActionWindow()}** to intervene!`);
             } else if (action === 'blow-location') {
-                if (character.powerLevel < 10000) return interaction.reply(`❌ Destroying a major location requires **10,000 PL** (you have **${character.powerLevel}**).`);
+                if (!isDestructiblePlanet(character.location || 'Earth')) return interaction.reply(`❌ **${character.location || 'Earth'}** cannot be destroyed!`);
+                if (character.powerLevel < 10000) return interaction.reply(`❌ Destroying a major location requires **10,000 PL** (you have **${formatPL(character.powerLevel)}**).`);
                 if (!isMajorLocationSlot(character.location, character.space)) return interaction.reply('❌ You must be at a **major location** to destroy it!');
                 if (pendingCanonAction.villainUserId) return interaction.reply('❌ A canon action is already underway!');
                 const locName = getSpecialSlotName(character.location, character.space) || 'The location';
@@ -19702,9 +28065,9 @@ async function handleInteraction(interaction) {
                 pendingCanonAction.expiresAt = Date.now() + CANON_ACTION_WINDOW_MS;
                 pendingCanonAction.interveners = [];
                 characterManager.updateCharacter(interaction.user.id, character.id, { canonActionUsedAt: Date.now() });
-                if (ch) ch.send(`@everyone ☠️ **${character.name}** is about to **destroy ${locName}** on ${pendingCanonAction.planet}! Intervene with \`/canon-action action:intervene\`! (2 min)`).catch(() => {});
+                if (ch) ch.send(`@everyone ☠️ **${character.name}** is about to **destroy ${locName}** on ${pendingCanonAction.planet}! Intervene with \`/canon-action action:intervene\`! (**${formatCanonActionWindow()}** to intervene)`).catch(() => {});
                 setTimeout(resolveCanonAction, CANON_ACTION_WINDOW_MS);
-                return interaction.reply(`☠️ **${character.name}** has begun destroying **${locName}**! Everyone has **2 minutes** to intervene!`);
+                return interaction.reply(`☠️ **${character.name}** has begun destroying **${locName}**! Everyone has **${formatCanonActionWindow()}** to intervene!`);
             } else {
                 return interaction.reply('❌ Invalid action for an evil alignment!');
             }
@@ -19712,13 +28075,15 @@ async function handleInteraction(interaction) {
             // Good alignment.
             if (action === 'training-frenzy') {
                 if (getTrainingFrenzyActive()) return interaction.reply('❌ A training frenzy is already active!');
+                if (alignVal < 100) return interaction.reply('❌ You need **100+ alignment** to start a training frenzy! (Anything below 100 is treated as neutral.)');
                 trainingFrenzy.active = true;
                 trainingFrenzy.expiresAt = Date.now() + TRAINING_FRENZY_MS;
                 trainingFrenzy.planet = character.location || 'Earth';
                 characterManager.updateCharacter(interaction.user.id, character.id, { canonActionUsedAt: Date.now() });
                 const ch = getCanonActionChannel();
-                if (ch) ch.send(`@everyone 🕊️ **${character.name}** has started a **TRAINING FRENZY** on **${trainingFrenzy.planet}**! Good-alignment players train at **50×** rates for **20 minutes**!`).catch(() => {});
-                return interaction.reply(`🕊️ **Training frenzy** begun on **${trainingFrenzy.planet}**! **50×** training rates for good-alignment players for **20 min**.`);
+                if (ch) ch.send(`@everyone 🕊️ **${character.name}** has started a **TRAINING FRENZY** on **${trainingFrenzy.planet}**! Players with **100+ alignment** train at **50×** rates for **20 minutes**!`).catch(() => {});
+                const frenzyNick = awardNickname(interaction.user.id, character, 'trainingFrenzy');
+                return interaction.reply(`🕊️ **Training frenzy** begun on **${trainingFrenzy.planet}**! **50×** training rates for **100+ alignment** players for **20 min**.${frenzyNick ? `\n🏷️ New nickname earned: **${frenzyNick.emoji} ${frenzyNick.text}**!` : ''}`);
             } else {
                 return interaction.reply('🛡️ Only **evil** players can destroy planets/locations!');
             }
@@ -19731,4 +28096,18 @@ async function handleInteraction(interaction) {
 if (require.main === module) {
     client.login(token);
 }
-module.exports = { client, COMMANDS_TO_DEPLOY, deployCommands };
+module.exports = { client, COMMANDS_TO_DEPLOY, deployCommands, resetAllGameState, battleManager, characterManager, activeMissions, getEffectiveSaga, getRaceStatModifiers, getRacialModPercent, formatRacialModLine, buildEnemyParticipant, pickNpcBasicAttackType, getEnemyMasteryProfile, buildEnemyKiAbilityFields, getProgressionReward, getMissionStatReward, getCanonReward, generateEnemiesForMission, rollEnemyMutation, FORMS, applyFormStatsAndMods, RAID_BOSS_FORM_TIERS, getCustomSkill, consumeInventorySlot, getKiApplicationEffects, BASE, getBaseBonuses, buildBaseHubView, buildBaseFacilityView, buildBaseShipView, collectBaseIncome, applyBaseDiscount, applySmeltBonus, getBattleKiRegen, buildHuntEnemy, getPartyPowerPL, getPartyScalingFactor, applyPartyScalingToEnemies, applyPartyScalingToHuntEnemy, STYLE_PASSIVES, STATUS_EFFECTS, getPassiveIndex, getCharacterPassives, findStatusInfo, planCookBatch, isUncookedFood, getMaterialIndex, describeMaterialBonuses, NICKNAME_POOLS, NICKNAME_ALIGNMENT_TIERS, getNicknameList, getActiveNickname, awardNickname, resolveNicknameAward, getNextAlignmentNicknamePool, checkAlignmentNicknames, takeNicknameNotice, formatNicknameList, getCustomTechniqueCost, buildCustomSkillFromState, CUSTOM_TECH_COST_MIN, CUSTOM_TECH_REFUND_PCT, MERCHANT_CITIES, SPECIAL_SLOTS, COMBAT_SKILLS, getTechniqueMasteryEffectLines, getSnakeWayTravelMinutes, getSnakeWayTravelMs, resolveSnakeWayRoute, isAtSnakeWay, isAtCheckInStation, isAtKingKaiPlanet, getKaiokenMultiplier, getKaiokenDrainKi, getKaiokenStrainPct, getKaiokenFatigueCap, getSpecialAreaNpc, NPC_LOCATION_TECHNIQUES, runNPCSkill, getSkillMastery, techniqueMasteryDice, applyTechniqueMasteryKiCost, TECHNIQUE_MASTERY_DICE, TECHNIQUE_MASTERY_PCT, TECHNIQUE_MASTERY_PUMPUP, getMasteryModMultiplier, scaleModForMastery, masteryPctBonus, MASTERY_MOD_PCT_PER_LEVEL, MASTERY_PUMPUP_PCT_PER_LEVEL, getTechniqueMasteryTiers, getTechniqueMaxMastery, getCharacterTechniqueMastery, MAX_TECHNIQUE_MASTERY, markParticipantOut, abortBattle, continueAfterAdminRemoval, rollRestRecovery, getCompanionVitals, companionRest, companionRestIfNeeded, feedCompanion, getFatigueGainMultiplier, checkBattleOver, splitComboDamage, comboRiderDc, comboAutoRiderApplies, getCustomComboHits, buildBasicsInfo, BASICS_TOPICS, startCreateTechnique, handleCustomSkillButton };
+
+// Battle-log rendering hooks (exported so the drain/notice regression tests can assert on the text
+// a player actually sees, rather than on raw engine log entries).
+module.exports.appendBattleLog = appendBattleLog;
+module.exports.buildAttackEventSteps = buildAttackEventSteps;
+module.exports.handleBattleButton = handleBattleButton;
+// Quest reward tuning + the preview builder (same reason: assert on what players are told).
+module.exports.MISSION_REWARD_SCALING = MISSION_REWARD_SCALING;
+module.exports.MISSION_ZENI_REWARDS = MISSION_ZENI_REWARDS;
+module.exports.describeMissionReward = describeMissionReward;
+module.exports.buildMissionPreviewText = buildMissionPreviewText;
+// Rival builders (regression test for the "Cannot access 'maxHP' before initialization" crash).
+module.exports.buildRivalParticipant = buildRivalParticipant;
+module.exports.buildRivalAllyParticipant = buildRivalAllyParticipant;

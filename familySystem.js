@@ -4,7 +4,7 @@ const { races } = require('./raceData.js');
 
 // Optional tunables from config.json (defaults below if omitted).
 let familyTunables = {};
-try { familyTunables = require('./.gitignore/config.json'); } catch (e) {}
+try { familyTunables = require('./config/config.json'); } catch (e) {}
 
 // ---------- Time mapping: 1 in-game year = 3 real-world days (configurable) ----------
 const AGE_UP_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // 3 real days == 1 in-game year
@@ -29,7 +29,8 @@ const FAMILY_CONFIG = {
     },
     // Races that can never participate in procreation (applies regardless of the other parent).
     // Saibamen are allowed: they release a seed/hatchling instead of a normal child.
-    procreationIneligibleRaces: ['Vampire', 'Majin', 'Demon', 'Namekian', 'Frost Demon'],
+    // Namekians are allowed: they lay an egg to reproduce asexually (Trello "Rebirth").
+    procreationIneligibleRaces: ['Vampire', 'Majin', 'Demon', 'Frost Demon'],
     // Pregnancy lasts 1 real-world day (the baby "arrives" a day later, not an in-game
     // day). Override via config.json `pregnancyDurationMs`.
     pregnancyDurationMs: (typeof familyTunables.pregnancyDurationMs === 'number' ? familyTunables.pregnancyDurationMs : REAL_DAY_MS),
@@ -124,13 +125,25 @@ function applyIncestStatPenalty(stats) {
     return out;
 }
 
+// Beauty contributes to how fast a companion's bond grows (rolled 1d5 at creation):
+// 1=hideous, 2=ugly, 3=normal, 4=pretty/good-looking, 5=beautiful/handsome.
+function getBeautyFactor(beauty) {
+    const b = Number(beauty);
+    if (b <= 1) return 0.5;    // hideous
+    if (b === 2) return 0.75;  // ugly
+    if (b === 3 || !b) return 1.0; // normal (default)
+    if (b === 4) return 1.25;  // pretty/good-looking
+    return 1.5;                // beautiful/handsome
+}
+
 // Centralized companionship gain. Fewer companions present → faster bond growth.
 // `companionCountPresent` = number of companions (including this one) accompanying the owner.
-function getCompanionshipGain(companionCountPresent, activeCount = 1) {
+// `beauty` (optional) scales the gain via getBeautyFactor.
+function getCompanionshipGain(companionCountPresent, activeCount = 1, beauty) {
     const n = Math.max(1, companionCountPresent);
     const presenceFactor = 1 / n;          // more companions dilutes the bond
     const activityFactor = Math.max(0.5, activeCount); // active fighters get a boost
-    return Math.max(1, Math.round(FAMILY_CONFIG.companionshipBaseGain * presenceFactor * activityFactor));
+    return Math.max(1, Math.round(FAMILY_CONFIG.companionshipBaseGain * presenceFactor * activityFactor * getBeautyFactor(beauty)));
 }
 
 function isCompanionshipEligibleForProcreation(companionship) {
@@ -160,5 +173,6 @@ module.exports = {
     applyIncestStatPenalty,
     getCompanionshipGain,
     isCompanionshipEligibleForProcreation,
+    getBeautyFactor,
     isCombatCapableChild
 };
