@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { createSaver } = require('./saver');
 const statModifier = require('./statModifier');
-const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig, oreBonuses: oreBonusesConfig, bodyControl: bodyControlConfig, android: androidConfig} = require('./config-loader').loadConfig();
+const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig, oreBonuses: oreBonusesConfig, bodyControl: bodyControlConfig, android: androidConfig, customForms: customFormsConfig} = require('./config-loader').loadConfig();
 
 // Apply config-driven stat -> modifier tier tuning (falls back to built-in defaults).
 statModifier.setModifierTiers(statModifierTiers);
@@ -6099,6 +6099,13 @@ async function handleBattleButton(interaction) {
                 else if (fm === 2) p.hasBonusActed = true;
                 else p.hasActed = true;
             }
+            // Player-designed forms (/form-create): transforming costs one action, dropping to a
+            // bonus action once the form is fully mastered.
+            if (form.customForm) {
+                const fm = (fresh.formMastery || {})[formName] || 0;
+                if (fm >= CUSTOM_FORM_BONUS_ACTION_AT) p.hasBonusActed = true;
+                else p.hasActed = true;
+            }
         }
         ui.mode = 'turn';
         return interaction.update({
@@ -10614,6 +10621,369 @@ async function handleCustomSkillButton(interaction) {
     return interaction.update({ content: prompt.content, components: prompt.components });
 }
 
+// ---------- Custom player-created forms (/form-create) ----------
+// A transformation the player designs themselves. Like /create techniques it is paid for with
+// STAT POINTS and built through a button wizard, but the design space is completely different:
+// a custom form grants its own STAT-MULTIPLIER allocation — the same ±0.1x-per-point system used
+// at character creation, including the 0.7x nerf floor — and charges a per-turn Ki drain.
+//
+// THE CENTRAL TRADE-OFF: the drain IS a designable stat. The number of allocation points a form
+// gets is `power-level points + drain points`, so raising the drain buys more points to spend on
+// your stats. A low-drain form is cheap to hold but weak; a high-drain form is strong but
+// expensive to sustain. Both are hard-capped by `customForms.maxPoints` (20).
+//
+// MASTERY (0-5, raised with /mastery like any other form) multiplies the form's stat-multiplier
+// contribution by `masteryBuffPctPerLevel` (2.5%) per level, and at `bonusActionAtMastery` (5)
+// transforming costs a bonus action instead of a full action.
+//
+// The design is stored on `character.customForms[name]` and registered into the global FORMS
+// table (so /transform, the battle Transform buttons, /mastery and the battle engine all treat it
+// like a built-in form). All numbers are config-driven via `customForms` in config/default-config.json.
+const CUSTOM_FORM_CFG = (customFormsConfig && typeof customFormsConfig === 'object') ? customFormsConfig : {};
+const cfNum = (key, fallback) => (typeof CUSTOM_FORM_CFG[key] === 'number') ? CUSTOM_FORM_CFG[key] : fallback;
+const CUSTOM_FORM_BASE_COST = cfNum('baseCostSP', 15000);
+const CUSTOM_FORM_COST_BASE_PL = Math.max(1, cfNum('costBasePL', 100000));
+const CUSTOM_FORM_COST_EXPONENT = cfNum('costExponent', 0.5);
+const CUSTOM_FORM_BASE_POINTS = cfNum('basePoints', 10);
+const CUSTOM_FORM_MAX_POINTS = cfNum('maxPoints', 20);
+const CUSTOM_FORM_POINTS_PL_STEP = Math.max(1, cfNum('pointsPLPerStep', 1000000));
+const CUSTOM_FORM_DRAIN_PER_POINT = Math.max(1, cfNum('drainPerPoint', 10));
+const CUSTOM_FORM_DRAIN_STEP = Math.max(1, cfNum('drainStep', 10));
+const CUSTOM_FORM_MAX_DRAIN = cfNum('maxDrain', 200);
+const CUSTOM_FORM_MAX = cfNum('maxForms', 4);
+const CUSTOM_FORM_REFUND_PCT = cfNum('refundPct', 50);
+const CUSTOM_FORM_MASTERY_BUFF_PCT = cfNum('masteryBuffPctPerLevel', 2.5);
+const CUSTOM_FORM_MAX_MASTERY = cfNum('maxMastery', 5);
+const CUSTOM_FORM_BONUS_ACTION_AT = cfNum('bonusActionAtMastery', 5);
+const CUSTOM_FORM_MAX_NAME = cfNum('maxNameLength', 55);
+
+// Pending /form-create wizard state: userId -> { userId, name, drain, points }
+const pendingCustomForms = new Map();
+
+// Render a stat-multiplier point delta as a signed multiplier, e.g. 3 -> "+0.30x", -2 -> "-0.20x".
+function formatFormMultiplierDelta(points) {
+    const delta = STAT_MULT_PER_POINT * (Number(points) || 0);
+    return `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}x`;
+}
+
+// The stat-point price of designing a form. Scales with power level so a custom form is always a
+// meaningful investment relative to where the player is in their progression (never below the base).
+function getCustomFormCost(character) {
+    const pl = Math.max(0, Number(character && character.powerLevel) || 0);
+    const ratio = pl > 0 ? Math.pow(pl / CUSTOM_FORM_COST_BASE_PL, CUSTOM_FORM_COST_EXPONENT) : 0;
+    return Math.max(CUSTOM_FORM_BASE_COST, Math.round(CUSTOM_FORM_BASE_COST * Math.max(1, ratio)));
+}
+
+// Allocation points granted by power level alone — what a form "starts with" (10 at low PL).
+function getCustomFormPLPoints(character) {
+    const pl = Math.max(0, Number(character && character.powerLevel) || 0);
+    const extra = Math.floor(pl / CUSTOM_FORM_POINTS_PL_STEP);
+    return Math.min(CUSTOM_FORM_MAX_POINTS, CUSTOM_FORM_BASE_POINTS + extra);
+}
+
+// Points a given per-turn Ki drain buys. More drain = more points, the form's core trade-off.
+function getCustomFormDrainPoints(drain) {
+    const d = Math.max(0, Number(drain) || 0);
+    return Math.floor(d / CUSTOM_FORM_DRAIN_PER_POINT);
+}
+
+// Total allocation points a design gets: power level + what its drain buys, hard-capped.
+function getCustomFormPointPool(character, drain) {
+    const total = getCustomFormPLPoints(character) + getCustomFormDrainPoints(drain);
+    return Math.max(0, Math.min(CUSTOM_FORM_MAX_POINTS, total));
+}
+
+// The Ki the engine actually charges per turn for a designed drain (built-in forms are scaled by
+// `kiDrainScale.formDrainMult`, so custom forms go through the same scaling for consistency).
+function getCustomFormEffectiveDrain(drain) {
+    return Math.round(Math.max(0, Number(drain) || 0) * KI_FORM_DRAIN_MULT);
+}
+
+function getCustomForm(character, name) {
+    if (!character || !character.customForms || typeof character.customForms !== 'object') return null;
+    return character.customForms[name] || null;
+}
+
+function getCustomFormCount(character) {
+    if (!character || !character.customForms || typeof character.customForms !== 'object') return 0;
+    return Object.keys(character.customForms).length;
+}
+
+// Put a stored design into the global FORMS table so everything that reads FORMS sees it.
+// `mastery: {...}` is what makes getFormMaxMastery() return 5 for custom forms; it deliberately
+// has no `drainReduction`, so the designer's Ki drain is charged in full and no Super-Saiyan-style
+// attack/defense mastery mods apply (the player's stat points are the mastery reward instead).
+function registerCustomForm(def) {
+    if (!def || !def.name) return null;
+    FORMS[def.name] = {
+        race: null,                 // no race restriction — whoever owns the form can use it
+        plMultiplier: 1,            // cosmetic PL display only, like other forms
+        drain: Math.max(0, Number(def.drain) || 0),
+        mastery: { customForm: true },
+        customForm: true,
+        customStatPoints: { str: 0, dex: 0, con: 0, wil: 0, spi: 0, ...(def.statPoints || {}) },
+        description: def.description || '',
+        definition: def
+    };
+    return FORMS[def.name];
+}
+
+// Register every form a character owns (used at startup so saved forms survive a restart).
+function registerCharacterCustomForms(character) {
+    if (!character || !character.customForms || typeof character.customForms !== 'object') return 0;
+    let count = 0;
+    Object.values(character.customForms).forEach(def => {
+        if (def && def.name) { registerCustomForm(def); count++; }
+    });
+    return count;
+}
+
+// The custom form currently active on a character (null when none / not a custom form).
+function getActiveCustomForm(character) {
+    if (!character || !character.activeForm) return null;
+    if (!character.customForms || !character.customForms[character.activeForm]) return null;
+    return FORMS[character.activeForm] || null;
+}
+
+// The stat-multiplier points an active custom form contributes, scaled by its mastery
+// (+2.5% per level). Returns fractional points, which the multiplier maths handles natively.
+function getFormStatPointBonus(character) {
+    const form = getActiveCustomForm(character);
+    if (!form || !form.customStatPoints) return null;
+    const mastery = Math.min(CUSTOM_FORM_MAX_MASTERY, ((character.formMastery || {})[character.activeForm] || 0));
+    const scale = 1 + (mastery * CUSTOM_FORM_MASTERY_BUFF_PCT / 100);
+    const out = {};
+    STAT_MULT_STATS.forEach(s => { out[s] = (Number(form.customStatPoints[s]) || 0) * scale; });
+    return out;
+}
+
+// The stat-multiplier POINTS a character actually fights with: their own creation allocation plus
+// whatever the active custom form adds. This is the single source of truth for the battle engine,
+// which reads `participant.statMultipliers` as raw points.
+function getEffectiveStatMultipliers(character) {
+    const base = { str: 0, dex: 0, con: 0, wil: 0, spi: 0, ...((character && character.statMultipliers) || {}) };
+    const bonus = getFormStatPointBonus(character);
+    if (bonus) STAT_MULT_STATS.forEach(s => { base[s] = (base[s] || 0) + bonus[s]; });
+    return base;
+}
+
+// Human-readable summary of a design, stored on it as its `description`.
+function describeCustomForm(def) {
+    const parts = STAT_MULT_STATS
+        .filter(s => (Number(def.statPoints && def.statPoints[s]) || 0) !== 0)
+        .map(s => `${s.toUpperCase()} ${formatFormMultiplierDelta(def.statPoints[s])}`);
+    const drainTxt = getCustomFormEffectiveDrain(def.drain) > 0
+        ? `${getCustomFormEffectiveDrain(def.drain)} Ki/turn`
+        : 'no Ki cost';
+    return `Player-designed form. ${parts.length ? `Stat multipliers: ${parts.join(', ')}.` : 'No stat multipliers allocated.'} Drains ${drainTxt} while active. Mastery raises the stat multipliers by ${CUSTOM_FORM_MASTERY_BUFF_PCT}% per level and, at mastery ${CUSTOM_FORM_BONUS_ACTION_AT}, transforming costs only a bonus action.`;
+}
+
+// Step 1/2 — choose the form's per-turn Ki drain (which is also what buys extra stat points).
+function buildCustomFormDrainPrompt(state, character) {
+    const pool = getCustomFormPointPool(character, state.drain);
+    const plPoints = getCustomFormPLPoints(character);
+    const drainPoints = getCustomFormDrainPoints(state.drain);
+    const cost = getCustomFormCost(character);
+    const sp = (character && character.unspentPoints) || 0;
+    const effective = getCustomFormEffectiveDrain(state.drain);
+    const maxed = pool >= CUSTOM_FORM_MAX_POINTS;
+    let content = `🧬 **Create Form: ${state.name}**\n\n**Step 1/2 — Ki drain.**\n`;
+    content += `The Ki your form burns each turn is also what **buys its stat points**: a bigger drain means more points to spend. Choose your drain 👇\n\n`;
+    content += `💧 **Drain:** **${effective}** Ki/turn${effective > 0 ? ` *(${state.drain} design value x${KI_FORM_DRAIN_MULT} drain scale)*` : ''}\n`;
+    content += `🎯 **Stat points:** **${pool}**  *(${plPoints} from power level + ${drainPoints} from drain — max ${CUSTOM_FORM_MAX_POINTS})*\n`;
+    content += `💰 **Cost:** **${cost.toLocaleString()}** stat points (you have **${sp.toLocaleString()}**)`;
+    if (maxed) content += `\n\n✅ You are already at the **maximum ${CUSTOM_FORM_MAX_POINTS} points** — raising the drain further would grant nothing. Continue to spend them.`;
+    const rows = [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('cf_drain_down').setLabel(`− Drain (−${CUSTOM_FORM_DRAIN_STEP})`).setStyle(ButtonStyle.Danger).setDisabled(state.drain <= 0),
+        new ButtonBuilder().setCustomId('cf_drain_up').setLabel(`+ Drain (+${CUSTOM_FORM_DRAIN_STEP})`).setStyle(ButtonStyle.Success).setDisabled(state.drain >= CUSTOM_FORM_MAX_DRAIN || maxed),
+        new ButtonBuilder().setCustomId('cf_next').setLabel('Continue ▶️').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('cf_cancel').setLabel('❌ Cancel').setStyle(ButtonStyle.Secondary)
+    )];
+    return { content, components: rows };
+}
+
+// Step 2/2 — the interactive stat-multiplier allocator (the same ± system as character creation,
+// including the 0.7x per-stat floor that frees points for other stats).
+function buildCustomFormPointsPrompt(state, character) {
+    const pool = getCustomFormPointPool(character, state.drain);
+    const used = getStatMultiplierUsed(state.points);
+    const free = pool - used;
+    const basePts = (character && character.statMultipliers) || {};
+    const labels = { str: '⚔️ STR', dex: '🏃 DEX', con: '🛡️ CON', wil: '🧠 WIL', spi: '✨ SPI' };
+    let content = `🧬 **Create Form: ${state.name}**\n\n**Step 2/2 — Stat multipliers.**\n`;
+    content += `Each **+1** point adds **+0.1x** to that stat's modifier gain. You may lower a stat to **0.7x** (−3 points) to free points for other stats — exactly like character creation. **INT** is excluded.\n\n`;
+    STAT_MULT_STATS.forEach(s => {
+        const fp = state.points[s] || 0;
+        const total = getStatMultiplierForPoints((Number(basePts[s]) || 0) + fp);
+        content += `${labels[s]}: form **${formatFormMultiplierDelta(fp)}** → total **${total.toFixed(2)}x**\n`;
+    });
+    content += `\n💧 **Drain:** **${getCustomFormEffectiveDrain(state.drain)}** Ki/turn · 🎯 **Points used:** **${used}/${pool}**`;
+    if (free < 0) {
+        content += `\n❌ You are **${-free} point${free === -1 ? '' : 's'} over budget** — lower a stat, or go back and raise the drain.`;
+    } else {
+        content += ` · **Remaining:** **${free}**`;
+    }
+    const canInc = free > 0;
+    const decOk = (s) => (state.points[s] || 0) > STAT_MULT_MIN_POINTS;
+    const incOk = (s) => canInc && (state.points[s] || 0) < CUSTOM_FORM_MAX_POINTS;
+    const dec = (id) => new ButtonBuilder().setCustomId(`cf_dec_${id}`).setLabel(`− ${id.toUpperCase()}`).setStyle(ButtonStyle.Danger).setDisabled(!decOk(id));
+    const inc = (id) => new ButtonBuilder().setCustomId(`cf_inc_${id}`).setLabel(`+ ${id.toUpperCase()}`).setStyle(ButtonStyle.Success).setDisabled(!incOk(id));
+    const rows = [
+        new ActionRowBuilder().addComponents(dec('str'), inc('str'), dec('dex'), inc('dex'), dec('con')),
+        new ActionRowBuilder().addComponents(inc('con'), dec('wil'), inc('wil'), dec('spi'), inc('spi')),
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('cf_back').setLabel('◀️ Drain').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('cf_reset').setLabel('♻️ Reset').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('cf_confirm').setLabel('✅ Create Form').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('cf_cancel').setLabel('❌ Cancel').setStyle(ButtonStyle.Secondary)
+        )
+    ];
+    return { content, components: rows };
+}
+
+// Finish the wizard: re-validate, charge the stat points, persist the design and register it.
+function confirmCustomForm(interaction, state, character) {
+    const pool = getCustomFormPointPool(character, state.drain);
+    const used = getStatMultiplierUsed(state.points);
+    if (used > pool) {
+        return interaction.reply({ content: `❌ This form grants **${pool}** points but you have spent **${used}**. Lower a stat or raise the drain.`, ephemeral: true });
+    }
+    if (getCustomFormCount(character) >= CUSTOM_FORM_MAX) {
+        pendingCustomForms.delete(interaction.user.id);
+        return interaction.reply({ content: `❌ You already know the max **${CUSTOM_FORM_MAX}** custom forms!`, ephemeral: true });
+    }
+    // The name must still be free — another player may have claimed it while this wizard was open.
+    if (FORMS[state.name] && !getCustomForm(character, state.name)) {
+        return interaction.reply({ content: `❌ **${state.name}** is already an existing form! Pick a different name with \`/form-create\`.`, ephemeral: true });
+    }
+    const cost = getCustomFormCost(character);
+    const points = character.unspentPoints || 0;
+    if (points < cost) {
+        return interaction.reply({ content: `❌ Designing **${state.name}** costs **${cost.toLocaleString()} stat points**, but you only have **${points.toLocaleString()}**.\nEarn more points, then try again.`, ephemeral: true });
+    }
+    const def = {
+        name: state.name,
+        statPoints: { str: 0, dex: 0, con: 0, wil: 0, spi: 0, ...state.points },
+        drain: Math.max(0, Number(state.drain) || 0),
+        pointPool: pool,
+        cost,
+        powerLevel: Number(character.powerLevel) || 0,
+        createdAt: Date.now()
+    };
+    def.description = describeCustomForm(def);
+    const customForms = { ...(character.customForms || {}), [def.name]: def };
+    const forms = Array.isArray(character.forms) ? [...character.forms] : [];
+    if (!forms.includes(def.name)) forms.push(def.name);
+    characterManager.updateCharacter(interaction.user.id, character.id, { customForms, forms, unspentPoints: points - cost });
+    registerCustomForm(def);
+    pendingCustomForms.delete(interaction.user.id);
+    const alloc = STAT_MULT_STATS
+        .filter(s => (def.statPoints[s] || 0) !== 0)
+        .map(s => `${s.toUpperCase()} **${formatFormMultiplierDelta(def.statPoints[s])}**`)
+        .join(' · ') || 'none';
+    return interaction.update({
+        content: `✅ **${character.name}** designed the form **${def.name}** for **${cost.toLocaleString()} stat points**! (points left: **${(points - cost).toLocaleString()}**)\n\n`
+            + `💧 **Drain:** ${getCustomFormEffectiveDrain(def.drain)} Ki/turn\n`
+            + `🎯 **Stat multipliers:** ${alloc}\n\n`
+            + `${def.description}\n\n`
+            + `Enter it with \`/transform\` (or the 🔥 **Transform** button in battle). Raise its mastery with \`/mastery\` — at mastery **${CUSTOM_FORM_BONUS_ACTION_AT}** it costs only a bonus action. (You know **${getCustomFormCount({ customForms })}/${CUSTOM_FORM_MAX}** custom forms.)`,
+        components: []
+    });
+}
+
+// Start the /form-create wizard.
+function startCreateForm(interaction, name) {
+    const character = characterManager.getCharacter(interaction.user.id);
+    if (!character) return interaction.reply({ content: '❌ You need a character to create a form!', ephemeral: true });
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return interaction.reply({ content: '❌ You must name your form!', ephemeral: true });
+    if (trimmed.length > CUSTOM_FORM_MAX_NAME) return interaction.reply({ content: `❌ Form names must be **${CUSTOM_FORM_MAX_NAME} characters** or fewer.`, ephemeral: true });
+    if (FORMS[trimmed]) return interaction.reply({ content: `❌ **${trimmed}** is already an existing form! Pick a different name.`, ephemeral: true });
+    if (getCustomForm(character, trimmed)) return interaction.reply({ content: `❌ You already designed a form called **${trimmed}**.`, ephemeral: true });
+    if (getCustomFormCount(character) >= CUSTOM_FORM_MAX) {
+        return interaction.reply({ content: `❌ You already know the max **${CUSTOM_FORM_MAX}** custom forms!`, ephemeral: true });
+    }
+    const cost = getCustomFormCost(character);
+    if ((character.unspentPoints || 0) < cost) {
+        return interaction.reply({ content: `❌ Designing a form costs **${cost.toLocaleString()} stat points** at your power level — you have **${(character.unspentPoints || 0).toLocaleString()}**.\nEarn more stat points from missions, sparring and training, then try \`/form-create\` again.`, ephemeral: true });
+    }
+    const state = {
+        userId: interaction.user.id,
+        name: trimmed,
+        drain: 0,
+        points: { str: 0, dex: 0, con: 0, wil: 0, spi: 0 }
+    };
+    pendingCustomForms.set(interaction.user.id, state);
+    const prompt = buildCustomFormDrainPrompt(state, character);
+    return interaction.reply({ content: prompt.content, components: prompt.components, ephemeral: true });
+}
+
+// Handle a /form-create wizard button (cf_*).
+async function handleCustomFormButton(interaction) {
+    const uid = interaction.user.id;
+    const state = pendingCustomForms.get(uid);
+    const character = characterManager.getCharacter(uid);
+    if (!state) return interaction.reply({ content: '❌ Your form design has expired. Start again with `/form-create`.', ephemeral: true });
+    if (!character) { pendingCustomForms.delete(uid); return interaction.reply({ content: '❌ Character not found!', ephemeral: true }); }
+
+    const parts = interaction.customId.split('_');
+    const action = parts[1];
+    let screen = 'points';
+
+    switch (action) {
+        case 'cancel':
+            pendingCustomForms.delete(uid);
+            return interaction.update({ content: '❌ Form design cancelled.', components: [] });
+        case 'next':
+            break;
+        case 'back':
+            screen = 'drain';
+            break;
+        case 'reset':
+            state.points = { str: 0, dex: 0, con: 0, wil: 0, spi: 0 };
+            break;
+        case 'drain': {
+            const step = CUSTOM_FORM_DRAIN_STEP;
+            const delta = parts[2] === 'up' ? step : -step;
+            state.drain = Math.max(0, Math.min(CUSTOM_FORM_MAX_DRAIN, (Number(state.drain) || 0) + delta));
+            screen = 'drain';
+            break;
+        }
+        case 'inc':
+        case 'dec': {
+            const stat = parts[2];
+            if (!STAT_MULT_STATS.includes(stat)) return interaction.reply({ content: '❌ Unknown stat.', ephemeral: true });
+            const pool = getCustomFormPointPool(character, state.drain);
+            const used = getStatMultiplierUsed(state.points);
+            const cur = state.points[stat] || 0;
+            if (action === 'inc') {
+                if (used >= pool) {
+                    return interaction.reply({ content: `❌ No points left (${used}/${pool}) — raise the form's **drain** or lower another stat to free some up.`, ephemeral: true });
+                }
+                if (cur >= CUSTOM_FORM_MAX_POINTS) {
+                    return interaction.reply({ content: `❌ **${stat.toUpperCase()}** is already at the maximum of **${CUSTOM_FORM_MAX_POINTS}** points.`, ephemeral: true });
+                }
+                state.points[stat] = cur + 1;
+            } else {
+                if (cur <= STAT_MULT_MIN_POINTS) {
+                    return interaction.reply({ content: `❌ **${stat.toUpperCase()}** is already at its minimum (**${formatStatMultiplier(STAT_MULT_MIN_POINTS)}**).`, ephemeral: true });
+                }
+                state.points[stat] = cur - 1;
+            }
+            break;
+        }
+        case 'confirm':
+            return confirmCustomForm(interaction, state, character);
+        default:
+            return interaction.reply({ content: '❌ Unknown option.', ephemeral: true });
+    }
+
+    const prompt = screen === 'drain'
+        ? buildCustomFormDrainPrompt(state, character)
+        : buildCustomFormPointsPrompt(state, character);
+    return interaction.update({ content: prompt.content, components: prompt.components });
+}
+
 // Buttons to pick a form (manual transformations only — False Super Saiyan is excluded)
 // plus a revert-to-base option if already transformed.
 function buildTransformComponents(viewer) {
@@ -12716,6 +13086,15 @@ function getStatModifierBreakdown(character, stat) {
         }
         const mmods = (form.masteryMods || {})[mastery] || {};
         if (mmods[stat]) sources.push(`${character.activeForm} mastery ${mmods[stat] >= 0 ? '+' : ''}${mmods[stat]}`);
+        // Custom forms (/form-create) add their own stat-multiplier points on top of the character's
+        // creation allocation, so surface the form's share of this stat's multiplier.
+        if (form.customStatPoints) {
+            const bonus = getFormStatPointBonus(character);
+            const pts = bonus ? (bonus[stat] || 0) : 0;
+            if (pts !== 0) {
+                sources.push(`${character.activeForm} ${formatFormMultiplierDelta(pts)} ${stat.toUpperCase()} mod${mastery > 0 ? ` (mastery ${mastery})` : ''}`);
+            }
+        }
     }
     if (stat === 'dex') {
         const weaponType = character.weaponType || parseWeaponType(character.weapon || '');
@@ -12853,6 +13232,18 @@ function getFormMasteryEffectLines(formName, level) {
     }
     if (form.drain) {
         lines.push(`Drain: **${getFormDrain(formName, level)} Ki/turn**${level > 0 ? ` (was ${getFormDrain(formName, 0)})` : ''}`);
+    }
+    // Player-designed forms (/form-create): report the stat-multiplier allocation and how mastery
+    // scales it. Mastery also removes the action cost of transforming at the cap.
+    if (form.customStatPoints) {
+        const parts = STAT_MULT_STATS
+            .filter(s => (Number(form.customStatPoints[s]) || 0) !== 0)
+            .map(s => `${s.toUpperCase()} ${formatFormMultiplierDelta(form.customStatPoints[s])}`);
+        lines.push(parts.length ? `Stat multipliers: ${parts.join(', ')}` : 'No stat multipliers allocated');
+        lines.push(`Mastery scaling: stat multipliers **+${(level * CUSTOM_FORM_MASTERY_BUFF_PCT).toFixed(1)}%** (now x${(1 + level * CUSTOM_FORM_MASTERY_BUFF_PCT / 100).toFixed(3)})`);
+        lines.push(level >= CUSTOM_FORM_BONUS_ACTION_AT
+            ? 'Activation: **bonus action**'
+            : `Activation: **one action** (bonus action at mastery ${CUSTOM_FORM_BONUS_ACTION_AT})`);
     }
     // Super Saiyan-family mastery: combat mods at 4/5 and a PL boost at 5.
     if (mastery.strAtk && mastery.strAtk[level]) lines.push(`+${mastery.strAtk[level]} STR (attack)`);
@@ -13524,8 +13915,11 @@ function applyFormToStats(character) {
     // every combat roll uses (raw stat curve + stat multipliers + form scaling + wielded/worn
     // gear + modBonus) — not the raw character WIL stat. Computed after all stat/mod tweaks.
     let kiAppPassiveDamage = 0;
+    // The stat-multiplier points actually in play this fight, including an active custom form's
+    // allocation scaled by its mastery. Resolved once and reused for the participant below.
+    const effectiveStatMultipliers = getEffectiveStatMultipliers(character);
     if (kiApplication.passive) {
-        const wilMulti = (character.statMultipliers || {}).wil;
+        const wilMulti = effectiveStatMultipliers.wil;
         const baseWilMod = wilMulti
             ? statModifier.calculateModifiedModifier(stats.wil, wilMulti)
             : calculateModifier(stats.wil);
@@ -13534,7 +13928,7 @@ function applyFormToStats(character) {
     return {
         stats,
         modBonus,
-        statMultipliers: character.statMultipliers || {},
+        statMultipliers: effectiveStatMultipliers,
         kiAppDamage: kiAppPassiveDamage,
         kiApplicationLearned: hasKiApplication(character),
         kiApplicationActive: kiApplication.passive,
@@ -16350,13 +16744,17 @@ async function resetAllGameState() {
         pendingMentors, pendingMentorTeach, pendingNpcOffers, pendingRivalResolutions,
         pendingMentorRewards, pendingGives, pendingSpars, pendingVampirism,
         pendingTeach, pendingTrueCapsule, pendingCustomSkills, pendingCanonBattles,
-        pendingNicknameNotices, saleStock, gearStock, shopStock,
+        pendingCustomForms, pendingNicknameNotices, saleStock, gearStock, shopStock,
         recentDepartures, travelCountdowns, activeRaidBattles
     ].forEach(map => map.clear());
 
     // 3) Characters (every player, every character) + the auto-saga cache.
     characterManager.characters = {};
     plCache.dirty = true; // with no players left the derived saga falls back to 1
+
+    // Player-designed forms (/form-create) are per-character, so drop every registered one —
+    // otherwise their names stay permanently reserved in the global FORMS table.
+    Object.keys(FORMS).forEach(name => { if (FORMS[name] && FORMS[name].customForm) delete FORMS[name]; });
 
     // 4) Character-creation cooldowns.
     for (const userId of Object.keys(creationCooldowns)) delete creationCooldowns[userId];
@@ -18550,6 +18948,12 @@ client.once(Events.ClientReady, async c => {
                 character.forms = [];
                 changed = true;
             }
+            // Player-designed forms (/form-create) live in a per-character map; register them into
+            // the global FORMS table so /transform, /mastery and the battle engine find them after
+            // a restart. Purely in-memory, so it never marks the character as changed.
+            if (character.customForms && typeof character.customForms === 'object') {
+                registerCharacterCustomForms(character);
+            }
             // Frost Demons can switch suppression forms freely (genetic makeup)
             if (character.race === 'Frost Demon') {
                 const frostForms = ['1st Form', '2nd Form', '3rd Form', '4th Form', '100% 4th Form'];
@@ -19389,6 +19793,27 @@ client.once(Events.ClientReady, async c => {
                 .setAutocomplete(true)
         )
 
+    const formCreate = new SlashCommandBuilder()
+        .setName('form-create')
+        .setDescription('🧬 Design your own transformation (costs SP; a higher drain buys more points)')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('Name of your form')
+                .setRequired(true)
+        )
+
+    const formForget = new SlashCommandBuilder()
+        .setName('form-forget')
+        .setDescription('Forget one of your designed forms (refunds part of the stat points)')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('The form to forget')
+                .setRequired(true)
+                .setAutocomplete(true)
+        )
+
     const locations = new SlashCommandBuilder()
         .setName('locations')
         .setDescription('View special locations on your current planet')
@@ -19942,6 +20367,8 @@ client.once(Events.ClientReady, async c => {
     registerCommand(giveSkill);
     registerCommand(createTechnique);
     registerCommand(forget);
+    registerCommand(formCreate);
+    registerCommand(formForget);
     registerCommand(merchant);
     registerCommand(travelingMerchant);
     registerCommand(buy);
@@ -20185,6 +20612,20 @@ async function handleInteraction(interaction) {
                 });
             return interaction.respond(matches);
         }
+        if (interaction.commandName === 'form-forget') {
+            const focused = interaction.options.getFocused().toLowerCase();
+            const character = characterManager.getCharacter(interaction.user.id);
+            const owned = (character && character.customForms && typeof character.customForms === 'object') ? character.customForms : {};
+            const matches = Object.keys(owned)
+                .filter(name => name.toLowerCase().includes(focused))
+                .slice(0, 25)
+                .map(name => {
+                    const paid = typeof owned[name].cost === 'number' ? owned[name].cost : 0;
+                    const refund = Math.floor(paid * CUSTOM_FORM_REFUND_PCT / 100);
+                    return { name: refund > 0 ? `${name} (refund ${refund.toLocaleString()})` : name, value: name };
+                });
+            return interaction.respond(matches);
+        }
         if (interaction.commandName === 'travel') {
             const focused = interaction.options.getFocused();
             const character = characterManager.getCharacter(interaction.user.id);
@@ -20233,6 +20674,10 @@ async function handleInteraction(interaction) {
         }
         if (interaction.customId.startsWith('cs_')) {
             await handleCustomSkillButton(interaction);
+            return;
+        }
+        if (interaction.customId.startsWith('cf_')) {
+            await handleCustomFormButton(interaction);
             return;
         }
 
@@ -22578,6 +23023,55 @@ async function handleInteraction(interaction) {
         if (refund > 0) text += `\n💰 Refunded **${refund.toLocaleString()}** stat points (**${CUSTOM_TECH_REFUND_PCT}%** of the ${paid.toLocaleString()} it cost) — you now have **${points.toLocaleString()}**.`;
         else text += '\n*(No stat points refunded — this technique was created before creation costs existed.)*';
         text += `\n🛠️ You can design a new technique with \`/create\` (${Object.keys(customSkills).length}/${MAX_CUSTOM_SKILLS} used).`;
+        return interaction.reply(text);
+    }
+
+    if (interaction.commandName === 'form-create') {
+        return startCreateForm(interaction, interaction.options.getString('name'));
+    }
+
+    if (interaction.commandName === 'form-forget') {
+        const character = characterManager.getCharacter(interaction.user.id);
+        if (!character) {
+            return interaction.reply('You need a character! Use `/character-create` to make one.');
+        }
+        // A form is baked into the live battle participant, so refunding it mid-fight would desync.
+        if (battleManager.hasBattleForUser(interaction.user.id)) {
+            return interaction.reply('❌ You can\'t forget a form while you\'re in a battle!');
+        }
+        const wanted = (interaction.options.getString('name') || '').trim();
+        const owned = (character.customForms && typeof character.customForms === 'object') ? character.customForms : {};
+        const key = Object.keys(owned).find(k => k.toLowerCase() === wanted.toLowerCase());
+        if (!key) {
+            const names = Object.keys(owned);
+            return interaction.reply(names.length
+                ? `❌ You haven't designed a form called **"${wanted}"**. Your forms:\n${names.map(n => `• **${n}**`).join('\n')}`
+                : '❌ You haven\'t designed any forms yet — make one with `/form-create`!');
+        }
+        const def = owned[key];
+        const customForms = { ...owned };
+        delete customForms[key];
+        const forms = (Array.isArray(character.forms) ? character.forms : []).filter(f => f !== key);
+        const formMastery = { ...(character.formMastery || {}) };
+        delete formMastery[key];
+        const paid = typeof def.cost === 'number' ? def.cost : 0;
+        const refund = Math.floor(paid * CUSTOM_FORM_REFUND_PCT / 100);
+        const points = (character.unspentPoints || 0) + refund;
+        // If the form is active it must be dropped, or the character stays "transformed" into a form
+        // that no longer exists.
+        const wasActive = character.activeForm === key;
+        const updates = { customForms, forms, formMastery, unspentPoints: points };
+        if (wasActive) updates.activeForm = null;
+        characterManager.updateCharacter(interaction.user.id, character.id, updates);
+        // Names are globally unique, but an admin could have handed the form to someone else with
+        // /give-form — only drop it from the live FORMS table when nobody else still owns it.
+        const stillOwned = Object.values(characterManager.characters || {}).some(list =>
+            (Array.isArray(list) ? list : []).some(c => c && c.customForms && c.customForms[key]));
+        if (!stillOwned) delete FORMS[key];
+
+        let text = `🗑️ **${character.name}** forgot the form **${key}**.${wasActive ? ' They reverted to base form.' : ''}`;
+        if (refund > 0) text += `\n💰 Refunded **${refund.toLocaleString()}** stat points (**${CUSTOM_FORM_REFUND_PCT}%** of the ${paid.toLocaleString()} it cost) — you now have **${points.toLocaleString()}**.`;
+        text += `\n🧬 You can design a new form with \`/form-create\` (${Object.keys(customForms).length}/${CUSTOM_FORM_MAX} used).`;
         return interaction.reply(text);
     }
 
@@ -29107,3 +29601,32 @@ module.exports.recalcVitals = recalcVitals;
 module.exports.getTotalFatigue = getTotalFatigue;
 module.exports.getBattleKiRegen = getBattleKiRegen;
 module.exports.killCharacter = killCharacter;
+// Custom player-designed forms (/form-create) — test hooks.
+module.exports.CUSTOM_FORM_CONFIG = CUSTOM_FORM_CFG;
+module.exports.CUSTOM_FORM_MAX = CUSTOM_FORM_MAX;
+module.exports.CUSTOM_FORM_MAX_POINTS = CUSTOM_FORM_MAX_POINTS;
+module.exports.CUSTOM_FORM_BONUS_ACTION_AT = CUSTOM_FORM_BONUS_ACTION_AT;
+module.exports.CUSTOM_FORM_REFUND_PCT = CUSTOM_FORM_REFUND_PCT;
+module.exports.CUSTOM_FORM_MASTERY_BUFF_PCT = CUSTOM_FORM_MASTERY_BUFF_PCT;
+module.exports.getCustomFormCost = getCustomFormCost;
+module.exports.getCustomFormPLPoints = getCustomFormPLPoints;
+module.exports.getCustomFormDrainPoints = getCustomFormDrainPoints;
+module.exports.getCustomFormPointPool = getCustomFormPointPool;
+module.exports.getCustomFormEffectiveDrain = getCustomFormEffectiveDrain;
+module.exports.getCustomForm = getCustomForm;
+module.exports.getCustomFormCount = getCustomFormCount;
+module.exports.registerCustomForm = registerCustomForm;
+module.exports.registerCharacterCustomForms = registerCharacterCustomForms;
+module.exports.getActiveCustomForm = getActiveCustomForm;
+module.exports.getFormStatPointBonus = getFormStatPointBonus;
+module.exports.getFormMaxMastery = getFormMaxMastery;
+module.exports.getFormDrain = getFormDrain;
+module.exports.getFormMasteryEffectLines = getFormMasteryEffectLines;
+module.exports.getStatMultiplierForPoints = getStatMultiplierForPoints;
+module.exports.getEffectiveStatMultipliers = getEffectiveStatMultipliers;
+module.exports.describeCustomForm = describeCustomForm;
+module.exports.formatFormMultiplierDelta = formatFormMultiplierDelta;
+module.exports.buildCustomFormDrainPrompt = buildCustomFormDrainPrompt;
+module.exports.buildCustomFormPointsPrompt = buildCustomFormPointsPrompt;
+module.exports.startCreateForm = startCreateForm;
+module.exports.handleCustomFormButton = handleCustomFormButton;

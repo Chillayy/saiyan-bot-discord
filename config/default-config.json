@@ -460,6 +460,24 @@
   "movementKiPct": 0.03,
   "formTickMinutes": 10,
   "maxCustomSkills": 5,
+  "customForms": {
+    "_comment": "Player-designed transformations (/form-create). baseCostSP is the stat-point price at costBasePL power level; it grows as (PL / costBasePL) ^ costExponent. A form's allocation points = basePoints (+1 per pointsPLPerStep PL) + floor(drain / drainPerPoint), capped at maxPoints. Higher drain therefore buys more points to spend on stats. Mastery (max maxMastery) scales the form's stat multipliers by masteryBuffPctPerLevel% per level, and at bonusActionAtMastery transforming costs a bonus action instead of an action.",
+    "baseCostSP": 15000,
+    "costBasePL": 100000,
+    "costExponent": 0.5,
+    "basePoints": 10,
+    "maxPoints": 20,
+    "pointsPLPerStep": 1000000,
+    "drainPerPoint": 10,
+    "drainStep": 10,
+    "maxDrain": 200,
+    "maxForms": 4,
+    "refundPct": 50,
+    "masteryBuffPctPerLevel": 2.5,
+    "maxMastery": 5,
+    "bonusActionAtMastery": 5,
+    "maxNameLength": 55
+  },
   "wiseOldOneMakerKiCost": 100,
   "statModifierTiers": [
     {
