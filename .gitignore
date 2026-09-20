@@ -18,6 +18,11 @@ data/
 # Trello board export kept for reference only (large; not used at runtime)
 config/trello.json
 
+# Local ops docs - they describe THIS deployment (public IP, key paths, hostnames).
+# Kept on your machine and the server only; not pushed.
+DEPLOY_ORACLE.md
+QUICK_GUIDE.md
+
 # Atomic-write temp files from saver.js
 *.tmp
 
