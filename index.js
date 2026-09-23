@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { createSaver } = require('./saver');
 const statModifier = require('./statModifier');
-const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig, oreBonuses: oreBonusesConfig, bodyControl: bodyControlConfig, android: androidConfig, customForms: customFormsConfig} = require('./config-loader').loadConfig();
+const {token, clientId, guildId, characterCreateCooldownHours, searchLimitPerArea, searchKiCost, movementKiPct, formTickMinutes, wiseOldOneMakerKiCost, merchantPrices, sellRate, gatherLimitPerArea, fatigueFloorRatio, pickaxeDurability, battleTurnTimeoutMs, craftingRecipes, singleEnemyStatMult, enemyMutationChance, enemySagaScaleExponent, enemySagaEase, enemySagaDampenPower, enemySagaMultMax, autoSaga, miscarriageChance, statModifierTiers, statMultiplier, kiDrainScale, createDragonBallKiCost, materializeWeightMedKiDiff, materializeWeightHeavyKiDiff, persuadeOppositeAlignmentPenalty, missionNormalItemChance, missionLegendaryItemChance, missionDifficultyItemChanceBoost, missionNegativeItemChanceBonus, missionNegativeZeniMult, missionRewardScaling, maxCustomSkills, hpPerConMod, minMaxHP, kamehamehaCharging, battlePacing, canonIntervene, enemyPLExponent, enemyScaling, enemyPartyScaling, customTechniqueCost, customTechniqueRefundPct, kingKaiTravel, kaioken, trainingDiceGainMult, forgeCoalCost, racialModPercent, racialModScalePenalties, enemyMastery, limbBreak, masteryScaling, baseSystem: baseSystemConfig, forms: formsConfig, oreBonuses: oreBonusesConfig, bodyControl: bodyControlConfig, android: androidConfig, customForms: customFormsConfig} = require('./config-loader').loadConfig();
 
 // Apply config-driven stat -> modifier tier tuning (falls back to built-in defaults).
 statModifier.setModifierTiers(statModifierTiers);
@@ -18529,8 +18529,12 @@ function getRacialCombatMods(race, entity) {
 
 // Calculate HP based on CON (with racial bonuses). Stat-multiplier points (if any) boost
 // the CON-derived modifier before the racial bonus is added.
-// HP gained per CON modifier point (config.json `hpPerConMod`, default 15).
+// HP gained per CON modifier point (config.json `hpPerConMod`, default 45).
 const HP_PER_CON_MOD = (typeof hpPerConMod === 'number') ? hpPerConMod : 45;
+// Hard floor for max HP (config.json `minMaxHP`, default 20). Racial CON penalties stack with a
+// low CON modifier (e.g. a Tuffle's "Physically Frail" -2 CON mod), which could otherwise push
+// the 20 + (conMod * HP_PER_CON_MOD) formula to zero or below.
+const MIN_MAX_HP = (typeof minMaxHP === 'number' && minMaxHP >= 1) ? minMaxHP : 20;
 
 function calculateHP(con, race = null, statMultipliers = {}, character = null) {
     const sm = statMultipliers || {};
@@ -18543,7 +18547,7 @@ function calculateHP(con, race = null, statMultipliers = {}, character = null) {
         conMod += raceModifiers.con;
     }
     
-    return 20 + (conMod * HP_PER_CON_MOD);
+    return Math.max(MIN_MAX_HP, 20 + (conMod * HP_PER_CON_MOD));
 }
 
 // Calculate Ki based on SPI (with racial bonuses). Stat-multiplier points (if any) boost
@@ -18914,6 +18918,13 @@ client.once(Events.ClientReady, async c => {
             if (character.maxKi === undefined || character.maxKi === null) {
                 character.maxKi = calculateKi((character.stats || {}).spi || 0, character.race, {}, character);
                 character.currentKi = character.maxKi;
+                changed = true;
+            }
+            // A racial CON penalty (e.g. a Tuffle's "Physically Frail" -2 CON mod) used to be able
+            // to push max HP to zero or below. Repair any legacy character below the floor.
+            if (Number.isFinite(character.maxHP) && character.maxHP < MIN_MAX_HP) {
+                character.maxHP = calculateHP((character.stats || {}).con || 0, character.race, character.statMultipliers || {}, character);
+                character.currentHP = character.maxHP;
                 changed = true;
             }
             if (character.weightsType === undefined) {

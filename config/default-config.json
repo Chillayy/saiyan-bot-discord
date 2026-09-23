@@ -286,6 +286,7 @@
     "allyDifficulty": "hard"
   },
   "hpPerConMod": 45,
+  "minMaxHP": 20,
   "attackDiceModRatio": 0.35,
   "enemyLimitBreakChance": 0.1,
   "enemyBossLimitBreakChance": 0.5,
